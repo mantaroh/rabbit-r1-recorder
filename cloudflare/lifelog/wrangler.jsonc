@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "r1-lifelog",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  "observability": { "enabled": true },
+
+  // Audio blobs. The segment id is the object key, which makes an upload
+  // idempotent at the storage layer — a device retry overwrites itself.
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "r1-lifelog-audio" }
+  ],
+
+  // Transcripts and their timestamps. Queried by time window for the
+  // "what were we just talking about" lookup.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "r1-lifelog",
+      "database_id": "d284cef0-7cc7-47ed-bc73-d456ec13f519",
+      "migrations_dir": "./migrations"
+    }
+  ],
+
+  // Transcription is async: the upload returns as soon as the bytes are
+  // durable, and a consumer does the slow part.
+  "queues": {
+    "producers": [
+      { "binding": "TRANSCRIBE_QUEUE", "queue": "r1-lifelog-transcribe" }
+    ],
+    "consumers": [
+      {
+        "queue": "r1-lifelog-transcribe",
+        // Messages carry only an R2 key, so a batch is cheap to hold; the
+        // work per message is a Whisper round trip.
+        "max_batch_size": 5,
+        "max_batch_timeout": 30,
+        "max_retries": 5,
+        "dead_letter_queue": "r1-lifelog-dlq"
+      }
+    ]
+  },
+
+  // Workers AI always runs against the real service, including in dev.
+  "ai": { "binding": "AI" }
+}

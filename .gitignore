@@ -1,0 +1,39 @@
+# --- Android / Gradle ---
+*.iml
+.gradle/
+.kotlin/
+/.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# --- Node / Wrangler ---
+node_modules/
+.wrangler/
+worker-configuration.d.ts
+
+# --- Tooling ---
+.claude/settings.local.json
+
+# --- Credentials ---
+# These were dropped in the working tree during bring-up and are already
+# installed on their real hosts. Nothing here belongs in the repository:
+#   token.txt              Cloudflare Access service token (id + secret)
+#   openai_key_for_hermes  OpenAI API key
+#   .ingest-token          bearer for the lifelog Worker
+#   .dev.vars              wrangler local secrets
+token.txt
+openai_key_for_hermes.txt
+.ingest-token
+.dev.vars
+*.key
+*.pem
+
+# --- Captured audio ---
+# The probe writes real recordings; they are personal data, not source.
+*.wav
+*.opus
+*.m4a
