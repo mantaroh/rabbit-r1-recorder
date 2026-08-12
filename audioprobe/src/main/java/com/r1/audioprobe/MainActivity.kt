@@ -14,11 +14,14 @@ import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -36,6 +39,11 @@ class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
     private lateinit var infoView: TextView
+    private lateinit var baseUrlField: EditText
+    private lateinit var bearerField: EditText
+    private lateinit var accessIdField: EditText
+    private lateinit var accessSecretField: EditText
+    private lateinit var deviceIdField: EditText
     private lateinit var metrics: Metrics
     private lateinit var upload: UploadSettings
 
@@ -56,6 +64,7 @@ class MainActivity : Activity() {
         metrics = Metrics(this)
         upload = UploadSettings(this)
         setContentView(buildUi())
+        loadUploadFields()
         ensurePermissions()
     }
 
@@ -109,6 +118,14 @@ class MainActivity : Activity() {
                 if (useVoiceRecognition) "Source: VOICE_RECOGNITION" else "Source: MIC"
         }, wide())
 
+        column.addView(heading("Upload target"))
+        baseUrlField = field(column, "Base URL", masked = false)
+        bearerField = field(column, "Bearer token", masked = true)
+        accessIdField = field(column, "CF-Access-Client-Id", masked = false)
+        accessSecretField = field(column, "CF-Access-Client-Secret", masked = true)
+        deviceIdField = field(column, "Device id", masked = false)
+        column.addView(button("Save target") { saveUploadFields() }, wide())
+
         column.addView(toggle("Upload: OFF") {
             upload.enabled = !upload.enabled
             (it as Button).text = if (upload.enabled) "Upload: ON" else "Upload: OFF"
@@ -136,6 +153,67 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.BLACK)
             addView(column)
         }
+    }
+
+    private fun heading(text: String) = TextView(this).apply {
+        this.text = text
+        setTextColor(0xFF7FD1A0.toInt())
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+        setPadding(0, dp(8), 0, dp(2))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+    }
+
+    /**
+     * Typing a 64-character secret on a 240 dp panel is miserable, so these
+     * are normally provisioned over adb. They exist so the probe still works
+     * on a device that is not plugged into a laptop.
+     */
+    private fun field(parent: LinearLayout, label: String, masked: Boolean): EditText {
+        parent.addView(TextView(this).apply {
+            text = label
+            setTextColor(0xFF909090.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 8f)
+            setPadding(0, dp(3), 0, 0)
+        }, wide())
+
+        val edit = EditText(this).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                if (masked) InputType.TYPE_TEXT_VARIATION_PASSWORD else 0
+            setSingleLine(true)
+            // After setSingleLine: it re-applies the input type and drops any
+            // transformation set before it, leaving the secret in clear.
+            if (masked) transformationMethod = PasswordTransformationMethod.getInstance()
+            setPadding(dp(4), dp(3), dp(4), dp(3))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(4).toFloat()
+                setColor(Color.rgb(32, 32, 32))
+            }
+        }
+        parent.addView(edit, wide())
+        return edit
+    }
+
+    private fun loadUploadFields() {
+        baseUrlField.setText(upload.baseUrl)
+        bearerField.setText(upload.bearer)
+        accessIdField.setText(upload.accessClientId)
+        accessSecretField.setText(upload.accessClientSecret)
+        deviceIdField.setText(upload.deviceId)
+    }
+
+    private fun saveUploadFields() {
+        upload.baseUrl = baseUrlField.text.toString()
+        upload.bearer = bearerField.text.toString()
+        upload.accessClientId = accessIdField.text.toString()
+        upload.accessClientSecret = accessSecretField.text.toString()
+        upload.deviceId = deviceIdField.text.toString()
+        refresh()
     }
 
     private fun wide() = LinearLayout.LayoutParams(
