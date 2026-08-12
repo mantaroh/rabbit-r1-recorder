@@ -63,6 +63,8 @@ class RecorderService : Service() {
         /** Stop writing rather than fill the device and break everything else. */
         private const val MIN_FREE_BYTES = 2L * 1024 * 1024 * 1024
 
+        private const val UPLOAD_INTERVAL_MS = 15_000L
+
         /** Preferred capture format; fallbacks are logged if it is unavailable. */
         private const val TARGET_RATE = 16_000
 
@@ -76,6 +78,12 @@ class RecorderService : Service() {
     }
 
     private lateinit var metrics: Metrics
+    private lateinit var uploadSettings: UploadSettings
+    private var uploader: Uploader? = null
+    private var uploadThread: Thread? = null
+    /** The segment currently being written; never a candidate for upload. */
+    @Volatile private var openSegment: File? = null
+
     private var recorder: AudioRecord? = null
     private var thread: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -130,6 +138,7 @@ class RecorderService : Service() {
     override fun onCreate() {
         super.onCreate()
         metrics = Metrics(this)
+        uploadSettings = UploadSettings(this)
         createChannel()
     }
 
@@ -186,13 +195,34 @@ class RecorderService : Service() {
         )
 
         thread = Thread({ captureLoop() }, "probe-capture").apply { start() }
+
+        // Uploading runs on its own thread: a slow or stalled network must
+        // never delay a read from AudioRecord, which is the one thing in this
+        // service that cannot be late.
+        uploader = Uploader(
+            uploadSettings,
+            metrics,
+            getSystemService(ConnectivityManager::class.java),
+        )
+        uploadThread = Thread({ uploadLoop() }, "probe-upload").apply { start() }
+
         return START_STICKY
+    }
+
+    private fun uploadLoop() {
+        val dir = audioDir()
+        while (!stop) {
+            runCatching { uploader?.pump(dir, openSegment) }
+                .onFailure { Log.e(TAG, "upload pass failed", it) }
+            runCatching { Thread.sleep(UPLOAD_INTERVAL_MS) }
+        }
     }
 
     override fun onDestroy() {
         stop = true
         running = false
         runCatching { thread?.join(2_000) }
+        runCatching { uploadThread?.join(2_000) }
         releaseRecorder()
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching {
@@ -410,14 +440,24 @@ class RecorderService : Service() {
                     .orEmpty().sumOf { it.length() } / (1024 * 1024),
                 "free_gb" to filesDir.usableSpace / (1024 * 1024 * 1024),
                 "write_errors" to writeErrors,
+                "queued" to (uploader?.queueDepth(audioDir(), openSegment) ?: -1),
+                "uploaded" to (uploader?.uploaded ?: 0),
+                "upload_failures" to (uploader?.failures ?: 0),
+                "upload_blocked" to uploader?.blockedReason(),
+                "upload_error" to uploader?.lastError,
             )
         )
 
         val mA = currentUa / 1000
+        val up = uploader
         snapshot = "up ${uptime}s · peak ${"%.3f".format(peak)}" +
             (if (silent) " · SILENT" else "") +
             " · seg $segments · gap ${gap}ms · reinit $reinits" +
             " · batt $level%" + (if (charging) " chg" else " ${mA}mA") +
+            (if (up != null) {
+                " · up ${up.uploaded}/q${up.queueDepth(audioDir(), openSegment)}" +
+                    (up.blockedReason()?.let { " ($it)" } ?: "")
+            } else "") +
             (if (diskFull) " · DISK FULL" else "")
 
         runCatching {
@@ -440,6 +480,9 @@ class RecorderService : Service() {
         val file = File(dir, "seg_${wavStamp.format(Date())}.wav")
         val raf = RandomAccessFile(file, "rw")
         raf.write(ByteArray(44)) // header rewritten on close
+        // Publish it so the uploader skips it: a partial WAV shipped under a
+        // complete-looking id would be indistinguishable from a good segment.
+        openSegment = file
         raf
     }.getOrNull()
 
@@ -472,6 +515,8 @@ class RecorderService : Service() {
             raf.write(header.array())
             raf.close()
         }
+        // Header written and closed — the file is now a valid segment.
+        openSegment = null
     }
 
     // ------------------------------------------------------ notification ----

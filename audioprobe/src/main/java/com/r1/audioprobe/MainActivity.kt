@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var infoView: TextView
     private lateinit var metrics: Metrics
+    private lateinit var upload: UploadSettings
 
     private val ticker = Handler(Looper.getMainLooper())
     private var useWakeLock = true
@@ -53,6 +54,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         metrics = Metrics(this)
+        upload = UploadSettings(this)
         setContentView(buildUi())
         ensurePermissions()
     }
@@ -105,6 +107,19 @@ class MainActivity : Activity() {
             useVoiceRecognition = !useVoiceRecognition
             (it as Button).text =
                 if (useVoiceRecognition) "Source: VOICE_RECOGNITION" else "Source: MIC"
+        }, wide())
+
+        column.addView(toggle("Upload: OFF") {
+            upload.enabled = !upload.enabled
+            (it as Button).text = if (upload.enabled) "Upload: ON" else "Upload: OFF"
+        }.also { it.text = if (upload.enabled) "Upload: ON" else "Upload: OFF" }, wide())
+
+        column.addView(toggle("Unmetered only: ON") {
+            upload.unmeteredOnly = !upload.unmeteredOnly
+            (it as Button).text =
+                if (upload.unmeteredOnly) "Unmetered only: ON" else "Unmetered only: OFF"
+        }.also {
+            it.text = if (upload.unmeteredOnly) "Unmetered only: ON" else "Unmetered only: OFF"
         }, wide())
 
         column.addView(button("Quit") { finishAndRemoveTask() }, wide())
@@ -208,8 +223,13 @@ class MainActivity : Activity() {
 
         infoView.text = buildString {
             append("net: $transport, unmetered=$unmetered\n")
-            append("log: ${metrics.sizeBytes() / 1024} KiB\n")
-            append(metrics.path())
+            append("upload: ")
+            append(if (upload.enabled) "on" else "off")
+            append(if (upload.unmeteredOnly) ", unmetered only" else ", any network")
+            append(if (upload.isConfigured) "" else ", NOT CONFIGURED")
+            append("\n")
+            append(upload.baseUrl).append("\n")
+            append("log: ${metrics.sizeBytes() / 1024} KiB")
         }
     }
 

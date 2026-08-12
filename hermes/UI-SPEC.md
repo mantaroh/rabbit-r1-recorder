@@ -50,9 +50,28 @@ Five, one job each.
 ```
   Sessions ──select──▶ Chat ──┬──▶ Approval  (modal, event-driven)
      │                        ├──▶ Clarify   (modal, event-driven)
+     │                        ├──▶ Capture   (camera, returns a photo)
      │                        └──▶ Tools     (drill-down from the tool strip)
-     └──long-press──▶ Settings
+     └──── ⚙ ────▶ Settings ──▶ Input probe
 ```
+
+### Every screen needs a visible exit
+
+There is no Back key and no back gesture. A screen that consumes keys and
+relies on Back traps the user — the first input-probe build did exactly that
+and had to be escaped over adb.
+
+| Screen | Exit |
+| --- | --- |
+| Sessions | `Quit` — root screen, so leaving means leaving the app (`finishAndRemoveTask`) |
+| Chat | `✕` in the status row |
+| Settings | `← Back` |
+| Capture | `Cancel` |
+| Input probe | `Close` |
+
+Settings sits behind a visible `⚙` rather than the long-press this document
+originally specified: connection diagnostics live there, so it has to stay
+reachable when the connection is the thing that is broken.
 
 ### 1. Sessions — launch screen
 
@@ -120,6 +139,21 @@ to show it is alive.
 opens the Tools drill-down with the full list of the turn. A vertical tool feed
 would eat the transcript.
 
+### 2b. Capture — photo for the next message
+
+The sensor rides a motorised arm, so taking a picture means aiming it: the
+screen turns the lens outward on entry and parks it at 90° on exit, the same
+sequence the camera app uses.
+
+The still is capped at a **1280 px long edge** — the R1 offers 1280×960 below
+that, which lands around 400 KB. The full 8 MP frame is right for the gallery
+and wasteful for something about to be base64'd through a tunnel and read by a
+model.
+
+The photo does not send by itself. It waits in the composer (`📷` appears in
+the status row) until there is a message to go with it, so a picture and the
+words about it arrive as one turn.
+
 ### 3. Approval — modal, full screen
 
 ```
@@ -168,12 +202,19 @@ Host vs 502) and indistinguishable from a generic "cannot connect".
 
 ## Hardware input
 
-| Control | Sessions | Chat | Modal |
-| --- | --- | --- | --- |
-| Wheel | scroll list | scroll transcript | move selection |
-| Side button (hold) | — | push-to-talk | — |
-| Side button (tap) | open | Stop while running | confirm |
-| Touch | tap to select | tap composer / tool strip | tap a button |
+| Control | Sessions | Chat | Modal | Capture |
+| --- | --- | --- | --- | --- |
+| Wheel | **move selection** | scroll transcript | **move selection** | — |
+| Side button (hold) | — | push-to-talk | — | — |
+| Side button (tap) | open selected | Stop while running | confirm | shutter |
+| Touch | tap a row | mic / camera / send / keyboard | tap a button | shutter, cancel |
+
+Android's focus system does nothing in touch mode, so a wheel-navigable screen
+keeps its **own selection cursor** and paints the highlight itself. A tap also
+moves that cursor, or the two input methods disagree about where you are.
+
+On the approval modal the cursor starts on **Deny**, so an accidental confirm
+is the safe outcome.
 
 ### Measured key codes
 

@@ -109,6 +109,30 @@ Additional server-side gates that will close the socket:
 | `sudo.respond` / `secret.respond` | `request_id`, `password` / `value` | — |
 | `tools.list` / `tools.show` | — | tool catalogue |
 | `complete.slash` / `complete.path` | prefix | completion items |
+| `image.attach_bytes` | `session_id`, `content_base64`, `filename?` | `{attached, path, count, text, bytes}` |
+| `file.attach` | `session_id`, `data_url`, `name?` | `{attached, ref_path, ref_text}` for non-images |
+| `image.detach` | `session_id`, `path` | drops a queued attachment |
+
+## Attachments
+
+`image.attach_bytes` exists for exactly this client's situation — its docstring
+calls out "a desktop app or web dashboard running on a DIFFERENT machine than
+the gateway", which cannot hand over a local path.
+
+Attachments **queue on the session** (`session["attached_images"]`) and are
+consumed by the *next* `prompt.submit`. So sending a photo is two calls in
+order, and the second must wait for the first: fire them together and the turn
+goes out without the image.
+
+| Constraint | Value |
+| --- | --- |
+| Max bytes | 25 MiB |
+| Extensions | `.png .jpg .jpeg .gif .webp .bmp` |
+| Base64 prefix | `data:image/...;base64,` accepted and stripped |
+
+With no text of its own the client can send the caption the gateway proposes in
+the attach response's `text` field (`[User attached image: …]`) rather than
+inventing one.
 
 `session.interrupt` also denies every outstanding approval (`resolve_all=True`)
 and clears queued prompts, so Stop is a single call.

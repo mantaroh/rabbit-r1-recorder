@@ -12,8 +12,8 @@ Run conditions unless stated: `MIC` source, partial wake lock held, screen off,
 | Question | Answer |
 | --- | --- |
 | 16 kHz mono PCM16 native? | **Yes** — `getMinBufferSize` = 1280, no resampling path needed |
-| Capture survives screen off? | **Yes** — 32 min continuous, `frames` exactly matched the expected 10/s with **delta 0** |
-| Capture survives on battery? | **Yes** — same run was unplugged throughout |
+| Capture survives screen off? | **Yes** — 8 h continuous, `frames` matched the expected 10/s to within a rounding sample across 962 reports |
+| Capture survives on battery? | **Yes** — unplugged throughout, `stalls`/`reinits`/`write_errors` all **0** |
 | Foreground service (`microphone`) on CarrotOS? | **Yes** — starts from a visible Activity, survives screen off |
 | Is the stream real audio? | **Yes** — longest run of exact zeros across a 60 s segment was **0.2–0.3 ms**; a dropout would show as tens to hundreds of ms |
 | Audio quality | **Good** — confirmed by listening to pulled segments |
@@ -66,20 +66,32 @@ The side button reaches a foreground app directly, so double-click detection
 does **not** require forking the CarrotOS launcher — only the
 app-not-foreground case would.
 
-## Broken on this device
+## The fuel gauge is coarse, not broken
 
-**The battery fuel gauge does not report remaining charge.** Across 32 minutes
-of confirmed discharge at ~52 mA (≈28 mAh, ~3 % of the pack):
+At 32 minutes into the run this looked like a dead gauge: `CAPACITY` still 100,
+`CHARGE_COUNTER` still 1010000, `dumpsys battery` agreeing with both, despite
+~28 mAh of confirmed discharge. That reading was wrong — the gauge simply does
+not move on that timescale.
 
-- `BATTERY_PROPERTY_CAPACITY` stayed at **100**
-- `BATTERY_PROPERTY_CHARGE_COUNTER` stayed at **1010000**
-- `dumpsys battery` agreed: `level: 100`, `Charge counter: 1010000`
+Over hours it tracks cleanly and linearly:
 
-Only `BATTERY_PROPERTY_CURRENT_NOW` moves. So:
+| Elapsed | Level | `charge_uah` |
+| --- | --- | --- |
+| 4.4 h | 83 % | 838300 |
+| 5.3 h | 79 % | 797900 |
+| 6.5 h | 73 % | 737300 |
+| 8.0 h | 66 % | 666600 |
 
-- Any logic gated on battery percentage will never fire.
-- Runtime has to be estimated by integrating `current_ua` ourselves.
-- A metrics payload reporting `"battery": 100` is meaningless on this hardware.
+≈ **4.2 %/h**, i.e. **~24 h from full** on a single charge while recording
+continuously to disk.
+
+So battery-percentage logic *is* implementable — but it reacts slowly. Anything
+that needs a fast signal (a sudden load, a failing cell) has to read
+`CURRENT_NOW`, which updates immediately.
+
+Note the two estimates disagree: 53 mA against a nominal 1010 mAh predicts
+~19 h, while the observed drain gives ~24 h. The pack is likely larger than the
+nominal figure. Prefer the observed rate.
 
 ## Still open
 
