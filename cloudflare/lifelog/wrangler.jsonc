@@ -6,6 +6,13 @@
 
   "observability": { "enabled": true },
 
+  // Cloudflare Access can only protect a hostname in a zone you own, so the
+  // Worker has to leave *.workers.dev to sit behind the same Service Auth
+  // policy as the Hermes gateway.
+  "routes": [
+    { "pattern": "lifelog.mantaroh.org", "custom_domain": true }
+  ],
+
   // Audio blobs. The segment id is the object key, which makes an upload
   // idempotent at the storage layer — a device retry overwrites itself.
   "r2_buckets": [
