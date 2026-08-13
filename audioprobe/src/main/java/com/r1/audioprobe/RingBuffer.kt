@@ -7,10 +7,10 @@ package com.r1.audioprobe
  * press the button while already mid-sentence. Without this the query would
  * begin at the press and lose the opening words.
  *
- * Sized to hold the two minutes of context a question can ask for, plus slack:
- * 150 s at 16 kHz mono PCM16 is 4.8 MB, which is cheap enough to keep in
- * memory and means nothing has to touch the disk at all when the recorder is
- * running query-only.
+ * Sized to hold the two minutes of context a question can ask for, plus slack.
+ * At 48 kHz mono PCM16 that is 14.4 MB — three times what it cost at 16 kHz,
+ * and still small next to the heap, so the window stayed at 150 s rather than
+ * being traded away for the sample rate.
  */
 class RingBuffer(private val sampleRate: Int, seconds: Int = 150) {
 

@@ -34,6 +34,12 @@ import java.util.TimeZone
 class Uploader(
     private val settings: UploadSettings,
     private val metrics: Metrics,
+    /**
+     * Read at upload time rather than captured once: the recorder negotiates
+     * its rate against the device and may not get the one it asked for, and a
+     * segment mislabelled here is a segment a future decoder resamples wrongly.
+     */
+    private val sampleRate: () -> Int,
     private val network: () -> NetworkState,
 ) {
 
@@ -110,8 +116,8 @@ class Uploader(
             append(segmentId)
             append("?device_id=").append(enc(settings.deviceId))
             append("&started_at=").append(enc(startedAt))
-            append("&kind=lifelog&sample_rate=16000&codec=")
-            append(if (opus) "opus" else "wav")
+            append("&kind=lifelog&sample_rate=").append(sampleRate())
+            append("&codec=").append(if (opus) "opus" else "wav")
         }
 
         var connection: HttpURLConnection? = null
@@ -194,7 +200,7 @@ class Uploader(
             append("?device_id=").append(enc(settings.deviceId))
             append("&started_at=").append(enc(stamp.format(Date(startedAtMs))))
             append("&kind=").append(kind)
-            append("&codec=wav&sample_rate=16000&sync=1")
+            append("&codec=wav&sample_rate=").append(sampleRate()).append("&sync=1")
         }
 
         var connection: HttpURLConnection? = null

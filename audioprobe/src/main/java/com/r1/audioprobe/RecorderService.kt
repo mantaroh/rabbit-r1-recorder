@@ -66,8 +66,13 @@ class RecorderService : Service() {
 
         const val EXTRA_OPUS = "opus"
 
-        /** Speech at 16 kHz mono stays intelligible well below this. */
-        private const val OPUS_BITRATE = 16_000
+        /**
+         * 32 kbps is transparent enough for speech at 48 kHz and keeps a year
+         * of continuous recording near 126 GB. The bit rate is the knob that
+         * decides what the archive costs; the sample rate below decides what
+         * is in it at all.
+         */
+        private const val OPUS_BITRATE = 32_000
 
         /**
          * How much of the conversation before the question goes up with it.
@@ -76,8 +81,17 @@ class RecorderService : Service() {
          */
         private const val CONTEXT_MS = 120_000L
 
-        /** Preferred capture format; fallbacks are logged if it is unavailable. */
-        private const val TARGET_RATE = 16_000
+        /**
+         * Preferred capture format; fallbacks are logged if it is unavailable.
+         *
+         * 48 kHz, not the 16 kHz this started with. Sample rate is the one
+         * decision that cannot be revisited: a recording band-limited to 8 kHz
+         * stays band-limited forever, whatever transcribes it later. The
+         * device's audio policy advertises 8000/16000/32000/44100/48000 on the
+         * built-in mic, and Opus encodes natively at 48 kHz, so the whole path
+         * runs without a resampler.
+         */
+        private const val TARGET_RATE = 48_000
 
         private const val SAMPLE_INTERVAL_MS = 30_000L
 
@@ -278,7 +292,7 @@ class RecorderService : Service() {
         // Uploading runs on its own thread: a slow or stalled network must
         // never delay a read from AudioRecord, which is the one thing in this
         // service that cannot be late.
-        uploader = Uploader(uploadSettings, metrics) { netState }
+        uploader = Uploader(uploadSettings, metrics, { sampleRate }) { netState }
         uploadThread = Thread({ uploadLoop() }, "probe-upload").apply { start() }
 
         return START_STICKY
@@ -341,7 +355,7 @@ class RecorderService : Service() {
     // ------------------------------------------------------------ capture ---
 
     private fun openRecorder(): Boolean {
-        for (rate in intArrayOf(TARGET_RATE, 44_100, 48_000)) {
+        for (rate in intArrayOf(TARGET_RATE, 44_100, 16_000)) {
             val minBuffer = AudioRecord.getMinBufferSize(
                 rate,
                 AudioFormat.CHANNEL_IN_MONO,

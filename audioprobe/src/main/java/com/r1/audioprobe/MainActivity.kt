@@ -58,7 +58,10 @@ class MainActivity : Activity() {
     // recover — so the failure mode of forgetting to press a button has to be
     // "recorded something", not "recorded nothing".
     private var writeAudio = true
-    private var useOpus = false
+    // Opus at 48 kHz keeps the full band the mic gives us for about an eighth
+    // of the bytes of PCM. Storing the archive uncompressed would cost more to
+    // preserve less, since the loss that matters happened at capture.
+    private var useOpus = true
 
     private val tick = object : Runnable {
         override fun run() {
@@ -133,10 +136,10 @@ class MainActivity : Activity() {
                 if (useVoiceRecognition) "Source: VOICE_RECOGNITION" else "Source: MIC"
         }, wide())
 
-        column.addView(toggle("Codec: WAV") {
+        column.addView(toggle("Codec: Opus") {
             useOpus = !useOpus
             (it as Button).text = if (useOpus) "Codec: Opus" else "Codec: WAV"
-        }, wide())
+        }.also { it.text = if (useOpus) "Codec: Opus" else "Codec: WAV" }, wide())
 
         column.addView(heading("Upload target"))
         baseUrlField = field(column, "Base URL", masked = false)
