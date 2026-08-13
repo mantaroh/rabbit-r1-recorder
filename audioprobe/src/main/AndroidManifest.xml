@@ -14,6 +14,9 @@
     <!-- Under test: whether the audio path survives screen-off without it. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Confirms the gesture when the screen is dark. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:allowBackup="false"
         android:label="R1 Audio Probe"
@@ -39,6 +42,18 @@
             android:name=".RecorderService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Shown the instant the gesture arms, since the press itself dims
+             the screen and otherwise nothing acknowledges it. -->
+        <activity
+            android:name=".QueryActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
 
         <!-- The only way to observe the side button; see KeyService. -->
         <service

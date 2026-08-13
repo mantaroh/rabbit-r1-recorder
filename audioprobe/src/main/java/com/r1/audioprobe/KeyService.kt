@@ -68,16 +68,23 @@ class KeyService : AccessibilityService() {
             if (isDouble) {
                 doublePresses += 1
                 lastDownAt = 0 // a third press starts a new pair, not a chain
-                runCatching { onDoublePress?.invoke(now) }
-                    .onFailure { Log.e(TAG, "double-press handler failed", it) }
             } else {
                 lastDownAt = now
             }
+
+            // Recorded before dispatching, so the log reads in causal order:
+            // the handler writes its own events, and firing first made the
+            // state change appear ahead of the press that caused it.
             Log.i(TAG, "KeyService key=$name gap=${since ?: "-"}ms double=$isDouble")
             metrics.write(
                 "keyservice_key",
                 mapOf("key" to name, "code" to event.keyCode, "gap_ms" to since, "double" to isDouble),
             )
+
+            if (isDouble) {
+                runCatching { onDoublePress?.invoke(now) }
+                    .onFailure { Log.e(TAG, "double-press handler failed", it) }
+            }
         }
 
         // Never consume: the launcher must keep behaving exactly as before.

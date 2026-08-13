@@ -19,6 +19,8 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.VibratorManager
 import android.util.Log
 import java.io.File
 import java.text.SimpleDateFormat
@@ -129,25 +131,50 @@ class RecorderService : Service() {
      */
     @Volatile private var netState = Uploader.NetworkState(available = false, unmetered = false)
 
+    /**
+     * Which networks are currently usable. Keyed by network because more than
+     * one can exist at once — losing Wi-Fi while cellular is up is not going
+     * offline, and treating it that way stranded a 325-segment queue on a
+     * device that could ping the server fine.
+     */
+    private val usableNetworks = java.util.concurrent.ConcurrentHashMap<Network, Boolean>()
+
+    private fun recomputeNetState() {
+        val unmetered = usableNetworks.values.any { it }
+        netState = Uploader.NetworkState(
+            available = usableNetworks.isNotEmpty(),
+            unmetered = unmetered,
+        )
+    }
+
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
             val unmetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
             val usable = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                 caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            netState = Uploader.NetworkState(available = usable, unmetered = unmetered)
+
+            if (usable) usableNetworks[network] = unmetered else usableNetworks.remove(network)
+            recomputeNetState()
+
             metrics.write(
                 "network",
                 mapOf(
                     "transport" to transportName(caps),
                     "unmetered" to unmetered,
                     "validated" to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                    "usable_count" to usableNetworks.size,
                 )
             )
         }
 
         override fun onLost(network: Network) {
-            netState = Uploader.NetworkState(available = false, unmetered = false)
-            metrics.write("network", mapOf("transport" to "none"))
+            // Only this network went away; others may still carry traffic.
+            usableNetworks.remove(network)
+            recomputeNetState()
+            metrics.write(
+                "network",
+                mapOf("transport" to "lost", "usable_count" to usableNetworks.size),
+            )
         }
     }
 
@@ -160,7 +187,22 @@ class RecorderService : Service() {
         query = QueryController(metrics) { from, to -> handleQueryUtterance(from, to) }
         // The accessibility service is the only thing that sees the side
         // button; it hands the gesture straight over.
-        KeyService.onDoublePress = { now -> query.onDoublePress(now) }
+        KeyService.onDoublePress = { now ->
+            val before = query.state
+            query.onDoublePress(now)
+            if (before == QueryController.State.LIFELOG &&
+                query.state == QueryController.State.ARMED
+            ) {
+                // The press dimmed the screen, so without this the device gives
+                // no sign it is listening until the answer lands.
+                buzz()
+                startActivity(
+                    Intent(this, QueryActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+            }
+        }
         createChannel()
     }
 
@@ -232,10 +274,38 @@ class RecorderService : Service() {
     private fun uploadLoop() {
         val dir = audioDir()
         while (!stop) {
+            // Re-read the system before every pass. The callback is the fast
+            // signal, but it is not guaranteed to fire on every transition:
+            // a Wi-Fi reconnect once went unreported and left the uploader
+            // convinced it was offline while the device could ping the server.
+            runCatching { syncNetworkFromSystem() }
             runCatching { uploader?.pump(dir, openSegment) }
                 .onFailure { Log.e(TAG, "upload pass failed", it) }
             runCatching { Thread.sleep(UPLOAD_INTERVAL_MS) }
         }
+    }
+
+    /** Ground truth, straight from ConnectivityManager. */
+    private fun syncNetworkFromSystem() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val live = HashMap<Network, Boolean>()
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            val usable = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            if (usable) {
+                live[network] = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+            }
+        }
+        if (live.keys != usableNetworks.keys) {
+            metrics.write(
+                "network_resync",
+                mapOf("was" to usableNetworks.size, "now" to live.size),
+            )
+        }
+        usableNetworks.clear()
+        usableNetworks.putAll(live)
+        recomputeNetState()
     }
 
     override fun onDestroy() {
@@ -448,6 +518,16 @@ class RecorderService : Service() {
                 Log.e(TAG, "chat client unavailable", it)
                 metrics.write("query", mapOf("state" to "no_chat_client"))
             }
+    }
+
+    /** Confirms the gesture without asking the user to look at the screen. */
+    private fun buzz() {
+        runCatching {
+            val manager = getSystemService(VibratorManager::class.java)
+            manager?.defaultVibrator?.vibrate(
+                VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE),
+            )
+        }
     }
 
     private fun closeSegment(writer: SegmentWriter) {

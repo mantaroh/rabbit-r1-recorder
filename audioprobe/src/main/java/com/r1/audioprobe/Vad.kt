@@ -22,8 +22,16 @@ class Vad(
     private val triggerMultiple: Double = 4.0,
     /** Never trigger below this, however quiet the room gets. */
     private val absoluteFloor: Double = 0.006,
-    /** Silence this long ends an utterance. */
-    private val hangoverMs: Long = 1_200,
+    /**
+     * Silence this long ends an utterance.
+     *
+     * The design suggested 1200 ms; measured against real Japanese speech that
+     * cuts sentences off mid-thought — "先ほどの話は…" ended after 3.9 s with
+     * only the opening captured. Pauses within a Japanese sentence run longer
+     * than that, so the wait is 2 s. It costs 800 ms of latency on every
+     * question, which is the right trade against losing half of one.
+     */
+    private val hangoverMs: Long = 2_000,
 ) {
 
     /** Rises fast, falls slowly: a burst of speech must not drag the floor up. */

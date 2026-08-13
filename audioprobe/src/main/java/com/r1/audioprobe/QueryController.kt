@@ -35,12 +35,19 @@ class QueryController(
 
         /** A runaway capture must not run until the disk fills. */
         private const val MAX_UTTERANCE_MS = 30_000L
+
+        /** Read by the feedback screen, which holds no handle on the service. */
+        @Volatile var uiState: State = State.LIFELOG
     }
 
     enum class State { LIFELOG, ARMED, CAPTURING, PROCESSING }
 
     @Volatile var state = State.LIFELOG
-        private set
+        private set(value) {
+            field = value
+            uiState = value
+        }
+
 
     private var armedAt = 0L
     private var captureFrom = 0L

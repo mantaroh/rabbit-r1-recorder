@@ -170,6 +170,29 @@ adb shell settings put secure accessibility_enabled 1
 Keep the launcher's own service in that list — replacing it would break the
 device's own button handling.
 
+**Reinstalling the APK silently stops key delivery.** The service rebinds and
+logs `connected, flags=32`, but `onKeyEvent` is never called again; the
+launcher keeps receiving the same presses, so the device looks fine. Toggling
+the service off and on restores it, and every install has to do this:
+
+```
+adb shell settings put secure enabled_accessibility_services <launcher-only>
+adb shell settings put secure enabled_accessibility_services <launcher>:<ours>
+```
+
+Also: the button is the power key, so the launcher dims the screen on every
+press. The query flow returns `false` from `onKeyEvent` deliberately — consuming
+it would break the launcher — so that behaviour is inherited. Suppressing it
+would mean consuming the second press of a pair.
+
+### VAD timing, measured
+
+The design proposed 1200 ms of silence to end an utterance. On real Japanese
+speech that cuts sentences off: "先ほどの話は…" ended after 3.9 s with only the
+opening words captured. Pauses inside a Japanese sentence are longer than that.
+2000 ms holds the sentence together, at the cost of 800 ms more latency per
+question.
+
 ## Still open
 
 - **Without the wake lock.** Everything above holds *with* a partial wake lock.
