@@ -69,6 +69,12 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/stats") {
       return stats(env);
     }
+    if (request.method === "GET" && url.pathname === "/v1/debug/whisper") {
+      return debugWhisper(env, url);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/backfill") {
+      return backfill(env, url);
+    }
 
     // Same auth as everything else, so the agent uses the token it already has.
     if (url.pathname === "/mcp") {
@@ -226,22 +232,16 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       const bytes = new Uint8Array(
         await (await env.BUCKET.get(key))!.arrayBuffer(),
       );
-      const text = await runWhisper(bytes, env);
-      await env.DB.prepare(
-        `UPDATE segments
-            SET transcript = ?1, status = 'transcribed',
-                transcribed_at = ?2, error = NULL
-          WHERE segment_id = ?3`,
-      )
-        .bind(text, new Date().toISOString(), segmentId)
-        .run();
+      const t = await runWhisper(bytes, env);
+      await storeTranscript(env, segmentId, t);
 
       return json({
         segment_id: segmentId,
         key,
         bytes: object?.size ?? null,
         status: "transcribed",
-        transcript: text,
+        transcript: t.text,
+        speech_ratio: t.speechRatio,
         duplicate: false,
       });
     } catch (error) {
@@ -305,38 +305,86 @@ async function transcribe(message: TranscribeMessage, env: Env): Promise<void> {
   }
 
   const bytes = new Uint8Array(await object.arrayBuffer());
-  const text = await runWhisper(bytes, env);
+  const t = await runWhisper(bytes, env);
+  await storeTranscript(env, message.segmentId, t);
+}
 
+async function storeTranscript(env: Env, segmentId: string, t: Transcription) {
   await env.DB.prepare(
     `UPDATE segments
-        SET transcript = ?1, status = 'transcribed',
-            transcribed_at = ?2, error = NULL
-      WHERE segment_id = ?3`,
+        SET transcript = ?1, status = 'transcribed', transcribed_at = ?2,
+            speech_ratio = ?3, language = ?4, language_prob = ?5,
+            word_count = ?6, error = NULL
+      WHERE segment_id = ?7`,
   )
-    .bind(text, new Date().toISOString(), message.segmentId)
+    .bind(
+      t.text,
+      new Date().toISOString(),
+      t.speechRatio,
+      t.language,
+      t.languageProb,
+      t.wordCount,
+      segmentId,
+    )
     .run();
+}
+
+interface Transcription {
+  text: string;
+  /** Fraction of the segment the model actually placed words in. */
+  speechRatio: number | null;
+  language: string | null;
+  languageProb: number | null;
+  wordCount: number | null;
 }
 
 /**
  * The two Whisper models on Workers AI take different input shapes — the turbo
  * model wants base64, the original wants a byte array — and the docs do not
  * spell either out. Try the cheaper/faster one, fall back rather than lose the
- * segment over an input-format mismatch.
+ * segment over an input-format mismatch. Only turbo returns the per-segment
+ * timings the quality signals are derived from.
  */
-async function runWhisper(bytes: Uint8Array, env: Env): Promise<string> {
+async function runWhisper(bytes: Uint8Array, env: Env): Promise<Transcription> {
   try {
     const result: any = await env.AI.run("@cf/openai/whisper-large-v3-turbo" as any, {
       audio: base64(bytes),
     } as any);
-    const text = result?.text ?? result?.transcription_info?.text;
-    if (typeof text === "string") return text.trim();
-    throw new Error("turbo returned no text: " + JSON.stringify(result).slice(0, 200));
+    const text = result?.text;
+    if (typeof text !== "string") {
+      throw new Error("turbo returned no text: " + JSON.stringify(result).slice(0, 200));
+    }
+
+    const info = result?.transcription_info ?? {};
+    const duration = Number(info?.duration) || null;
+    const spans: any[] = Array.isArray(result?.segments) ? result.segments : [];
+    const spoken = spans.reduce((total, s) => {
+      const start = Number(s?.start), end = Number(s?.end);
+      return total + (Number.isFinite(start) && Number.isFinite(end) && end > start ? end - start : 0);
+    }, 0);
+
+    return {
+      text: text.trim(),
+      speechRatio: duration ? Math.min(1, spoken / duration) : null,
+      language: typeof info?.language === "string" ? info.language : null,
+      languageProb: Number.isFinite(info?.language_probability)
+        ? Number(info.language_probability)
+        : null,
+      wordCount: Number.isFinite(result?.word_count) ? Number(result.word_count) : null,
+    };
   } catch (error) {
     console.warn("whisper turbo failed, falling back", error);
     const result: any = await env.AI.run("@cf/openai/whisper" as any, {
       audio: [...bytes],
     } as any);
-    return String(result?.text ?? "").trim();
+    // The fallback reports no timings, so it carries no quality signal.
+    return {
+      text: String(result?.text ?? "").trim(),
+      speechRatio: null,
+      language: null,
+      languageProb: null,
+      wordCount: Number.isFinite(result?.word_count) ? Number(result.word_count) : null,
+    };
   }
 }
 
@@ -361,21 +409,39 @@ async function getContext(env: Env, url: URL): Promise<Response> {
   return json(await contextData(env, at, intParam(url, "before_sec") ?? 120));
 }
 
-export async function contextData(env: Env, at: string, beforeSec: number) {
+/**
+ * Segments below this much measured speech are Whisper hallucinating over
+ * silence. Measured on a night of real recording:
+ *
+ *   asleep        ratio 0.012 – 0.060, language en at 0.38 – 0.53
+ *   conversation  ratio 0.589 – 0.707, language ja at 0.99 – 1.00
+ *
+ * An order of magnitude apart, so 0.15 sits in open space rather than on a
+ * boundary. Rows are kept and filtered at read time, which lets the threshold
+ * be revisited without paying to transcribe again.
+ *
+ * Rows written before the signal existed have `speech_ratio IS NULL` and are
+ * let through: dropping them would silently erase history.
+ */
+const MIN_SPEECH_RATIO = 0.15;
+
+export async function contextData(env: Env, at: string, beforeSec: number, minRatio?: number) {
   const atEpoch = Math.floor(Date.parse(at) / 1000);
   const fromEpoch = atEpoch - beforeSec;
   const from = new Date(fromEpoch * 1000).toISOString();
+  const floor = minRatio ?? MIN_SPEECH_RATIO;
 
   const rows = await env.DB.prepare(
-    `SELECT segment_id, started_at, ended_at, transcript
+    `SELECT segment_id, started_at, ended_at, transcript, speech_ratio
        FROM segments
       WHERE status = 'transcribed'
         AND transcript IS NOT NULL AND transcript <> ''
         AND started_epoch >= ?1 AND started_epoch <= ?2
+        AND (speech_ratio IS NULL OR speech_ratio >= ?3)
       ORDER BY started_epoch ASC
       LIMIT 200`,
   )
-    .bind(fromEpoch, atEpoch)
+    .bind(fromEpoch, atEpoch, floor)
     .all();
 
   const segments = rows.results ?? [];
@@ -383,6 +449,7 @@ export async function contextData(env: Env, at: string, beforeSec: number) {
     at,
     before_sec: beforeSec,
     from,
+    min_speech_ratio: floor,
     count: segments.length,
     // A single blob is what an agent actually wants to read.
     text: segments.map((r: any) => r.transcript).join(" ").trim(),
@@ -408,23 +475,25 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
 
   const rows = useFts
     ? await env.DB.prepare(
-        `SELECT f.segment_id, f.started_at, s.transcript
+        `SELECT f.segment_id, f.started_at, s.transcript, s.speech_ratio
            FROM segments_fts f
            JOIN segments s ON s.segment_id = f.segment_id
           WHERE segments_fts MATCH ?1
-          ORDER BY f.started_at DESC
+            AND (s.speech_ratio IS NULL OR s.speech_ratio >= ?3)
+          ORDER BY s.started_epoch DESC
           LIMIT ?2`,
       )
-        .bind(`"${term.replace(/"/g, '""')}"`, limit)
+        .bind(`"${term.replace(/"/g, '""')}"`, limit, MIN_SPEECH_RATIO)
         .all()
     : await env.DB.prepare(
-        `SELECT segment_id, started_at, transcript
+        `SELECT segment_id, started_at, transcript, speech_ratio
            FROM segments
           WHERE transcript LIKE ?1 ESCAPE '\\'
-          ORDER BY started_at DESC
+            AND (speech_ratio IS NULL OR speech_ratio >= ?3)
+          ORDER BY started_epoch DESC
           LIMIT ?2`,
       )
-        .bind(`%${term.replace(/[\\%_]/g, (c) => "\\" + c)}%`, limit)
+        .bind(`%${term.replace(/[\\%_]/g, (c) => "\\" + c)}%`, limit, MIN_SPEECH_RATIO)
         .all();
 
   return {
@@ -433,6 +502,100 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
     count: rows.results?.length ?? 0,
     results: rows.results ?? [],
   };
+}
+
+/**
+ * Returns Whisper's raw reply for an already-stored segment.
+ *
+ * Only `text` is kept in the database, so it is not otherwise visible whether
+ * the model reports a no-speech signal. If it does, silence can be rejected on
+ * the server without any change on the device.
+ */
+async function debugWhisper(env: Env, url: URL): Promise<Response> {
+  const segmentId = url.searchParams.get("segment_id");
+  if (!segmentId) return json({ error: "segment_id required" }, 400);
+
+  const row = await env.DB.prepare(
+    `SELECT r2_key FROM segments WHERE segment_id = ?1`,
+  )
+    .bind(segmentId)
+    .first<{ r2_key: string }>();
+  if (!row) return json({ error: "unknown segment" }, 404);
+
+  const object = await env.BUCKET.get(row.r2_key);
+  if (!object) return json({ error: "audio missing" }, 404);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+
+  // Report the derived signals, not raw JSON: the raw reply runs to kilobytes
+  // of per-word timings and truncating it makes the output unparseable.
+  const t = await runWhisper(bytes, env);
+
+  // Optionally persist, so a backfill can reuse this path.
+  if (url.searchParams.get("store") === "1") {
+    await storeTranscript(env, segmentId, t);
+  }
+
+  return json({
+    segment_id: segmentId,
+    key: row.r2_key,
+    text: t.text.slice(0, 300),
+    speech_ratio: t.speechRatio,
+    language: t.language,
+    language_prob: t.languageProb,
+    word_count: t.wordCount,
+    stored: url.searchParams.get("store") === "1",
+  });
+}
+
+/**
+ * Re-transcribes rows that predate the quality signals, in small batches.
+ *
+ * Kept as an explicit admin call rather than something automatic: it re-runs
+ * Whisper, so it costs money, and the caller should decide when and how much.
+ */
+async function backfill(env: Env, url: URL): Promise<Response> {
+  const limit = Math.min(intParam(url, "limit") ?? 20, 50);
+
+  const rows = await env.DB.prepare(
+    `SELECT segment_id, r2_key FROM segments
+      WHERE speech_ratio IS NULL AND status = 'transcribed'
+      ORDER BY started_epoch ASC
+      LIMIT ?1`,
+  )
+    .bind(limit)
+    .all<{ segment_id: string; r2_key: string }>();
+
+  const todo = rows.results ?? [];
+  let done = 0;
+  let failed = 0;
+
+  for (const row of todo) {
+    try {
+      const object = await env.BUCKET.get(row.r2_key);
+      if (!object) {
+        // Audio gone; mark it so the backfill does not retry it forever.
+        await env.DB.prepare(
+          `UPDATE segments SET speech_ratio = -1 WHERE segment_id = ?1`,
+        )
+          .bind(row.segment_id)
+          .run();
+        failed += 1;
+        continue;
+      }
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      await storeTranscript(env, row.segment_id, await runWhisper(bytes, env));
+      done += 1;
+    } catch (error) {
+      console.error("backfill failed", row.segment_id, error);
+      failed += 1;
+    }
+  }
+
+  const remaining = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM segments WHERE speech_ratio IS NULL AND status = 'transcribed'`,
+  ).first<{ n: number }>();
+
+  return json({ requested: limit, done, failed, remaining: remaining?.n ?? 0 });
 }
 
 async function stats(env: Env): Promise<Response> {
