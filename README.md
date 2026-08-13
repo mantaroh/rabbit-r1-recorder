@@ -15,11 +15,13 @@ not assumed.
 | `core/` | Android library: the motorised camera arm (`R1Motor`) and Camera2 capture, shared by the apps |
 | `app/` | **R1 Camera** — preview, shutter, and direct control of the lens angle |
 | `hermes/` | **R1 Hermes** — chat client for a Hermes gateway: streaming replies, tool activity, approvals, push-to-talk, photo attachments |
-| `audioprobe/` | **R1 Audio Probe** — always-on capture harness used to prove a 24/7 lifelog is viable on this hardware |
+| `audioprobe/` | **R1 Audio Probe** — double-press the side button to ask a question about the conversation around you |
 | `cloudflare/lifelog/` | Worker that ingests audio into R2, transcribes it with Workers AI Whisper into D1, and exposes it to the agent over MCP |
 
 Reference docs:
 
+- [`DESIGN.md`](DESIGN.md) — how the system works and why it diverges from the
+  original spec
 - [`hermes/PROTOCOL.md`](hermes/PROTOCOL.md) — the Hermes gateway wire protocol,
   reverse-engineered from the agent source and verified against a live server
 - [`hermes/UI-SPEC.md`](hermes/UI-SPEC.md) — UI design for a 240×320 dp panel
@@ -40,34 +42,32 @@ actually does:
 | Microphone | 16 kHz mono PCM captures natively |
 | Battery | ~1010 mAh; continuous recording draws ~53 mA → 20+ hours |
 
-## Always-on capture
+## Asking the device a question
 
-`audioprobe` ran unattended on battery with the screen off:
-
-- **no frame loss** — captured frames matched the expected 10/s exactly
-- **no stalls, no reinitialisations, no write errors**
-- continuous disk writing costs **essentially nothing** in power (52.5 mA with,
-  51.6 mA without), so VAD is worth doing for upload volume and transcription
-  cost, not for battery
-- 107 MB/h as raw PCM16
-
-## Lifelog pipeline
+Double-press the side button, ask out loud, and the answer comes back from a
+Hermes agent that has been handed the two minutes of conversation preceding the
+question.
 
 ```
-R1 ──PUT /v1/segments/{id}──▶ Worker ──▶ R2 (audio)
-                                 │
-                                 └──▶ Queue ──▶ Workers AI Whisper ──▶ D1
-                                                                        │
-                        Hermes agent ◀── MCP: lifelog_recent / _search ─┘
+R1 ──PUT /v1/segments/{id}?sync=1──▶ Worker ──▶ R2 (audio, 1 day)
+                                        │
+                                        └──▶ Workers AI Whisper ──▶ D1 (1 day)
+                                                                     │
+                       Hermes agent ◀── MCP: lifelog_recent / _search ┘
 ```
 
-The segment id is the R2 object key, so a device retry is idempotent at the
-storage layer. `?sync=1` skips the queue for the case that needs an answer now —
-measured at 7.6 s end to end for 60 s of audio.
+Nothing is recorded to disk and nothing is uploaded until a question is asked.
+Audio lives in a 150-second in-memory ring buffer and is otherwise overwritten
+in place. Both stores expire after a day.
 
-Because the agent reaches the lifelog through MCP tools, resolving "さっきの話"
-needs no dedicated query API and no context plumbing on the device: the agent
-decides on its own to go and look.
+Because the agent reaches the transcripts through MCP tools, resolving "さっき
+の話" needs no dedicated query API and no context plumbing on the device: the
+agent decides on its own to go and look.
+
+This started as a continuous 24/7 lifelog, which worked — 18 hours unattended
+on battery, no frame loss, no stalls, 107 MB/h — and was then removed on
+purpose. [`DESIGN.md`](DESIGN.md) records why, and what continuous transcription
+of a quiet room actually returns.
 
 ## Building
 
