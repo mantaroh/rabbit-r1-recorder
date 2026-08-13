@@ -54,6 +54,42 @@ Opus is needed for the *link*, not for the disk.
 An order of magnitude separates speech from the noise floor, so a VAD threshold
 has plenty of headroom.
 
+### How much of a day is actually speech
+
+From 589 segments carrying Whisper's per-segment timings:
+
+| Hour, JST | Voiced share |
+| --- | --- |
+| 03 (asleep, 1 segment) | 3.2 % |
+| 12 – 19 (workday) | 4.4 – 19.9 %, mean ≈ 11 % |
+| 20 – 23 (home) | 10.2 – 52.8 %, mean ≈ 31 % |
+
+**≈ 11 % of a full day including sleep.** This is the number that decides
+whether a lifelog is affordable, and it went unmeasured while the lifelog was
+running ungated: the VAD in this module has only ever gated the question path,
+never the recording.
+
+Treat 11 % as a floor for what an energy VAD would pass — it is Whisper's word
+coverage, and an RMS gate additionally passes fans, traffic and keystrokes.
+
+### Workers AI silently degrades to a weaker model
+
+For 12.5 hours straight — 2026-08-12 23:08 to 08-13 11:39 — every call to
+`@cf/openai/whisper-large-v3-turbo` failed and fell through to `@cf/openai/whisper`.
+749 of 1348 segments took the fallback.
+
+Nothing looked wrong. Transcripts kept arriving and the device saw HTTP 200s.
+Only the fallback reports no per-segment timings, so those rows carry
+`speech_ratio IS NULL` — and since the hallucination filter deliberately lets
+NULL through rather than erase history, they are neither filtered nor
+distinguishable in a query result.
+
+The lesson is not to remove the fallback: a weaker transcript beats a lost
+segment. It is that **a fallback which reports nothing is indistinguishable
+from a healthy path**, and this one ran for half a day before a query about
+something else turned it up. The ratio of NULL to non-NULL `speech_ratio` over
+a recent window is the cheapest available health check.
+
 ### Hardware input (from `:hermes`'s probe screen)
 
 | Control | Event |

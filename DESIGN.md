@@ -91,20 +91,56 @@ An upload deferred until the device found Wi-Fi still expires on schedule.
 
 The continuous version worked. It ran 18 hours unattended on battery with no
 dropped frames, and the agent could summarise an arbitrary hour of the day. It
-was removed anyway, for reasons that only became visible once it was running:
+was removed because the question feature does not need it — two minutes of
+context on demand does the same work — and because what it produced was mostly
+noise:
 
 - **Most of it was fiction.** Whisper, given a quiet room, returns its training
   data: `Thank you.`, `ご視聴ありがとうございました`,
   `Продолжение следует...`, `Hello everyone, welcome back to my channel`. Out
   of 1254 segments, over 100 contained "Thank you". The 3 a.m. hour was
   entirely hallucinated.
-- **It cost real money to store fiction.** 24/7 transcription is ~$22/month
-  against under $1 for questions only.
-- **It uploaded 2.4 GB a day** — fine on Wi-Fi, absurd on a SIM.
+- **It cost ~$22/month and uploaded 2.4 GB a day** — fine on Wi-Fi, absurd on
+  a SIM.
 
-The hallucination problem is now filtered server-side (below), so the lifelog
-could come back. `Lifelog: ON` restores it. But the question feature never
-needed it: two minutes of context on demand does the same work.
+**That cost figure is for an ungated pipeline, and should not be used as an
+argument against a lifelog as such.** The VAD was written, and it was only ever
+wired to the question path — `query.tick(...)`. The lifelog wrote and shipped
+every frame, silence included, which is also what generated the hallucinations
+above: no segment of pure silence would have been uploaded had the VAD gated
+the write. See below for what gating it would actually have saved.
+
+The hallucination problem is now filtered server-side, so the lifelog could
+come back. `Lifelog: ON` restores it — ungated, until the VAD is moved in front
+of the write path.
+
+## What a VAD in front would change
+
+Measured from the 589 segments in the last 24 hours that carry Whisper's own
+per-segment timings (the rest fell to a fallback model that reports none):
+
+| Hour, JST | Voiced share of recorded audio |
+| --- | --- |
+| 03 (asleep, 1 segment) | 3.2 % |
+| 12 – 19 (workday) | 4.4 – 19.9 %, mean ≈ 11 % |
+| 20 – 23 (home, talking) | 10.2 – 52.8 %, mean ≈ 31 % |
+
+Extrapolated across a full day including sleep, **roughly 11 % of what the
+device records is speech.** Transcribing only that costs about $2.4/month
+rather than $22, and ships ~260 MB/day rather than 2.4 GB.
+
+Two things stop that from being the honest saving:
+
+- `speech_ratio` is Whisper's word coverage, not an energy VAD's decision. An
+  RMS gate also passes air conditioning, traffic and keyboards. The measured
+  headroom is good — background RMS 352 against 2440–3536 for speech — but
+  a noisy room passes more than 11 %.
+- A 2 s hangover plus pre-roll pads every utterance, so scattered short
+  remarks cost far more than their voiced seconds.
+
+Call it **70–85 % saved, so $3–7/month**. Not $22, and not $2.4. The point
+stands either way: gating the lifelog on speech changes its cost by an order of
+magnitude, and that was never tried before switching it off.
 
 ## Rejecting hallucinated silence
 
@@ -132,7 +168,8 @@ ever be revised by paying to re-run the whole corpus.
 | Workers AI Whisper | $0.00051 / audio minute |
 | R2 | $0.015/GB-month, egress free, 10 GB free tier |
 | Questions at ~2.5 min of audio each | well under $1/month |
-| The continuous lifelog it replaced | ~$22/month |
+| The continuous lifelog it replaced, ungated | ~$22/month |
+| The same lifelog with the VAD in front | ~$3–7/month, estimated |
 
 ## Operational notes
 
@@ -165,6 +202,9 @@ a device that could ping the server in 39 ms.
 
 ## What is not built
 
+- **VAD in front of the lifelog write path.** The gate exists and drives the
+  question flow; it has never gated the recording. Anyone turning
+  `Lifelog: ON` back on should wire it first — see above for the arithmetic.
 - **Opus.** Implemented and building, toggle off. With the lifelog gone the
   volume no longer justifies the risk of an untested codec path.
 - **TTS.** Answers are read, not spoken.
