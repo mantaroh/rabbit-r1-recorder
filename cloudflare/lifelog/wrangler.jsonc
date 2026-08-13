@@ -50,9 +50,9 @@
   },
 
   // Workers AI always runs against the real service, including in dev.
-  "ai": { "binding": "AI" },
+  "ai": { "binding": "AI" }
 
-  // Retention. R2 expires the audio itself through a bucket lifecycle rule
-  // (`expire-audio-1d`); this sweeps the rows, which R2 knows nothing about.
-  "triggers": { "crons": ["17 * * * *"] }
+  // No cron, and no R2 lifecycle rule on `audio/`. The recordings are the
+  // point of the system; see the note above RETENTION in src/index.ts before
+  // adding either back.
 }

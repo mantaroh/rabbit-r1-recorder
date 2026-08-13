@@ -33,11 +33,18 @@ interface TranscribeMessage {
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 /**
- * Kept in step with the R2 lifecycle rule on `audio/`. Deliberately measured
- * from the segment's own start time, not from when it arrived: an upload
- * deferred until the device found Wi-Fi should still expire on schedule.
+ * There is no retention policy, and adding one needs a decision, not a commit.
+ *
+ * The audio is the artefact this system exists to keep. Transcription is a
+ * side effect of today's models: the recording is what a better model, years
+ * from now, gets to re-read. Deleting it to save storage trades the asset for
+ * the receipt.
+ *
+ * A previous version expired both after a day — an R2 lifecycle rule on
+ * `audio/` and an hourly sweep of this table. Both are gone. If a budget
+ * eventually forces a policy, downsample or archive to a colder class; do not
+ * delete, and do not let the row outlive or predecease the object it names.
  */
-const RETENTION_SECONDS = 24 * 60 * 60;
 
 const CODEC_EXTENSIONS: Record<string, string> = {
   wav: "wav",
@@ -82,6 +89,12 @@ export default {
     if (request.method === "POST" && url.pathname === "/v1/admin/backfill") {
       return backfill(env, url);
     }
+    if (request.method === "GET" && url.pathname === "/v1/admin/reconcile") {
+      return reconcile(env);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/reindex") {
+      return reindex(env, url);
+    }
 
     // Same auth as everything else, so the agent uses the token it already has.
     if (url.pathname === "/mcp") {
@@ -93,27 +106,6 @@ export default {
     }
 
     return json({ error: "not found" }, 404);
-  },
-
-  /**
-   * Retention sweep.
-   *
-   * R2 expires the audio on its own through a bucket lifecycle rule, but it
-   * has no idea the database exists — without this the transcripts would
-   * outlive the recordings indefinitely, which is exactly the thing a
-   * one-day retention policy is meant to prevent.
-   */
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
-    const cutoff = Math.floor(Date.now() / 1000) - RETENTION_SECONDS;
-    const result = await env.DB.prepare(
-      `DELETE FROM segments WHERE started_epoch < ?1`,
-    )
-      .bind(cutoff)
-      .run();
-    console.log(
-      `retention sweep: removed ${result.meta?.changes ?? 0} rows older than ` +
-        new Date(cutoff * 1000).toISOString(),
-    );
   },
 
   async queue(batch: MessageBatch<TranscribeMessage>, env: Env): Promise<void> {
@@ -624,6 +616,159 @@ async function backfill(env: Env, url: URL): Promise<Response> {
   ).first<{ n: number }>();
 
   return json({ requested: limit, done, failed, remaining: remaining?.n ?? 0 });
+}
+
+/**
+ * Compares what is in R2 against what the database knows about, read-only.
+ *
+ * The recording is the asset and the row is only the index to it, so the two
+ * can drift in a way that costs nothing to store and everything to notice too
+ * late: an orphaned object is audio that no query will ever return and no
+ * transcription will ever run over. This says how much of that there is.
+ */
+async function reconcile(env: Env): Promise<Response> {
+  const known = await env.DB.prepare(`SELECT segment_id FROM segments`).all<{
+    segment_id: string;
+  }>();
+  const rows = new Set((known.results ?? []).map((r) => r.segment_id));
+
+  let objects = 0;
+  let bytes = 0;
+  let orphanCount = 0;
+  let orphanBytes = 0;
+  const orphans: string[] = [];
+  const seen = new Set<string>();
+
+  let cursor: string | undefined;
+  // 20 pages of 1000 is far more than this bucket holds; the cap only exists
+  // so a runaway listing cannot burn the whole subrequest budget.
+  for (let page = 0; page < 20; page += 1) {
+    const listed = await env.BUCKET.list({ prefix: "audio/", cursor, limit: 1000 });
+    for (const object of listed.objects) {
+      objects += 1;
+      bytes += object.size;
+      const id = object.key.split("/").pop()!.replace(/\.[^.]+$/, "");
+      seen.add(id);
+      if (!rows.has(id)) {
+        orphanCount += 1;
+        orphanBytes += object.size;
+        // Keys sort chronologically (audio/YYYY/MM/DD/…), so a bounded sample
+        // is enough to see which days lost their index.
+        if (orphans.length < 40) orphans.push(object.key);
+      }
+    }
+    if (!listed.truncated) {
+      cursor = undefined;
+      break;
+    }
+    cursor = listed.cursor;
+  }
+
+  const missing = [...rows].filter((id) => !seen.has(id));
+
+  return json({
+    r2_objects: objects,
+    r2_bytes: bytes,
+    r2_hours: +(objects / 60).toFixed(1),
+    d1_rows: rows.size,
+    // Audio that survived without an index: recoverable, but invisible.
+    orphan_objects: orphanCount,
+    orphan_bytes: orphanBytes,
+    orphan_sample: orphans,
+    // Rows whose audio is gone: the recording was deleted, the text remains.
+    rows_without_audio: missing.length,
+    rows_without_audio_sample: missing.slice(0, 40),
+    truncated: cursor !== undefined,
+  });
+}
+
+/**
+ * Rebuilds database rows for audio that has none.
+ *
+ * Everything a row needs is recoverable from the object itself: the device
+ * names a segment for the instant it started, in local time, and that name is
+ * the key. Which is the only reason the retention sweep was survivable —
+ * had the audio gone instead of the index, nothing here would help.
+ */
+async function reindex(env: Env, url: URL): Promise<Response> {
+  const limit = Math.min(intParam(url, "limit") ?? 200, 1000);
+  const transcribe = url.searchParams.get("transcribe") !== "0";
+
+  const known = await env.DB.prepare(`SELECT segment_id FROM segments`).all<{
+    segment_id: string;
+  }>();
+  const rows = new Set((known.results ?? []).map((r) => r.segment_id));
+
+  const todo: { key: string; size: number }[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 20 && todo.length < limit; page += 1) {
+    const listed = await env.BUCKET.list({ prefix: "audio/", cursor, limit: 1000 });
+    for (const object of listed.objects) {
+      const id = object.key.split("/").pop()!.replace(/\.[^.]+$/, "");
+      if (!rows.has(id) && todo.length < limit) {
+        todo.push({ key: object.key, size: object.size });
+      }
+    }
+    if (!listed.truncated) break;
+    cursor = listed.cursor;
+  }
+
+  let restored = 0;
+  let skipped = 0;
+  for (const item of todo) {
+    const id = item.key.split("/").pop()!.replace(/\.[^.]+$/, "");
+    const startedAt = startedAtFromId(id);
+    if (!startedAt) {
+      skipped += 1;
+      continue;
+    }
+    const extension = item.key.split(".").pop() ?? "wav";
+    // WAV is a fixed bit rate, so the duration is arithmetic on the size; the
+    // 44-byte header is the only thing that is not sample data.
+    const durationMs =
+      extension === "wav"
+        ? Math.round(((item.size - 44) / (16000 * 2)) * 1000)
+        : null;
+
+    await env.DB.prepare(
+      `INSERT INTO segments
+         (segment_id, device_id, kind, r2_key, codec, sample_rate,
+          started_at, started_epoch, ended_at, duration_ms, bytes,
+          received_at, status)
+       VALUES (?1,'r1','lifelog',?2,?3,16000,?4,?5,NULL,?6,?7,?8,'pending')
+       ON CONFLICT(segment_id) DO NOTHING`,
+    )
+      .bind(
+        id,
+        item.key,
+        extension,
+        startedAt.iso,
+        startedAt.epoch,
+        durationMs,
+        item.size,
+        new Date().toISOString(),
+      )
+      .run();
+
+    if (transcribe) {
+      await env.TRANSCRIBE_QUEUE.send({ segmentId: id, key: item.key });
+    }
+    restored += 1;
+  }
+
+  return json({ candidates: todo.length, restored, skipped, queued: transcribe });
+}
+
+/** `seg_20260812_144858` → the instant the device started that segment, JST. */
+function startedAtFromId(id: string): { iso: string; epoch: number } | null {
+  const m = /^[a-z]+_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/.exec(id);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m;
+  // The device stamps names in Asia/Tokyo, which is a fixed +09:00 — no DST to
+  // get wrong.
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${s}.000+09:00`;
+  const epoch = Math.floor(Date.parse(iso) / 1000);
+  return Number.isFinite(epoch) ? { iso, epoch } : null;
 }
 
 async function stats(env: Env): Promise<Response> {
