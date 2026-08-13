@@ -81,6 +81,9 @@ class RecorderService : Service() {
 
     private lateinit var metrics: Metrics
     private lateinit var uploadSettings: UploadSettings
+    private lateinit var query: QueryController
+    private val vad = Vad()
+    private var ring: RingBuffer? = null
     private var uploader: Uploader? = null
     private var uploadThread: Thread? = null
     /** The segment currently being written; never a candidate for upload. */
@@ -154,6 +157,10 @@ class RecorderService : Service() {
         super.onCreate()
         metrics = Metrics(this)
         uploadSettings = UploadSettings(this)
+        query = QueryController(metrics) { from, to -> handleQueryUtterance(from, to) }
+        // The accessibility service is the only thing that sees the side
+        // button; it hands the gesture straight over.
+        KeyService.onDoublePress = { now -> query.onDoublePress(now) }
         createChannel()
     }
 
@@ -306,6 +313,7 @@ class RecorderService : Service() {
 
         val record = recorder ?: return
         runCatching { record.startRecording() }
+        ring = RingBuffer(sampleRate)
 
         val buffer = ShortArray(sampleRate / 10) // ~100 ms
         var lastSampleAt = System.currentTimeMillis()
@@ -337,6 +345,12 @@ class RecorderService : Service() {
             bytes += read.toLong() * 2
 
             accumulate(buffer, read)
+
+            // The ring buffer exists for the query path: a question can begin
+            // before the button that asks for it.
+            ring?.append(buffer, read, now)
+            val ended = vad.accept(buffer, read, now)
+            query.tick(now, vad.isSpeaking, ended, vad.utteranceStart)
 
             // Continuous capture to disk. Amplitude statistics prove the stream
             // is alive; only the audio itself proves it is usable, and only
@@ -372,6 +386,68 @@ class RecorderService : Service() {
 
         pending?.let { closeSegment(it) }
         releaseRecorder()
+    }
+
+    /**
+     * Ships the captured question and hands the text to the chat client.
+     *
+     * Runs off the capture thread: this uploads and waits on a transcription,
+     * and an AudioRecord read must never queue behind that.
+     *
+     * The lifelog copy is untouched — the same speech is still written to its
+     * ordinary segment. A question must not punch a hole in the recording.
+     */
+    private fun handleQueryUtterance(fromMs: Long, toMs: Long) {
+        val samples = ring?.slice(fromMs, toMs)
+        if (samples == null || samples.isEmpty()) {
+            query.finish(false, "utterance no longer in the ring buffer")
+            return
+        }
+
+        Thread({
+            val file = File(cacheDir, "query.wav")
+            val ok = runCatching {
+                val writer = WavSegmentWriter(file, sampleRate)
+                writer.write(samples, samples.size)
+                writer.close() > 0
+            }.getOrDefault(false)
+
+            if (!ok) {
+                query.finish(false, "could not stage the question")
+                return@Thread
+            }
+
+            val id = "qry_" + wavStamp.format(Date(fromMs))
+            val transcript = uploader?.uploadQuery(file, id, fromMs)
+            if (transcript.isNullOrBlank()) {
+                query.finish(false, "no transcript")
+                return@Thread
+            }
+
+            metrics.write(
+                "query_transcript",
+                mapOf("segment" to id, "chars" to transcript.length, "text" to transcript.take(200)),
+            )
+            handOffToChat(transcript)
+            query.finish(true, transcript.take(80))
+        }, "probe-query").start()
+    }
+
+    /**
+     * The chat client already renders streaming replies, tool activity and
+     * approvals on this panel; re-implementing any of that here would be a
+     * worse version of something that works.
+     */
+    private fun handOffToChat(prompt: String) {
+        val intent = Intent()
+            .setClassName("com.r1.hermes", "com.r1.hermes.ChatActivity")
+            .putExtra("prompt", prompt)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { startActivity(intent) }
+            .onFailure {
+                Log.e(TAG, "chat client unavailable", it)
+                metrics.write("query", mapOf("state" to "no_chat_client"))
+            }
     }
 
     private fun closeSegment(writer: SegmentWriter) {

@@ -30,6 +30,13 @@ class KeyService : AccessibilityService() {
         @Volatile var connected = false; private set
         @Volatile var lastKeyAt = 0L; private set
         @Volatile var doublePresses = 0; private set
+
+        /**
+         * Set by the recorder. A plain callback rather than a broadcast: both
+         * live in the same process, and the gesture should reach the state
+         * machine without a trip through the system.
+         */
+        @Volatile var onDoublePress: ((Long) -> Unit)? = null
     }
 
     private lateinit var metrics: Metrics
@@ -61,6 +68,8 @@ class KeyService : AccessibilityService() {
             if (isDouble) {
                 doublePresses += 1
                 lastDownAt = 0 // a third press starts a new pair, not a chain
+                runCatching { onDoublePress?.invoke(now) }
+                    .onFailure { Log.e(TAG, "double-press handler failed", it) }
             } else {
                 lastDownAt = now
             }

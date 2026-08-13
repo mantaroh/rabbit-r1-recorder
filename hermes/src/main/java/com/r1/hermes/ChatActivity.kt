@@ -45,6 +45,13 @@ class ChatActivity : Activity() {
         /** True when the id came from session.active_list rather than history. */
         const val EXTRA_LIVE = "live"
 
+        /**
+         * A question captured elsewhere — the recorder's double-press flow
+         * transcribes the utterance and hands the text over rather than
+         * re-implementing the chat surface.
+         */
+        const val EXTRA_PROMPT = "prompt"
+
         private const val REQUEST_RECORD_AUDIO = 3101
         private const val REQUEST_CAPTURE = 3102
 
@@ -90,6 +97,9 @@ class ChatActivity : Activity() {
     /** Staged photo, uploaded as part of the next submit. */
     private var pendingPhoto: File? = null
 
+    /** Prompt supplied by the caller, submitted once a session is attached. */
+    private var pendingPrompt: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
@@ -97,6 +107,7 @@ class ChatActivity : Activity() {
         recorder = VoiceRecorder(this)
         sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
         liveSession = intent.getBooleanExtra(EXTRA_LIVE, false)
+        pendingPrompt = intent.getStringExtra(EXTRA_PROMPT)?.trim()?.ifEmpty { null }
 
         setContentView(buildUi())
         renderStatus()
@@ -354,6 +365,13 @@ class ChatActivity : Activity() {
         running = result.optBoolean("running", false)
         statusWord = result.optString("status").ifEmpty { "idle" }
         renderStatus()
+
+        // A prompt handed in from outside is sent once the session exists,
+        // not on arrival — there is nothing to submit to before then.
+        pendingPrompt?.let { text ->
+            pendingPrompt = null
+            submit(text)
+        }
     }
 
     private fun replay(messages: JSONArray) {

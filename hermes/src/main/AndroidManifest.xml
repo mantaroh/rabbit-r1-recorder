@@ -18,6 +18,11 @@
         android:name="android.hardware.camera.any"
         android:required="false" />
 
+    <!-- Signature-level: only apps from the same key may push a question in. -->
+    <permission
+        android:name="com.r1.hermes.permission.ASK"
+        android:protectionLevel="signature" />
+
     <application
         android:allowBackup="false"
         android:label="R1 Hermes"
@@ -37,10 +42,14 @@
 
         </activity>
 
+        <!-- Exported so the recorder can hand over a spoken question. Both
+             apps ship from the same signing key, so the permission keeps this
+             entry point to them. -->
         <activity
             android:name=".ChatActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="false"
+            android:exported="true"
+            android:permission="com.r1.hermes.permission.ASK"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize" />
 

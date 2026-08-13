@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Segments are uploaded to the lifelog Worker. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Handing a spoken question to the chat client. -->
+    <uses-permission android:name="com.r1.hermes.permission.ASK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
