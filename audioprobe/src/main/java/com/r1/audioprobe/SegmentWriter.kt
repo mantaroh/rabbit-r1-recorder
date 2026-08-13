@@ -25,34 +25,65 @@ interface SegmentWriter {
     fun close(): Long
 }
 
+/**
+ * The header is written up front and kept roughly current as samples arrive,
+ * rather than being written once at close.
+ *
+ * The obvious implementation — 44 zero bytes now, real header on close — makes
+ * every segment undecodable until the moment it is finished, so a crash, a
+ * kill, or a flat battery turns the recording in progress into a file no
+ * decoder will open. The samples are all there; nothing will read them. For a
+ * device whose output is an archive that is the wrong failure, and it is not
+ * hypothetical: `seg_20260814_073239.wav` reached R2 with 44 zero bytes on the
+ * front after a reinstall interrupted it.
+ *
+ * Refreshing costs a seek roughly once a second, and bounds the loss from an
+ * interrupted segment to the samples written since the last refresh.
+ */
 class WavSegmentWriter(override val file: File, private val sampleRate: Int) : SegmentWriter {
 
-    private val raf = RandomAccessFile(file, "rw").apply {
-        write(ByteArray(44)) // header rewritten on close, once the length is known
-    }
+    private val raf = RandomAccessFile(file, "rw").apply { write(header(0, sampleRate)) }
     private var dataBytes = 0
+    private var declaredBytes = 0
 
     override fun write(samples: ShortArray, count: Int) {
         val bb = ByteBuffer.allocate(count * 2).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until count) bb.putShort(samples[i])
+        // Explicit position: the header refresh below moves the file pointer.
+        raf.seek((HEADER_BYTES + dataBytes).toLong())
         raf.write(bb.array())
         dataBytes += count * 2
+
+        if (dataBytes - declaredBytes >= sampleRate * 2) refreshHeader()
+    }
+
+    private fun refreshHeader() {
+        raf.seek(0)
+        raf.write(header(dataBytes, sampleRate))
+        declaredBytes = dataBytes
     }
 
     override fun close(): Long {
         return runCatching {
-            raf.seek(0)
-            val h = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+            refreshHeader()
+            raf.close()
+            file.length()
+        }.getOrDefault(0L)
+    }
+
+    private companion object {
+        const val HEADER_BYTES = 44
+
+        fun header(dataBytes: Int, sampleRate: Int): ByteArray {
+            val h = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
             h.put("RIFF".toByteArray()); h.putInt(36 + dataBytes)
             h.put("WAVE".toByteArray()); h.put("fmt ".toByteArray())
             h.putInt(16); h.putShort(1); h.putShort(1)
             h.putInt(sampleRate); h.putInt(sampleRate * 2)
             h.putShort(2); h.putShort(16)
             h.put("data".toByteArray()); h.putInt(dataBytes)
-            raf.write(h.array())
-            raf.close()
-            file.length()
-        }.getOrDefault(0L)
+            return h.array()
+        }
     }
 }
 
