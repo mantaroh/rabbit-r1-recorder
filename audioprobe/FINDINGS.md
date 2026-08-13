@@ -93,6 +93,39 @@ Note the two estimates disagree: 53 mA against a nominal 1010 mAh predicts
 ~19 h, while the observed drain gives ~24 h. The pack is likely larger than the
 nominal figure. Prefer the observed rate.
 
+## CarrotOS blocks a newly installed app's network
+
+A fresh install lands in the network policy as **`REJECT_ALL`**:
+
+```
+UID=10078  policy=262144 (REJECT_ALL)
+```
+
+The symptom is confusing rather than obvious. From the device shell everything
+is fine — `ping lifelog.mantaroh.org` resolves and answers in 18 ms — but the
+app cannot resolve anything, and `ConnectivityManager.getActiveNetwork()`
+returns **null** even with Wi-Fi connected and validated. That null is the
+documented behaviour for "the app is not allowed to use the network", and it is
+indistinguishable from "there is no network". The `NetworkCallback` registered
+by the same app still reports `wifi / unmetered / validated` correctly, so link
+state should be read from the callback, not from `getActiveNetwork()`.
+
+Cleared over adb:
+
+```
+adb shell cmd netpolicy add restrict-background-whitelist <uid>
+```
+
+Consequences for the real recorder:
+
+- **Assume the first run cannot reach the network.** Surface it in the UI
+  rather than silently queueing forever; "nothing is being sent" and
+  "everything is sent" look identical otherwise.
+- Whether a user can lift this from the device's own settings is untested.
+- `android.permission.INTERNET` is easy to omit when a module starts life as a
+  capture-only probe. The failure text is
+  `Permission denied (missing INTERNET permission?)`.
+
 ## Still open
 
 - **Without the wake lock.** Everything above holds *with* a partial wake lock.

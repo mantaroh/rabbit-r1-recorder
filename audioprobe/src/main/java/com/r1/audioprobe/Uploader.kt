@@ -1,7 +1,5 @@
 package com.r1.audioprobe
 
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -24,11 +22,23 @@ import java.util.TimeZone
  * No HTTP library — `HttpURLConnection` streams a file body fine, and this
  * module exists to measure the platform, not to carry dependencies.
  */
+/**
+ * [network] is supplied by the caller rather than read from
+ * `ConnectivityManager.getActiveNetwork()`. On the R1 that call returns null
+ * even with Wi-Fi connected and validated — the documented behaviour is that it
+ * yields null both when there is no default network *and* when the app is not
+ * allowed to use it, and it cannot be told which. The `NetworkCallback` the
+ * service already registers reports the same link correctly, so state comes
+ * from there.
+ */
 class Uploader(
     private val settings: UploadSettings,
     private val metrics: Metrics,
-    private val connectivity: ConnectivityManager,
+    private val network: () -> NetworkState,
 ) {
+
+    /** Last known link state, as reported by the service's NetworkCallback. */
+    data class NetworkState(val available: Boolean, val unmetered: Boolean)
 
     companion object {
         private const val TAG = "R1AudioProbe"
@@ -58,14 +68,9 @@ class Uploader(
         if (!settings.isConfigured) return "not configured"
         if (System.currentTimeMillis() < nextAttemptAt) return "backoff"
 
-        val caps = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
-            ?: return "offline"
-        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return "no internet"
-        if (settings.unmeteredOnly &&
-            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-        ) {
-            return "metered"
-        }
+        val state = network()
+        if (!state.available) return "offline"
+        if (settings.unmeteredOnly && !state.unmetered) return "metered"
         return null
     }
 

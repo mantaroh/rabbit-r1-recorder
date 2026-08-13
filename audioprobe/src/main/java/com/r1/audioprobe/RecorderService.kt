@@ -116,19 +116,31 @@ class RecorderService : Service() {
         }
     }
 
+    /**
+     * Link state as seen by the callback, which is the only source that works
+     * here — `getActiveNetwork()` returns null on this device even with Wi-Fi
+     * up and validated.
+     */
+    @Volatile private var netState = Uploader.NetworkState(available = false, unmetered = false)
+
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            val unmetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+            val usable = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            netState = Uploader.NetworkState(available = usable, unmetered = unmetered)
             metrics.write(
                 "network",
                 mapOf(
                     "transport" to transportName(caps),
-                    "unmetered" to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+                    "unmetered" to unmetered,
                     "validated" to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
                 )
             )
         }
 
         override fun onLost(network: Network) {
+            netState = Uploader.NetworkState(available = false, unmetered = false)
             metrics.write("network", mapOf("transport" to "none"))
         }
     }
@@ -199,11 +211,7 @@ class RecorderService : Service() {
         // Uploading runs on its own thread: a slow or stalled network must
         // never delay a read from AudioRecord, which is the one thing in this
         // service that cannot be late.
-        uploader = Uploader(
-            uploadSettings,
-            metrics,
-            getSystemService(ConnectivityManager::class.java),
-        )
+        uploader = Uploader(uploadSettings, metrics) { netState }
         uploadThread = Thread({ uploadLoop() }, "probe-upload").apply { start() }
 
         return START_STICKY
