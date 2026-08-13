@@ -35,6 +35,9 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQUEST_PERMISSIONS = 4001
+
+        /** Begin recording as soon as the Activity is up; see onCreate. */
+        const val EXTRA_AUTOSTART = "autostart"
     }
 
     private lateinit var statusView: TextView
@@ -50,10 +53,11 @@ class MainActivity : Activity() {
     private val ticker = Handler(Looper.getMainLooper())
     private var useWakeLock = true
     private var useVoiceRecognition = false
-    // Query-only by default: audio stays in the ring buffer and leaves the
-    // device only when a question is asked. Turning this on restores the
-    // continuous lifelog.
-    private var writeAudio = false
+    // On by default. The recording is the artefact this device exists to
+    // produce, and an hour not captured is an hour that no later decision can
+    // recover — so the failure mode of forgetting to press a button has to be
+    // "recorded something", not "recorded nothing".
+    private var writeAudio = true
     private var useOpus = false
 
     private val tick = object : Runnable {
@@ -70,6 +74,13 @@ class MainActivity : Activity() {
         setContentView(buildUi())
         loadUploadFields()
         ensurePermissions()
+
+        // `am start -n … --ez autostart true` begins recording without anyone
+        // touching the screen. A microphone foreground service cannot be
+        // started from the background on Android 14, so anything that wants
+        // recording to resume — a boot receiver, a shell, a person in a hurry —
+        // has to come through this Activity.
+        if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) start()
     }
 
     override fun onResume() {
