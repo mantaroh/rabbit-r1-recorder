@@ -82,7 +82,7 @@ class Uploader(
     fun pump(dir: File, skip: File?, limit: Int = 4) {
         if (blockedReason() != null) return
 
-        val pending = dir.listFiles { f -> f.isFile && f.name.endsWith(".wav") }
+        val pending = dir.listFiles { f -> f.isFile && isSegment(f.name) }
             .orEmpty()
             .filter { it != skip && it.length() > 44 }
             .sortedBy { it.name }
@@ -103,13 +103,15 @@ class Uploader(
             return true
         }
 
+        val opus = file.extension.equals("opus", ignoreCase = true)
         val url = buildString {
             append(settings.baseUrl)
             append("/v1/segments/")
             append(segmentId)
             append("?device_id=").append(enc(settings.deviceId))
             append("&started_at=").append(enc(startedAt))
-            append("&kind=lifelog&codec=wav&sample_rate=16000")
+            append("&kind=lifelog&sample_rate=16000&codec=")
+            append(if (opus) "opus" else "wav")
         }
 
         var connection: HttpURLConnection? = null
@@ -119,7 +121,7 @@ class Uploader(
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS
                 doOutput = true
-                setRequestProperty("Content-Type", "audio/wav")
+                setRequestProperty("Content-Type", if (opus) "audio/ogg" else "audio/wav")
                 setRequestProperty("Authorization", "Bearer " + settings.bearer)
                 if (settings.accessClientId.isNotEmpty()) {
                     setRequestProperty("CF-Access-Client-Id", settings.accessClientId)
@@ -202,8 +204,11 @@ class Uploader(
 
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
 
+    private fun isSegment(name: String) =
+        name.endsWith(".wav", true) || name.endsWith(".opus", true)
+
     fun queueDepth(dir: File, skip: File?): Int =
-        dir.listFiles { f -> f.isFile && f.name.endsWith(".wav") }
+        dir.listFiles { f -> f.isFile && isSegment(f.name) }
             .orEmpty()
             .count { it != skip }
 }

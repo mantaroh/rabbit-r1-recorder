@@ -21,9 +21,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import java.io.File
-import java.io.RandomAccessFile
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -65,6 +62,11 @@ class RecorderService : Service() {
 
         private const val UPLOAD_INTERVAL_MS = 15_000L
 
+        const val EXTRA_OPUS = "opus"
+
+        /** Speech at 16 kHz mono stays intelligible well below this. */
+        private const val OPUS_BITRATE = 16_000
+
         /** Preferred capture format; fallbacks are logged if it is unavailable. */
         private const val TARGET_RATE = 16_000
 
@@ -97,6 +99,7 @@ class RecorderService : Service() {
     @Volatile private var stalls = 0
     @Volatile private var sampleRequested = false
     @Volatile private var writeAudio = true
+    @Volatile private var useOpus = false
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
     @Volatile private var diskFull = false
@@ -165,6 +168,7 @@ class RecorderService : Service() {
         audioSource = intent?.getIntExtra(EXTRA_SOURCE, MediaRecorder.AudioSource.MIC)
             ?: MediaRecorder.AudioSource.MIC
         writeAudio = intent?.getBooleanExtra(EXTRA_WRITE_AUDIO, true) ?: true
+        useOpus = intent?.getBooleanExtra(EXTRA_OPUS, false) ?: false
 
         startForeground(NOTIFICATION_ID, buildNotification("starting"))
 
@@ -201,6 +205,7 @@ class RecorderService : Service() {
                 "wakelock" to holdWakeLock,
                 "source" to sourceName(audioSource),
                 "write_audio" to writeAudio,
+                "codec" to if (useOpus) "opus" else "wav",
                 "device" to Build.MODEL,
                 "sdk" to Build.VERSION.SDK_INT,
             )
@@ -305,8 +310,8 @@ class RecorderService : Service() {
         val buffer = ShortArray(sampleRate / 10) // ~100 ms
         var lastSampleAt = System.currentTimeMillis()
         lastFrameAt = lastSampleAt
-        var pending: RandomAccessFile? = null
-        var pendingBytes = 0
+        var pending: SegmentWriter? = null
+        var pendingSamples = 0
 
         while (!stop) {
             val read = runCatching { recorder?.read(buffer, 0, buffer.size) ?: -1 }
@@ -339,25 +344,24 @@ class RecorderService : Service() {
             if ((writeAudio || sampleRequested) && !diskFull) {
                 if (pending == null) {
                     sampleRequested = false
-                    pending = openWav()
-                    pendingBytes = 0
+                    pending = openSegmentWriter()
+                    pendingSamples = 0
                 }
-                if (pending != null) {
-                    val written = writePcm(pending, buffer, read)
-                    if (written == 0) writeErrors += 1
-                    pendingBytes += written
+                val writer = pending
+                if (writer != null) {
+                    runCatching { writer.write(buffer, read) }
+                        .onFailure { writeErrors += 1 }
+                    pendingSamples += read
 
-                    val limit = sampleRate * 2 * if (writeAudio) SEGMENT_SECONDS else 5
-                    if (pendingBytes >= limit) {
-                        finishWav(pending, pendingBytes)
+                    val limit = sampleRate * if (writeAudio) SEGMENT_SECONDS else 5
+                    if (pendingSamples >= limit) {
+                        closeSegment(writer)
                         pending = null
-                        segments += 1
                     }
                 }
             } else if (pending != null) {
-                finishWav(pending, pendingBytes)
+                closeSegment(pending)
                 pending = null
-                segments += 1
             }
 
             if (now - lastSampleAt >= SAMPLE_INTERVAL_MS) {
@@ -366,8 +370,20 @@ class RecorderService : Service() {
             }
         }
 
-        pending?.let { finishWav(it, pendingBytes) }
+        pending?.let { closeSegment(it) }
         releaseRecorder()
+    }
+
+    private fun closeSegment(writer: SegmentWriter) {
+        val size = writer.close()
+        segments += 1
+        // Published only once the container is finalised; before that the file
+        // is not a valid segment and must never be uploaded.
+        openSegment = null
+        if (size <= 0) {
+            writeErrors += 1
+            metrics.write("segment_bad", mapOf("file" to writer.file.name))
+        }
     }
 
     private fun reinitialise() {
@@ -478,54 +494,36 @@ class RecorderService : Service() {
 
     private fun audioDir(): File = File(filesDir, "audio").apply { mkdirs() }
 
-    private fun openWav(): RandomAccessFile? = runCatching {
+    private fun openSegmentWriter(): SegmentWriter? {
         val dir = audioDir()
         if (dir.usableSpace < MIN_FREE_BYTES) {
             diskFull = true
             metrics.write("disk_full", mapOf("usable" to dir.usableSpace))
             return null
         }
-        val file = File(dir, "seg_${wavStamp.format(Date())}.wav")
-        val raf = RandomAccessFile(file, "rw")
-        raf.write(ByteArray(44)) // header rewritten on close
-        // Publish it so the uploader skips it: a partial WAV shipped under a
+
+        val stem = "seg_${wavStamp.format(Date())}"
+        val writer = if (useOpus) {
+            OpusSegmentWriter.createOrNull(File(dir, "$stem.opus"), sampleRate, OPUS_BITRATE)
+                ?: run {
+                    // Better a large segment than none: fall back rather than
+                    // stop recording because a codec is missing.
+                    useOpus = false
+                    metrics.write("opus_unavailable", mapOf("fallback" to "wav"))
+                    null
+                }
+        } else null
+
+        val result = writer
+            ?: runCatching { WavSegmentWriter(File(dir, "$stem.wav"), sampleRate) }.getOrNull()
+
+        // Publish it so the uploader skips it: a partial file shipped under a
         // complete-looking id would be indistinguishable from a good segment.
-        openSegment = file
-        raf
-    }.getOrNull()
+        openSegment = result?.file
+        return result
+    }
 
     private val wavStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-
-    private fun writePcm(raf: RandomAccessFile?, buffer: ShortArray, read: Int): Int {
-        if (raf == null) return 0
-        val bb = ByteBuffer.allocate(read * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until read) bb.putShort(buffer[i])
-        return runCatching { raf.write(bb.array()); read * 2 }.getOrDefault(0)
-    }
-
-    private fun finishWav(raf: RandomAccessFile, dataBytes: Int) {
-        runCatching {
-            raf.seek(0)
-            val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-            header.put("RIFF".toByteArray())
-            header.putInt(36 + dataBytes)
-            header.put("WAVE".toByteArray())
-            header.put("fmt ".toByteArray())
-            header.putInt(16)
-            header.putShort(1)             // PCM
-            header.putShort(1)             // mono
-            header.putInt(sampleRate)
-            header.putInt(sampleRate * 2)  // byte rate
-            header.putShort(2)             // block align
-            header.putShort(16)            // bits
-            header.put("data".toByteArray())
-            header.putInt(dataBytes)
-            raf.write(header.array())
-            raf.close()
-        }
-        // Header written and closed — the file is now a valid segment.
-        openSegment = null
-    }
 
     // ------------------------------------------------------ notification ----
 

@@ -188,8 +188,9 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
   await env.DB.prepare(
     `INSERT INTO segments
        (segment_id, device_id, kind, r2_key, codec, sample_rate,
-        started_at, ended_at, duration_ms, bytes, received_at, status)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending')
+        started_at, started_epoch, ended_at, duration_ms, bytes,
+        received_at, status)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending')
      ON CONFLICT(segment_id) DO UPDATE SET
        r2_key = excluded.r2_key,
        bytes = excluded.bytes,
@@ -205,6 +206,10 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       codec,
       sampleRate,
       startedAt,
+      // Ordering and windowing run off this, never off the string: the device
+      // sends a +09:00 offset and any bound computed here is UTC, and SQLite
+      // would compare the two lexicographically.
+      Math.floor(Date.parse(startedAt) / 1000),
       endedAt,
       durationMs,
       object?.size ?? null,
@@ -357,18 +362,20 @@ async function getContext(env: Env, url: URL): Promise<Response> {
 }
 
 export async function contextData(env: Env, at: string, beforeSec: number) {
-  const from = new Date(Date.parse(at) - beforeSec * 1000).toISOString();
+  const atEpoch = Math.floor(Date.parse(at) / 1000);
+  const fromEpoch = atEpoch - beforeSec;
+  const from = new Date(fromEpoch * 1000).toISOString();
 
   const rows = await env.DB.prepare(
     `SELECT segment_id, started_at, ended_at, transcript
        FROM segments
       WHERE status = 'transcribed'
         AND transcript IS NOT NULL AND transcript <> ''
-        AND started_at >= ?1 AND started_at <= ?2
-      ORDER BY started_at ASC
+        AND started_epoch >= ?1 AND started_epoch <= ?2
+      ORDER BY started_epoch ASC
       LIMIT 200`,
   )
-    .bind(from, at)
+    .bind(fromEpoch, atEpoch)
     .all();
 
   const segments = rows.results ?? [];

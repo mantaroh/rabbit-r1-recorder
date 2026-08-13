@@ -51,6 +51,7 @@ class MainActivity : Activity() {
     private var useWakeLock = true
     private var useVoiceRecognition = false
     private var writeAudio = true
+    private var useOpus = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -116,6 +117,11 @@ class MainActivity : Activity() {
             useVoiceRecognition = !useVoiceRecognition
             (it as Button).text =
                 if (useVoiceRecognition) "Source: VOICE_RECOGNITION" else "Source: MIC"
+        }, wide())
+
+        column.addView(toggle("Codec: WAV") {
+            useOpus = !useOpus
+            (it as Button).text = if (useOpus) "Codec: Opus" else "Codec: WAV"
         }, wide())
 
         column.addView(heading("Upload target"))
@@ -268,6 +274,7 @@ class MainActivity : Activity() {
                 else MediaRecorder.AudioSource.MIC
             )
             .putExtra(RecorderService.EXTRA_WRITE_AUDIO, writeAudio)
+            .putExtra(RecorderService.EXTRA_OPUS, useOpus)
         // Started from a visible Activity: Android 14 blocks starting a
         // microphone foreground service from the background.
         startForegroundService(intent)
