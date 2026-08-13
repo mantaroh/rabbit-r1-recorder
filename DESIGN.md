@@ -4,6 +4,8 @@ What the system does now, and where it departs from the original specification.
 Every divergence below was forced by something measured on the device or in the
 data — the reasons are recorded so they can be re-argued if the facts change.
 
+日本語: [`DESIGN.ja.md`](DESIGN.ja.md)
+
 ## What this is
 
 A Rabbit R1 that answers questions about the conversation happening around it.

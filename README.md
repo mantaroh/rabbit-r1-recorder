@@ -21,7 +21,7 @@ not assumed.
 Reference docs:
 
 - [`DESIGN.md`](DESIGN.md) — how the system works and why it diverges from the
-  original spec
+  original spec ([日本語](DESIGN.ja.md))
 - [`hermes/PROTOCOL.md`](hermes/PROTOCOL.md) — the Hermes gateway wire protocol,
   reverse-engineered from the agent source and verified against a live server
 - [`hermes/UI-SPEC.md`](hermes/UI-SPEC.md) — UI design for a 240×320 dp panel
