@@ -50,7 +50,10 @@ class MainActivity : Activity() {
     private val ticker = Handler(Looper.getMainLooper())
     private var useWakeLock = true
     private var useVoiceRecognition = false
-    private var writeAudio = true
+    // Query-only by default: audio stays in the ring buffer and leaves the
+    // device only when a question is asked. Turning this on restores the
+    // continuous lifelog.
+    private var writeAudio = false
     private var useOpus = false
 
     private val tick = object : Runnable {
@@ -103,10 +106,10 @@ class MainActivity : Activity() {
 
         column.addView(button("Start") { start() }, wide())
         column.addView(button("Stop") { stop() }, wide())
-        column.addView(toggle("Write audio: ON") {
+        column.addView(toggle("Lifelog: OFF") {
             writeAudio = !writeAudio
-            (it as Button).text = if (writeAudio) "Write audio: ON" else "Write audio: OFF"
-        }, wide())
+            (it as Button).text = if (writeAudio) "Lifelog: ON" else "Lifelog: OFF"
+        }.also { it.text = if (writeAudio) "Lifelog: ON" else "Lifelog: OFF" }, wide())
 
         column.addView(toggle("Wake lock: ON") {
             useWakeLock = !useWakeLock

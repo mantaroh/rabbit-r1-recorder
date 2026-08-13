@@ -32,6 +32,13 @@ interface TranscribeMessage {
 /** Queue messages stay tiny — 128 KB cap — so they carry a key, never audio. */
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
+/**
+ * Kept in step with the R2 lifecycle rule on `audio/`. Deliberately measured
+ * from the segment's own start time, not from when it arrived: an upload
+ * deferred until the device found Wi-Fi should still expire on schedule.
+ */
+const RETENTION_SECONDS = 24 * 60 * 60;
+
 const CODEC_EXTENSIONS: Record<string, string> = {
   wav: "wav",
   opus: "opus",
@@ -86,6 +93,27 @@ export default {
     }
 
     return json({ error: "not found" }, 404);
+  },
+
+  /**
+   * Retention sweep.
+   *
+   * R2 expires the audio on its own through a bucket lifecycle rule, but it
+   * has no idea the database exists — without this the transcripts would
+   * outlive the recordings indefinitely, which is exactly the thing a
+   * one-day retention policy is meant to prevent.
+   */
+  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+    const cutoff = Math.floor(Date.now() / 1000) - RETENTION_SECONDS;
+    const result = await env.DB.prepare(
+      `DELETE FROM segments WHERE started_epoch < ?1`,
+    )
+      .bind(cutoff)
+      .run();
+    console.log(
+      `retention sweep: removed ${result.meta?.changes ?? 0} rows older than ` +
+        new Date(cutoff * 1000).toISOString(),
+    );
   },
 
   async queue(batch: MessageBatch<TranscribeMessage>, env: Env): Promise<void> {

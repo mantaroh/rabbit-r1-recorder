@@ -7,10 +7,12 @@ package com.r1.audioprobe
  * press the button while already mid-sentence. Without this the query would
  * begin at the press and lose the opening words.
  *
- * 30 s at 16 kHz mono PCM16 is under a megabyte, so the whole thing sits in
- * memory rather than costing another write to disk.
+ * Sized to hold the two minutes of context a question can ask for, plus slack:
+ * 150 s at 16 kHz mono PCM16 is 4.8 MB, which is cheap enough to keep in
+ * memory and means nothing has to touch the disk at all when the recorder is
+ * running query-only.
  */
-class RingBuffer(private val sampleRate: Int, seconds: Int = 30) {
+class RingBuffer(private val sampleRate: Int, seconds: Int = 150) {
 
     private val capacity = sampleRate * seconds
     private val data = ShortArray(capacity)

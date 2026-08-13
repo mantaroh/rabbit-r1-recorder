@@ -180,7 +180,12 @@ class Uploader(
      * Wi-Fi-only lifelog queue drains. Ignores the unmetered rule for the same
      * reason: this is the one upload worth paying cellular data for.
      */
-    fun uploadQuery(file: File, segmentId: String, startedAtMs: Long): String? {
+    fun uploadQuery(
+        file: File,
+        segmentId: String,
+        startedAtMs: Long,
+        kind: String = "query",
+    ): String? {
         if (!settings.isConfigured) return null
 
         val url = buildString {
@@ -188,7 +193,8 @@ class Uploader(
             append("/v1/segments/").append(segmentId)
             append("?device_id=").append(enc(settings.deviceId))
             append("&started_at=").append(enc(stamp.format(Date(startedAtMs))))
-            append("&kind=query&codec=wav&sample_rate=16000&sync=1")
+            append("&kind=").append(kind)
+            append("&codec=wav&sample_rate=16000&sync=1")
         }
 
         var connection: HttpURLConnection? = null

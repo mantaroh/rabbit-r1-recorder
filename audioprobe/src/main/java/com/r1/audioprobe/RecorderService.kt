@@ -69,6 +69,13 @@ class RecorderService : Service() {
         /** Speech at 16 kHz mono stays intelligible well below this. */
         private const val OPUS_BITRATE = 16_000
 
+        /**
+         * How much of the conversation before the question goes up with it.
+         * This is the whole of "what were we just saying" — nothing else is
+         * uploaded, so the window is the memory the agent gets.
+         */
+        private const val CONTEXT_MS = 120_000L
+
         /** Preferred capture format; fallbacks are logged if it is unavailable. */
         private const val TARGET_RATE = 16_000
 
@@ -103,7 +110,13 @@ class RecorderService : Service() {
     @Volatile private var maxGapMs = 0L
     @Volatile private var stalls = 0
     @Volatile private var sampleRequested = false
-    @Volatile private var writeAudio = true
+    /**
+     * Off by default. The device now records only so it can answer a question:
+     * audio lives in the ring buffer and leaves the device when asked, so
+     * nothing is written to disk or uploaded in normal operation. Turn it on
+     * to go back to a continuous lifelog.
+     */
+    @Volatile private var writeAudio = false
     @Volatile private var useOpus = false
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
@@ -473,8 +486,24 @@ class RecorderService : Service() {
             query.finish(false, "utterance no longer in the ring buffer")
             return
         }
+        // Grabbed on this thread, before the ring buffer moves on.
+        val context = ring?.slice(fromMs - CONTEXT_MS, fromMs)
 
         Thread({
+            // Context first, and only far enough ahead that the agent can find
+            // it: the lookup runs server-side after the question is submitted.
+            if (context != null && context.isNotEmpty()) {
+                runCatching {
+                    val ctxFile = File(cacheDir, "context.wav")
+                    val writer = WavSegmentWriter(ctxFile, sampleRate)
+                    writer.write(context, context.size)
+                    if (writer.close() > 0) {
+                        val ctxId = "ctx_" + wavStamp.format(Date(fromMs - CONTEXT_MS))
+                        uploader?.uploadQuery(ctxFile, ctxId, fromMs - CONTEXT_MS, kind = "lifelog")
+                    }
+                }.onFailure { Log.w(TAG, "context upload failed", it) }
+            }
+
             val file = File(cacheDir, "query.wav")
             val ok = runCatching {
                 val writer = WavSegmentWriter(file, sampleRate)
