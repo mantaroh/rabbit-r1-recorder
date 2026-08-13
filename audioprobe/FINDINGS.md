@@ -126,6 +126,50 @@ Consequences for the real recorder:
   capture-only probe. The failure text is
   `Permission denied (missing INTERNET permission?)`.
 
+## The side button, and how to see it
+
+An ordinary app never receives it. The CarrotOS launcher takes it from an
+AccessibilityService of its own:
+
+```
+com.r1.launcher/.PowerService   android.accessibilityservice.AccessibilityService
+08-13 11:43:41.823  D/R1Power(1849): key code=188 sc=116 name=KEYCODE_BUTTON_1 ptt=true
+```
+
+`sc=116` is `KEY_POWER` — the side button is physically the power key, remapped
+to `BUTTON_1`. Because it arrives through accessibility it is handled before
+window focus matters, which is why it works with the screen off and why a
+foreground app cannot intercept it. The launcher broadcasts nothing: its only
+exported components are the HOME activity, an SMS receiver, and
+profileinstaller.
+
+**A second AccessibilityService requesting key filtering does receive the same
+events**, measured:
+
+```
+11:43:41.823  R1Power(launcher)
+11:43:41.830  KeyService(ours)          +7 ms
+11:43:42.066  R1Power
+11:43:42.073  KeyService  gap=242ms  double=true
+```
+
+Both services see every press, double-press detection works, and returning
+`false` from `onKeyEvent` leaves the launcher's own behaviour untouched
+(`ptt=true` still logged).
+
+So the design's plan to fork `R1Launcher.apk` is unnecessary: no `/system`
+modification, no root, no re-patching after an OS update. The cost is that the
+user must enable the service under Accessibility. Over adb:
+
+```
+adb shell settings put secure enabled_accessibility_services \
+  com.r1.launcher/com.r1.launcher.PowerService:com.r1.audioprobe/com.r1.audioprobe.KeyService
+adb shell settings put secure accessibility_enabled 1
+```
+
+Keep the launcher's own service in that list — replacing it would break the
+device's own button handling.
+
 ## Still open
 
 - **Without the wake lock.** Everything above holds *with* a partial wake lock.

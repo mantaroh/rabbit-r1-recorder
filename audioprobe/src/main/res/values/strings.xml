@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="key_service_description">Watches the side button so a double press can start a question. Reads no screen content and consumes no keys.</string>
+</resources>
