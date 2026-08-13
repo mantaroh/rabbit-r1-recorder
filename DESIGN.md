@@ -8,15 +8,15 @@ data — the reasons are recorded so they can be re-argued if the facts change.
 
 ## What this is
 
-A Rabbit R1 that answers questions about the conversation happening around it.
+**A Rabbit R1 that records, and keeps, the audio around it.**
 
-Double-press the side button, ask, and the answer arrives from a self-hosted
-Hermes agent that has been given the preceding two minutes as context. The
-device is otherwise silent: nothing is written to disk, nothing is uploaded.
+The recording is the artefact. Everything else here — transcription, search,
+the question feature — is what today's models happen to be able to do with it,
+and all of it can be redone later against the same bytes. The audio cannot be
+redone. That asymmetry decides nearly every argument in this document.
 
-It is **not** a continuous lifelog. It was built as one first, ran for 18 hours,
-and the recording was then removed on purpose — see [Why the lifelog
-went](#why-the-lifelog-went).
+On top of the archive: double-press the side button, ask a question, and a
+self-hosted Hermes agent answers it with the preceding two minutes as context.
 
 ## Shape
 
@@ -24,31 +24,94 @@ went](#why-the-lifelog-went).
   side button ──▶ KeyService (accessibility)
                        │ double press
                        ▼
-  microphone ──▶ RecorderService ──▶ RingBuffer (150 s, memory only)
-                       │                   │
-                       │ VAD               │ on question: utterance + 2 min
-                       ▼                   ▼
-                 QueryController ──▶ PUT /v1/segments/{id}?sync=1
+  microphone ──▶ RecorderService ──▶ RingBuffer (150 s, memory)
+   48 kHz mono        │  │                │
+                      │  └─ 60 s Opus segments ──┐
+                      │ VAD                      │ on question: utterance + 2 min
+                      ▼                          ▼
+                QueryController ──▶ PUT /v1/segments/{id}
                                              │
                                     Cloudflare Access
                                              ▼
-                                     Worker ──▶ R2 (audio, 1 day)
-                                             └─▶ Whisper ──▶ D1 (text, 1 day)
+                                     Worker ──▶ R2 (audio, kept)
+                                             └─▶ Whisper ──▶ D1 (transcripts)
                                                               │
   ChatActivity ◀── transcript                                 │
        │                                                      │
        └──▶ Hermes gateway ──▶ agent ──MCP: lifelog_recent────┘
 ```
 
-Two things are worth noticing about that diagram.
-
 The agent fetches its own context. There is no query API carrying a transcript
 plus a context blob: the R1 submits an ordinary prompt, and the agent decides
 whether to call `lifelog_recent`. That removed an entire endpoint from the
 original design and made "さっきの話" work without special-casing.
 
-The ring buffer is the only place audio lives by default. It is memory, it is
-150 seconds long, and it is overwritten continuously.
+## Capture format
+
+48 kHz mono, stored as Opus at 32 kbps.
+
+**Sample rate is the only decision here that cannot be revisited.** A recording
+band-limited to 8 kHz stays band-limited however good the model reading it
+gets. The system ran at 16 kHz for its first weeks, which was a permanent loss
+for every hour it covered.
+
+The microphone was never the limit. The device's audio policy advertises
+`8000 16000 32000 44100 48000` on `Built-In Mic`, and a 48 kHz capture measured
+on the bench has no cliff where the old Nyquist was:
+
+| Band | RMS | | Band | RMS |
+| --- | --- | --- | --- | --- |
+| 300 Hz – 1 kHz | −55.8 dB | | 8.5 – 10 kHz | −71.7 dB |
+| 2 – 4 kHz | −64.6 dB | | 11 – 13 kHz | −70.4 dB |
+| 5 – 7 kHz | −68.1 dB | | 15 – 17 kHz | −75.5 dB |
+| | | | 18 – 20 kHz | −80.0 dB |
+
+An upsampled 16 kHz signal falls off a cliff above 8 kHz. This does not:
+11–13 kHz carries more than 8.5–10 kHz. The content is real.
+
+Storage is the opposite kind of decision — reversible, and about money. Opus is
+lossy, but at 48 kHz it keeps the full band the microphone gives us for about a
+twenty-first of what PCM costs: **270 KB per minute, roughly 140 GB per year**.
+Storing 16 kHz PCM losslessly, as this system used to, spent eight times the
+bytes to preserve less of the room.
+
+## Retention
+
+**None.** No R2 lifecycle rule on `audio/`, no cron, no sweep.
+
+An earlier version expired both audio and transcripts after a day. That was
+built when transcription was mistaken for the point of the system; it deleted
+the one thing that cannot be regenerated in order to save the storage cost of
+keeping it. Removing it recovered 327 recordings that had already lost their
+index — see [`cloudflare/lifelog/src/index.ts`](cloudflare/lifelog/src/index.ts)
+for the note that now sits where `RETENTION_SECONDS` used to.
+
+Cost, at R2's $0.015/GB-month, growing monotonically:
+
+| | Year 1 | Year 5 | 5-year total |
+| --- | --- | --- | --- |
+| Opus 48 kHz 32 kbps, ~140 GB/yr | ~$2/mo | ~$10/mo | ~$300 |
+| Whisper on everything recorded | \+ ~$22/mo | | |
+
+Transcription, not storage, is now the larger running cost — and it is the one
+that can be cut without losing anything permanent, because the audio stays and
+can be re-transcribed at any time. See below.
+
+## What the VAD is for
+
+Gating **transcription**, never storage.
+
+The VAD has only ever been wired to the question path. Gating the recording on
+it was considered, and is the right way to cut the transcription bill: measured
+across a day, roughly **11 % of what the device records is speech** — 4–20 % in
+workday hours, 10–53 % at home in the evening, near zero asleep.
+
+But an energy gate must not decide what survives. It would discard exactly the
+ambient sound that a future model might reconstruct a room from, permanently,
+on the basis of a threshold nobody validated for that purpose. Speech is what
+we can use today; it is not what is worth keeping.
+
+So: upload everything, transcribe selectively.
 
 ## Asking a question
 
@@ -70,85 +133,19 @@ LIFELOG ──double press──▶ ARMED ──speech──▶ CAPTURING ──
 - **PROCESSING** begins after 2 s of silence. Not 1.2 s as originally
   specified: measured against real Japanese speech, 1.2 s cut sentences off
   mid-thought.
-- Then the two minutes before the question go up, the question follows with
-  `sync=1`, and the transcript is handed to the chat client.
 
 Round trip is roughly 8 seconds, of which about 4 is transcription.
 
-## Retention
-
-One day, enforced in two places because neither knows about the other:
-
-| What | Where | How |
-| --- | --- | --- |
-| Audio | R2 | bucket lifecycle rule `expire-audio-1d` on `audio/` |
-| Transcripts | D1 | hourly cron sweeping `started_epoch` |
-
-Both measure from the segment's **own start time**, not from when it arrived.
-An upload deferred until the device found Wi-Fi still expires on schedule.
-
-## Why the lifelog went
-
-The continuous version worked. It ran 18 hours unattended on battery with no
-dropped frames, and the agent could summarise an arbitrary hour of the day. It
-was removed because the question feature does not need it — two minutes of
-context on demand does the same work — and because what it produced was mostly
-noise:
-
-- **Most of it was fiction.** Whisper, given a quiet room, returns its training
-  data: `Thank you.`, `ご視聴ありがとうございました`,
-  `Продолжение следует...`, `Hello everyone, welcome back to my channel`. Out
-  of 1254 segments, over 100 contained "Thank you". The 3 a.m. hour was
-  entirely hallucinated.
-- **It cost ~$22/month and uploaded 2.4 GB a day** — fine on Wi-Fi, absurd on
-  a SIM.
-
-**That cost figure is for an ungated pipeline, and should not be used as an
-argument against a lifelog as such.** The VAD was written, and it was only ever
-wired to the question path — `query.tick(...)`. The lifelog wrote and shipped
-every frame, silence included, which is also what generated the hallucinations
-above: no segment of pure silence would have been uploaded had the VAD gated
-the write. See below for what gating it would actually have saved.
-
-The hallucination problem is now filtered server-side, so the lifelog could
-come back. `Lifelog: ON` restores it — ungated, until the VAD is moved in front
-of the write path.
-
-## What a VAD in front would change
-
-Measured from the 589 segments in the last 24 hours that carry Whisper's own
-per-segment timings (the rest fell to a fallback model that reports none):
-
-| Hour, JST | Voiced share of recorded audio |
-| --- | --- |
-| 03 (asleep, 1 segment) | 3.2 % |
-| 12 – 19 (workday) | 4.4 – 19.9 %, mean ≈ 11 % |
-| 20 – 23 (home, talking) | 10.2 – 52.8 %, mean ≈ 31 % |
-
-Extrapolated across a full day including sleep, **roughly 11 % of what the
-device records is speech.** Transcribing only that costs about $2.4/month
-rather than $22, and ships ~260 MB/day rather than 2.4 GB.
-
-Two things stop that from being the honest saving:
-
-- `speech_ratio` is Whisper's word coverage, not an energy VAD's decision. An
-  RMS gate also passes air conditioning, traffic and keyboards. The measured
-  headroom is good — background RMS 352 against 2440–3536 for speech — but
-  a noisy room passes more than 11 %.
-- A 2 s hangover plus pre-roll pads every utterance, so scattered short
-  remarks cost far more than their voiced seconds.
-
-Call it **70–85 % saved, so $3–7/month**. Not $22, and not $2.4. The point
-stands either way: gating the lifelog on speech changes its cost by an order of
-magnitude, and that was never tried before switching it off.
-
 ## Rejecting hallucinated silence
 
-`no_speech_prob` is useless here — it came back as **0**, confidently claiming
-speech, for a segment transcribed as "Thank you. Thank you." at 3 a.m.
+Whisper, given a quiet room, returns its training data: `Thank you.`,
+`ご視聴ありがとうございました`, `Продолжение следует...`. Out of 1254 segments
+from one night, over 100 contained "Thank you" and the 3 a.m. hour was entirely
+invented.
 
-What separates them is how much of the segment Whisper actually placed words
-in:
+`no_speech_prob` is useless here — it came back as **0**, confidently claiming
+speech, for one of those. What separates them is how much of the segment
+Whisper actually placed words in:
 
 | | speech ratio | language confidence |
 | --- | --- | --- |
@@ -157,23 +154,14 @@ in:
 
 An order of magnitude apart, so the threshold sits at **0.15**, in open space.
 
-The signals are stored and filtered at read time, not dropped at write time.
-Transcription is billed per minute: a threshold baked into ingestion could only
-ever be revised by paying to re-run the whole corpus.
-
-## Cost
-
-| | |
-| --- | --- |
-| Workers AI Whisper | $0.00051 / audio minute |
-| R2 | $0.015/GB-month, egress free, 10 GB free tier |
-| Questions at ~2.5 min of audio each | well under $1/month |
-| The continuous lifelog it replaced, ungated | ~$22/month |
-| The same lifelog with the VAD in front | ~$3–7/month, estimated |
+Filtered at read time, never at write time — and now for a second reason.
+Beyond being able to revisit the threshold without paying to transcribe again,
+a hallucinated transcript is a defect in the *index*, not in the recording. The
+audio behind it is as real as any other minute.
 
 ## Operational notes
 
-Three things about this device will bite anyone who forgets them.
+Four things about this device will bite anyone who forgets them.
 
 **The side button belongs to the launcher.** CarrotOS takes it from
 `com.r1.launcher/.PowerService`, an AccessibilityService, so it is handled
@@ -193,24 +181,31 @@ from the enabled list.
 network policy. The device shell pings the host in 18 ms while the app cannot
 resolve anything, and `getActiveNetwork()` returns null — which is also what it
 returns when there is genuinely no network, with no way to tell the two apart.
-
-That last one is why link state comes from a `NetworkCallback` rather than
+That is why link state comes from a `NetworkCallback` rather than
 `getActiveNetwork()`, and why the uploader re-reads `ConnectivityManager`
 before every pass: `onLost` fires when *a* network disappears, not when the
 device goes offline, and taking it at face value once stranded 325 segments on
 a device that could ping the server in 39 ms.
 
+**Nothing starts recording by itself.** A microphone foreground service cannot
+be started from the background on Android 14, so recording has to come through
+the Activity: `am start -n com.r1.audioprobe/.MainActivity --ez autostart true`.
+There is no boot receiver yet, which means a reboot stops the archive until
+someone notices.
+
 ## What is not built
 
-- **VAD in front of the lifelog write path.** The gate exists and drives the
-  question flow; it has never gated the recording. Anyone turning
-  `Lifelog: ON` back on should wire it first — see above for the arithmetic.
-- **Opus.** Implemented and building, toggle off. With the lifelog gone the
-  volume no longer justifies the risk of an untested codec path.
+- **Restart after reboot.** The gap above. An archival device that stops
+  because the battery died and came back is broken, and this one is.
+- **Transcription gating.** Everything recorded is currently transcribed,
+  which is now the dominant running cost and buys hallucinated text for the
+  ~89 % of the day that is not speech.
+- **Integrity checking beyond `/v1/admin/reconcile`.** No checksums, no second
+  copy. One bucket, one account, one bad decision away from the whole archive.
+- **Dual-mic capture.** `Built-In Back Mic` exists and is unused. Stereo would
+  preserve direction, which is the kind of thing "reconstruct the scene later"
+  actually needs.
 - **TTS.** Answers are read, not spoken.
-- **Wake word.** The gesture is the only trigger.
-- **72-hour soak.** 18 hours passed cleanly; the battery lasts ~20, so longer
-  runs need mains power.
 
 ## Measured hardware
 

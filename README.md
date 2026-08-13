@@ -15,7 +15,7 @@ not assumed.
 | `core/` | Android library: the motorised camera arm (`R1Motor`) and Camera2 capture, shared by the apps |
 | `app/` | **R1 Camera** — preview, shutter, and direct control of the lens angle |
 | `hermes/` | **R1 Hermes** — chat client for a Hermes gateway: streaming replies, tool activity, approvals, push-to-talk, photo attachments |
-| `audioprobe/` | **R1 Audio Probe** — double-press the side button to ask a question about the conversation around you |
+| `audioprobe/` | **R1 Audio Probe** — continuous 48 kHz recording, plus a side-button gesture for asking about what was just said |
 | `cloudflare/lifelog/` | Worker that ingests audio into R2, transcribes it with Workers AI Whisper into D1, and exposes it to the agent over MCP |
 
 Reference docs:
@@ -42,32 +42,30 @@ actually does:
 | Microphone | 16 kHz mono PCM captures natively |
 | Battery | ~1010 mAh; continuous recording draws ~53 mA → 20+ hours |
 
-## Asking the device a question
+## Keeping the audio
 
-Double-press the side button, ask out loud, and the answer comes back from a
-Hermes agent that has been handed the two minutes of conversation preceding the
-question.
+The recording is the artefact. Transcription, search and the question feature
+are what today's models can do with it, and can all be redone later against the
+same bytes; the audio cannot be. Nothing is deleted.
 
 ```
-R1 ──PUT /v1/segments/{id}?sync=1──▶ Worker ──▶ R2 (audio, 1 day)
-                                        │
-                                        └──▶ Workers AI Whisper ──▶ D1 (1 day)
-                                                                     │
-                       Hermes agent ◀── MCP: lifelog_recent / _search ┘
+R1 ──PUT /v1/segments/{id}──▶ Worker ──▶ R2 (audio, kept)
+ 48 kHz mono, Opus 32 kbps      │
+                                └──▶ Workers AI Whisper ──▶ D1 (transcripts)
+                                                             │
+               Hermes agent ◀── MCP: lifelog_recent / _search ┘
 ```
 
-Nothing is recorded to disk and nothing is uploaded until a question is asked.
-Audio lives in a 150-second in-memory ring buffer and is otherwise overwritten
-in place. Both stores expire after a day.
+48 kHz because sample rate is the one choice that cannot be revisited — the
+mic reaches well past 8 kHz, and the first weeks of 16 kHz recording threw that
+away permanently. Opus because it keeps the whole band for ~270 KB a minute,
+about 140 GB a year.
 
-Because the agent reaches the transcripts through MCP tools, resolving "さっき
-の話" needs no dedicated query API and no context plumbing on the device: the
-agent decides on its own to go and look.
-
-This started as a continuous 24/7 lifelog, which worked — 18 hours unattended
-on battery, no frame loss, no stalls, 107 MB/h — and was then removed on
-purpose. [`DESIGN.md`](DESIGN.md) records why, and what continuous transcription
-of a quiet room actually returns.
+Double-press the side button and ask a question out loud, and a Hermes agent
+answers it with the preceding two minutes as context. Because the agent reaches
+the transcripts through MCP tools, resolving "さっきの話" needs no dedicated
+query API and no context plumbing on the device: the agent decides on its own
+to go and look.
 
 ## Building
 
