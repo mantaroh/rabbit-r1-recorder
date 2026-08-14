@@ -92,10 +92,16 @@ class RecorderService : Service() {
         const val EXTRA_PHOTOS = "photos"
 
         /**
-         * One front/rear pair every five minutes: 288 cycles a day, about
-         * 23 MB, and few enough trips for the arm that wear is not a concern.
+         * One front/rear pair every fifteen minutes.
+         *
+         * Five was the first guess and it produced a photograph every single
+         * cycle: in an occupied room some speech falls inside any five-minute
+         * window, so the gate that was meant to skip quiet periods passed
+         * everything and the result read as continuous. Fifteen keeps the
+         * timelapse continuous enough to follow while cutting the volume to a
+         * third.
          */
-        private const val PHOTO_INTERVAL_MS = 5 * 60_000L
+        private const val PHOTO_INTERVAL_MS = 15 * 60_000L
 
         private const val CONTEXT_MS = 120_000L
 
@@ -295,7 +301,7 @@ class RecorderService : Service() {
         useOpus = intent?.getBooleanExtra(EXTRA_OPUS, false) ?: false
         photosEnabled = intent?.getBooleanExtra(EXTRA_PHOTOS, true) ?: true
         if (photosEnabled) {
-            timelapse = Timelapse(this, metrics, photoDir())
+            timelapse = Timelapse(this, metrics, uploadSettings, photoDir())
             // The arm's real position is unknown until carroot is asked, and
             // the first cycle needs somewhere to put it back to.
             R1Motor.syncFromDevice()

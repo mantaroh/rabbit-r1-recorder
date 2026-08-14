@@ -41,6 +41,9 @@ class MainActivity : Activity() {
 
         /** Run the two-microphone experiment; see MicProbe. */
         const val EXTRA_MIC_PROBE = "micprobe"
+
+        /** Wi-Fi the timelapse may photograph from; empty means anywhere. */
+        const val EXTRA_PHOTO_SSID = "photo_ssid"
     }
 
     private lateinit var statusView: TextView
@@ -50,6 +53,7 @@ class MainActivity : Activity() {
     private lateinit var accessIdField: EditText
     private lateinit var accessSecretField: EditText
     private lateinit var deviceIdField: EditText
+    private lateinit var photoSsidField: EditText
     private lateinit var metrics: Metrics
     private lateinit var upload: UploadSettings
 
@@ -104,6 +108,14 @@ class MainActivity : Activity() {
     }
 
     private fun applyLaunchExtras(source: Intent?) {
+        // Typing an SSID on a 240 dp panel is its own small punishment, and
+        // this is the kind of setting that gets changed from a laptop.
+        source?.getStringExtra(EXTRA_PHOTO_SSID)?.let {
+            upload.photoSsid = it
+            photoSsidField.setText(upload.photoSsid)
+            metrics.write("photo_ssid_set", mapOf("ssid" to upload.photoSsid))
+        }
+
         if (source?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) start()
 
         // The service is not exported, so a shell cannot address it directly;
@@ -177,6 +189,8 @@ class MainActivity : Activity() {
         accessIdField = field(column, "CF-Access-Client-Id", masked = false)
         accessSecretField = field(column, "CF-Access-Client-Secret", masked = true)
         deviceIdField = field(column, "Device id", masked = false)
+        // Empty means photograph anywhere; see UploadSettings.photoSsid.
+        photoSsidField = field(column, "Photo Wi-Fi SSID", masked = false)
         column.addView(button("Save target") { saveUploadFields() }, wide())
 
         column.addView(toggle("Upload: OFF") {
@@ -266,6 +280,7 @@ class MainActivity : Activity() {
         accessIdField.setText(upload.accessClientId)
         accessSecretField.setText(upload.accessClientSecret)
         deviceIdField.setText(upload.deviceId)
+        photoSsidField.setText(upload.photoSsid)
     }
 
     private fun saveUploadFields() {
@@ -274,6 +289,7 @@ class MainActivity : Activity() {
         upload.accessClientId = accessIdField.text.toString()
         upload.accessClientSecret = accessSecretField.text.toString()
         upload.deviceId = deviceIdField.text.toString()
+        upload.photoSsid = photoSsidField.text.toString()
         refresh()
     }
 

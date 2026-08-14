@@ -22,6 +22,7 @@ class UploadSettings(context: Context) {
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_UNMETERED_ONLY = "unmetered_only"
         private const val KEY_LANGUAGE = "language"
+        private const val KEY_PHOTO_SSID = "photo_ssid"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -81,6 +82,18 @@ class UploadSettings(context: Context) {
     var language: String
         get() = prefs.getString(KEY_LANGUAGE, DEFAULT_LANGUAGE).orEmpty()
         set(v) = prefs.edit().putString(KEY_LANGUAGE, v.trim()).apply()
+
+    /**
+     * Wi-Fi network the timelapse is allowed to photograph from, by SSID.
+     *
+     * Empty means anywhere. Audio goes wherever the device does, but a camera
+     * is a different proposition: this keeps the photographs to one place that
+     * was chosen deliberately, rather than to whatever room the device happens
+     * to be carried into.
+     */
+    var photoSsid: String
+        get() = prefs.getString(KEY_PHOTO_SSID, "").orEmpty()
+        set(v) = prefs.edit().putString(KEY_PHOTO_SSID, v.trim()).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

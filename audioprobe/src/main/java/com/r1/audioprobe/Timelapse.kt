@@ -1,6 +1,8 @@
 package com.r1.audioprobe
 
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.wifi.WifiManager
 import android.util.Log
 import com.r1.core.R1Motor
 import com.r1.core.StillCamera
@@ -27,8 +29,9 @@ import java.util.concurrent.TimeUnit
  * [waitForQuiet] and accept the noise.
  */
 class Timelapse(
-    context: Context,
+    private val context: Context,
     private val metrics: Metrics,
+    private val settings: UploadSettings,
     private val dir: File,
 ) {
 
@@ -37,6 +40,16 @@ class Timelapse(
 
         /** Long edge of the stored JPEG. Enough to see a room, not a face across it. */
         private const val MAX_EDGE = 640
+
+        /**
+         * Mean luma below which the frame is discarded, 0-255.
+         *
+         * A lit room sits well above this; a dark bedroom at night sits far
+         * below. 18 is low enough that a dim room still gets photographed and
+         * high enough that a black frame never reaches the captioning model,
+         * which will otherwise describe one in confident detail.
+         */
+        private const val MIN_LUMA = 18
 
         /** How long a cycle may be deferred before it is skipped outright. */
         private const val MAX_DEFER_MS = 120_000L
@@ -65,10 +78,28 @@ class Timelapse(
         private const val SETTLE_MS = 400L
 
         private const val MOTOR_TIMEOUT_MS = 5_000L
+
+        /**
+         * Correction per arm position, added to the sensor's own orientation
+         * (90 on this device), giving JPEG_ORIENTATION 270 in front and 90
+         * behind.
+         *
+         * The sensor rides on the arm, so the two positions are 180 degrees
+         * apart — which is exactly the pair the camera app has carried since
+         * it was calibrated by hand. Setting both to zero here, on the theory
+         * that the observed error looked identical from both sides, put the
+         * front frame upside down: head at the bottom, lettering mirrored.
+         * The original values were right; the observation was made on frames
+         * whose content gave no reliable clue which way up they belonged.
+         */
+        private const val ROTATION_FACE = 180
+        private const val ROTATION_BACK = 0
     }
 
     private val camera = StillCamera(context)
     private val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+    private val wifiManager: WifiManager? =
+        context.applicationContext.getSystemService(WifiManager::class.java)
 
     /**
      * A cycle takes seconds: two motor moves, two sensor opens, a settle in
@@ -113,6 +144,30 @@ class Timelapse(
         speechSeen = true
     }
 
+    /**
+     * Whether the device is on the Wi-Fi it is allowed to photograph from.
+     *
+     * An empty setting means anywhere, which is what every install before this
+     * did. Reading the SSID needs location permission on Android 10 and above;
+     * without it the platform returns `<unknown ssid>` rather than failing, so
+     * an un-granted install quietly stops taking photographs instead of
+     * quietly taking them everywhere. That is the right way round.
+     */
+    private fun onHomeNetwork(): Boolean {
+        val wanted = settings.photoSsid
+        if (wanted.isEmpty()) return true
+
+        val info = runCatching {
+            wifiManager?.connectionInfo
+        }.getOrNull() ?: return false
+
+        // The platform wraps it in quotes, and reports this literal when it is
+        // withholding the name rather than when there is no network.
+        val ssid = info.ssid.orEmpty().trim('"')
+        if (ssid.isEmpty() || ssid == "<unknown ssid>") return false
+        return ssid.equals(wanted, ignoreCase = true)
+    }
+
     @Volatile private var busy = false
 
     /** Wall-clock of the last cycle that actually ran. */
@@ -128,11 +183,25 @@ class Timelapse(
         // A freshly started service has heard nothing yet, so there is no
         // baseline to compare against and no window to judge. Returning
         // without touching the clock matters: consuming the interval here
-        // would push the first real photograph five minutes past every
-        // restart, and installs are frequent.
+        // would push the first real photograph past every restart, and
+        // installs are frequent.
         if (secondsNoted < WARMUP_SECONDS) return
 
         if (nowMs - lastRunAt < intervalMs) return
+
+        // Photographs are taken at home and nowhere else. Audio travels
+        // wherever the device does; a camera pointed at whatever room the
+        // owner happens to be standing in is a different proposition, and the
+        // network the device is on is the cheapest available proxy for "this
+        // is the place where that was agreed". Checked here rather than in the
+        // uploader so nothing is captured in the first place.
+        if (!onHomeNetwork()) {
+            metrics.write("photo_skip", mapOf("why" to "away"))
+            resetWindow()
+            lastRunAt = nowMs
+            dueSince = 0L
+            return
+        }
 
         // Nothing happened since the last pair, so the pair would be identical
         // to it. Reset the window and wait — including the clock, so the next
@@ -194,16 +263,31 @@ class Timelapse(
         val at = stamp.format(Date())
         var taken = 0
 
-        for ((label, angle) in listOf("front" to R1Motor.MOTOR_FACE, "rear" to R1Motor.MOTOR_BACK)) {
+        val positions = listOf(
+            Triple("front", R1Motor.MOTOR_FACE, ROTATION_FACE),
+            Triple("rear", R1Motor.MOTOR_BACK, ROTATION_BACK),
+        )
+        for ((label, angle, rotation) in positions) {
             if (!moveAndWait(angle)) {
                 metrics.write("photo_skip", mapOf("why" to "motor", "angle" to angle))
                 continue
             }
             Thread.sleep(SETTLE_MS)
 
-            val bytes = camera.capture(MAX_EDGE)
+            val bytes = camera.capture(MAX_EDGE, rotation)
             if (bytes == null) {
                 metrics.write("photo_skip", mapOf("why" to "capture", "angle" to angle))
+                continue
+            }
+
+            // A dark room photographs as noise, and the captioning model does
+            // to a black frame what Whisper does to silence: invents something
+            // plausible. One frame taken before the exposure fix came back
+            // described as a lit overpass at night. Cheaper to notice here
+            // than to store, upload, caption and then filter.
+            val luma = meanLuma(bytes)
+            if (luma != null && luma < MIN_LUMA) {
+                metrics.write("photo_skip", mapOf("why" to "dark", "luma" to luma, "side" to label))
                 continue
             }
 
@@ -231,6 +315,41 @@ class Timelapse(
                 "speech" to spoke,
             ),
         )
+    }
+
+    /**
+     * Mean brightness of the frame, 0-255, or null if it will not decode.
+     *
+     * This device has no ambient light sensor — accelerometer, gyroscope and
+     * orientation, nothing else — so the picture has to answer the question
+     * about itself. Decoding a 640x480 JPEG subsampled by 8 costs a couple of
+     * milliseconds on the timelapse thread, which is doing nothing else.
+     */
+    private fun meanLuma(jpeg: ByteArray): Int? {
+        val options = BitmapFactory.Options().apply { inSampleSize = 8 }
+        val bitmap = runCatching {
+            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, options)
+        }.getOrNull() ?: return null
+
+        return try {
+            val width = bitmap.width
+            val height = bitmap.height
+            if (width == 0 || height == 0) return null
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            var total = 0L
+            for (pixel in pixels) {
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                // Rec. 601 luma, integer arithmetic; precision beyond this is
+                // meaningless against a threshold set by eye.
+                total += (r * 299 + g * 587 + b * 114) / 1000
+            }
+            (total / pixels.size).toInt()
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     private fun moveAndWait(angle: Int): Boolean {

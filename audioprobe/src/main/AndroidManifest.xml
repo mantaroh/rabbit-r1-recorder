@@ -12,6 +12,12 @@
     <!-- Timelapse frames from the motorised arm; see Timelapse.kt. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+    <!-- Photographs are confined to one Wi-Fi. Reading which network the
+         device is on needs the location permission from Android 10 onward,
+         even though nothing here wants a position. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 

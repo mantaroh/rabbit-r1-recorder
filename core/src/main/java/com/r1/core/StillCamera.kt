@@ -57,7 +57,19 @@ class StillCamera(private val context: Context) {
      * Blocking: callers are background threads that have nothing better to do,
      * and the alternative is a callback chain across four Camera2 listeners.
      */
-    fun capture(maxEdge: Int): ByteArray? {
+    /**
+     * [rotationDeg] is the calibrated correction for the arm position this
+     * shot is taken at, added on top of the sensor's own orientation. The
+     * first version of this set no orientation at all and every frame reached
+     * R2 rotated a quarter turn — the encoder emits raw sensor orientation
+     * unless told otherwise, and on this device that is not upright.
+     *
+     * The sensor rides on the arm, so the two positions are 180 degrees apart
+     * and each needs its own value. They are calibrated rather than derived:
+     * the panel and sensor mounting here do not follow the usual convention,
+     * which is why the camera app persists them per side too.
+     */
+    fun capture(maxEdge: Int, rotationDeg: Int = 0): ByteArray? {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val cameraId = selectCameraId(manager) ?: run {
             Log.w(TAG, "no camera available")
@@ -75,6 +87,11 @@ class StillCamera(private val context: Context) {
 
         try {
             val characteristics = manager.getCameraCharacteristics(cameraId)
+            val sensorOrientation =
+                characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+            val jpegOrientation = ((sensorOrientation + rotationDeg) % 360 + 360) % 360
+            Log.i(TAG, "still: sensor=$sensorOrientation cal=$rotationDeg jpeg=$jpegOrientation")
+
             val size = chooseSize(characteristics, maxEdge)
             reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 1)
 
@@ -123,6 +140,7 @@ class StillCamera(private val context: Context) {
                 set(CaptureRequest.CONTROL_AF_MODE, af)
                 set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
                 set(CaptureRequest.JPEG_QUALITY, 60.toByte())
+                set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
             }.build()
 
             session.stopRepeating()

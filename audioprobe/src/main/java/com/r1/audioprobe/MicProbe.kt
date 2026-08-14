@@ -51,10 +51,56 @@ object MicProbe {
     private const val HIGHPASS_POLES = 4
 
     /**
+     * Widest inter-channel delay worth searching, in samples.
+     *
+     * Level differences failed because sound diffracts around an obstacle
+     * smaller than its wavelength. Delay does not: however the wave gets
+     * there, it reaches the near capsule first. Two capsules 50-80 mm apart
+     * are 7-11 samples apart at 48 kHz, so ±24 covers the geometry with room
+     * for a wrong guess about the spacing.
+     *
+     * The sign is the whole experiment. Magnitude would give an angle, which
+     * this baseline is too short to resolve reliably; sign only needs the
+     * correlation peak to land on the correct side of zero.
+     */
+    private const val MAX_LAG = 24
+
+    /**
      * Cascaded one-pole high-pass. Not a good filter, but a predictable one,
      * and steep enough that what reaches the accumulator is the band the
      * experiment is about.
      */
+    /**
+     * Lag, in samples, at which the two channels best line up.
+     *
+     * Positive means [right] arrived later — the source was nearer the capsule
+     * feeding the left channel. Returns null when neither channel carries
+     * enough energy for the peak to mean anything, so silence does not vote.
+     *
+     * The channels are high-passed first. Low frequencies have wavelengths
+     * many times the baseline, so they contribute a broad, flat correlation
+     * peak that buries the sharp one the delay actually produces.
+     */
+    private fun bestLag(left: DoubleArray, right: DoubleArray, n: Int): Pair<Int, Double>? {
+        var energy = 0.0
+        for (i in 0 until n) energy += left[i] * left[i] + right[i] * right[i]
+        if (energy < n * 4.0) return null
+
+        var bestLag = 0
+        var bestScore = -Double.MAX_VALUE
+        for (lag in -MAX_LAG..MAX_LAG) {
+            var sum = 0.0
+            val from = maxOf(0, -lag)
+            val to = minOf(n, n - lag)
+            for (i in from until to) sum += left[i] * right[i + lag]
+            if (sum > bestScore) {
+                bestScore = sum
+                bestLag = lag
+            }
+        }
+        return bestLag to bestScore / energy
+    }
+
     private class HighPass(cutoffHz: Double, sampleRate: Int, poles: Int) {
         private val alpha: Double = run {
             val rc = 1.0 / (2.0 * Math.PI * cutoffHz)
@@ -143,6 +189,10 @@ object MicProbe {
             val hpL = HighPass(HIGHPASS_HZ, sampleRate, HIGHPASS_POLES)
             val hpR = HighPass(HIGHPASS_HZ, sampleRate, HIGHPASS_POLES)
 
+            // Deinterleaved, high-passed copies for the correlation.
+            val chanL = DoubleArray(frames)
+            val chanR = DoubleArray(frames)
+
             cue(1)
             while (System.currentTimeMillis() < until) {
                 if (!switched && System.currentTimeMillis() >= halfway) {
@@ -169,6 +219,11 @@ object MicProbe {
                     val fr = hpR.process(r)
                     highL += fl * fl
                     highR += fr * fr
+                    val frame = i / 2
+                    if (frame < frames) {
+                        chanL[frame] = fl
+                        chanR[frame] = fr
+                    }
                     i += 2
                 }
                 val pairs = read / 2
@@ -178,6 +233,7 @@ object MicProbe {
                 val rmsR = sqrt(sumR / pairs)
                 val hiL = sqrt(highL / pairs)
                 val hiR = sqrt(highR / pairs)
+                val lag = bestLag(chanL, chanR, minOf(pairs, frames))
                 metrics.write(
                     "mic_probe",
                     mapOf(
@@ -200,6 +256,12 @@ object MicProbe {
                         // populations can be compared without matching
                         // timestamps by hand.
                         "half" to if (switched) "behind" else "front",
+                        // Inter-channel delay in samples, and how sharply the
+                        // correlation picked it. This is the measurement that
+                        // matters: diffraction erases the level difference but
+                        // not the time of flight.
+                        "lag" to (lag?.first ?: "n/a"),
+                        "corr" to (lag?.second?.let { String.format("%.3f", it) } ?: "n/a"),
                     ),
                 )
             }
