@@ -51,6 +51,8 @@ object LifelogSummary {
         val codexResetsAt: Long?,
         val claudeOutputTokens: Long,
         val claudeMessages: Int,
+        /** Subscription tier, reported but never turned into a percentage. */
+        val claudePlan: String?,
         /** Seconds since the reporting machine measured it. */
         val ageSeconds: Long?,
     )
@@ -100,6 +102,9 @@ object LifelogSummary {
             codexResetsAt = primary?.optLong("resets_at")?.takeIf { it > 0 },
             claudeOutputTokens = fiveHour?.optLong("output") ?: 0,
             claudeMessages = fiveHour?.optInt("messages") ?: 0,
+            claudePlan = claude?.optJSONObject("plan")
+                ?.optString("subscription")
+                ?.takeIf { it.isNotEmpty() && it != "null" },
             ageSeconds = json.optLong("age_seconds").takeIf { json.has("age_seconds") },
         )
     }

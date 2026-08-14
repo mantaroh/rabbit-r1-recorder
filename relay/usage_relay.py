@@ -172,8 +172,32 @@ def claude_tokens() -> dict:
         "available": True,
         "used_percent": None,
         "note": "Claude Code stores no rate limits locally; tokens only",
+        "plan": claude_plan(),
         "windows": {f"{hours}h": buckets[hours] for hours in WINDOWS},
         "source": "claude session logs",
+    }
+
+
+def claude_plan() -> dict:
+    """
+    Which subscription this is, from the credentials Claude Code already wrote.
+
+    Worth reporting and not worth turning into a percentage. The tier names a
+    plan whose limits are published as approximate message counts that vary
+    with model and context length, so dividing tokens by them would produce a
+    figure with tens of percent of error wearing the costume of a measurement.
+    The tier itself is a fact; the denominator is not.
+    """
+    path = os.path.expanduser("~/.claude/.credentials.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            oauth = json.load(handle).get("claudeAiOauth") or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    return {
+        "subscription": oauth.get("subscriptionType"),
+        "rate_limit_tier": oauth.get("rateLimitTier"),
     }
 
 

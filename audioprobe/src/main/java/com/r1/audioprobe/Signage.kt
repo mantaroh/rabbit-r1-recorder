@@ -226,9 +226,13 @@ private class AgentUsageScreen : SignageScreen {
                     append("  —\n")
                 }
 
-                append('\n').append("Claude Code  5h\n")
-                // No percentage: Claude Code stores no limits on the machine
-                // it runs on, so there is nothing to be a percentage of.
+                append('\n').append("Claude Code  5h")
+                agents.claudePlan?.let { append("  (").append(it).append(')') }
+                append('\n')
+                // No percentage. The plan is known but its limits are
+                // published as approximate message counts that vary with model
+                // and context, so a proportion built on them would carry tens
+                // of percent of error and look authoritative anyway.
                 append("  out ").append(tokens(agents.claudeOutputTokens))
                 append(" / ").append(agents.claudeMessages).append("msg")
 
