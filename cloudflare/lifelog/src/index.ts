@@ -215,12 +215,34 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
   const day = startedAt.slice(0, 10).replace(/-/g, "/");
   const key = `audio/${day}/${segmentId}.${extension}`;
 
-  const object = await env.BUCKET.put(key, request.body, {
-    httpMetadata: {
-      contentType: request.headers.get("content-type") ?? "application/octet-stream",
-    },
-    customMetadata: { segmentId, deviceId, kind, startedAt },
-  });
+  // The device sends the digest of what it hashed off its own disk. Handing it
+  // to R2 makes the write fail on a mismatch rather than faithfully storing
+  // whatever arrived — a segment corrupted in transit would otherwise surface
+  // years later as a transcript that reads slightly wrong, with nothing to say
+  // it was ever damaged.
+  const sha256 = url.searchParams.get("sha256")?.toLowerCase() ?? null;
+  if (sha256 !== null && !/^[0-9a-f]{64}$/.test(sha256)) {
+    return json({ error: "sha256 must be 64 hex characters" }, 400);
+  }
+
+  let object: R2Object | null;
+  try {
+    object = await env.BUCKET.put(key, request.body, {
+      httpMetadata: {
+        contentType: request.headers.get("content-type") ?? "application/octet-stream",
+      },
+      customMetadata: { segmentId, deviceId, kind, startedAt },
+      ...(sha256 ? { sha256 } : {}),
+    });
+  } catch (error) {
+    // Nothing is stored under this key, so the device retrying is the right
+    // outcome; 422 tells it the bytes were wrong rather than the server.
+    console.error("upload rejected", segmentId, error);
+    return json(
+      { segment_id: segmentId, error: "checksum mismatch", detail: String(error).slice(0, 200) },
+      422,
+    );
+  }
 
   const durationMs =
     endedAt && !Number.isNaN(Date.parse(endedAt))
@@ -239,8 +261,8 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
     `INSERT INTO segments
        (segment_id, device_id, kind, r2_key, codec, sample_rate,
         started_at, started_epoch, ended_at, duration_ms, bytes,
-        received_at, status, rms_envelope, voiced_ratio)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+        received_at, status, rms_envelope, voiced_ratio, sha256)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
      ON CONFLICT(segment_id) DO UPDATE SET
        r2_key = excluded.r2_key,
        bytes = excluded.bytes,
@@ -248,6 +270,7 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
        status = excluded.status,
        rms_envelope = excluded.rms_envelope,
        voiced_ratio = excluded.voiced_ratio,
+       sha256 = excluded.sha256,
        error = NULL`,
   )
     .bind(
@@ -272,6 +295,7 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       silent ? "silent" : "pending",
       envelopeRaw,
       ratio,
+      sha256,
     )
     .run();
 
@@ -829,16 +853,23 @@ async function backfill(env: Env, url: URL): Promise<Response> {
  * transcription will ever run over. This says how much of that there is.
  */
 async function reconcile(env: Env): Promise<Response> {
-  const known = await env.DB.prepare(`SELECT segment_id FROM segments`).all<{
-    segment_id: string;
-  }>();
-  const rows = new Set((known.results ?? []).map((r) => r.segment_id));
+  const known = await env.DB.prepare(
+    `SELECT segment_id, bytes, sha256 FROM segments`,
+  ).all<{ segment_id: string; bytes: number | null; sha256: string | null }>();
+  const rows = new Map(
+    (known.results ?? []).map((r) => [r.segment_id, r]),
+  );
 
   let objects = 0;
   let bytes = 0;
   let orphanCount = 0;
   let orphanBytes = 0;
+  let checksummed = 0;
   const orphans: string[] = [];
+  // An object whose size no longer matches the row is the shape silent
+  // corruption takes: still present, still listed, quietly not what was
+  // stored. Cheap to check on every listing, so there is no reason not to.
+  const sizeMismatch: string[] = [];
   const seen = new Set<string>();
 
   let cursor: string | undefined;
@@ -851,12 +882,18 @@ async function reconcile(env: Env): Promise<Response> {
       bytes += object.size;
       const id = object.key.split("/").pop()!.replace(/\.[^.]+$/, "");
       seen.add(id);
-      if (!rows.has(id)) {
+      const row = rows.get(id);
+      if (!row) {
         orphanCount += 1;
         orphanBytes += object.size;
         // Keys sort chronologically (audio/YYYY/MM/DD/…), so a bounded sample
         // is enough to see which days lost their index.
         if (orphans.length < 40) orphans.push(object.key);
+      } else {
+        if (row.sha256) checksummed += 1;
+        if (row.bytes !== null && row.bytes !== object.size && sizeMismatch.length < 40) {
+          sizeMismatch.push(`${object.key} db=${row.bytes} r2=${object.size}`);
+        }
       }
     }
     if (!listed.truncated) {
@@ -866,7 +903,7 @@ async function reconcile(env: Env): Promise<Response> {
     cursor = listed.cursor;
   }
 
-  const missing = [...rows].filter((id) => !seen.has(id));
+  const missing = [...rows.keys()].filter((id) => !seen.has(id));
 
   return json({
     r2_objects: objects,
@@ -880,6 +917,10 @@ async function reconcile(env: Env): Promise<Response> {
     // Rows whose audio is gone: the recording was deleted, the text remains.
     rows_without_audio: missing.length,
     rows_without_audio_sample: missing.slice(0, 40),
+    size_mismatches: sizeMismatch.length,
+    size_mismatch_sample: sizeMismatch,
+    // How much of the archive R2 verified against a device-computed digest.
+    with_checksum: checksummed,
     truncated: cursor !== undefined,
   });
 }

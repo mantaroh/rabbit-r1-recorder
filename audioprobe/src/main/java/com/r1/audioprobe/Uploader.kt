@@ -6,6 +6,7 @@ import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -125,6 +126,7 @@ class Uploader(
             envelopeFile(file).takeIf { it.exists() }?.let {
                 append("&rms=").append(enc(it.readText().trim()))
             }
+            sha256(file)?.let { append("&sha256=").append(it) }
         }
 
         var connection: HttpURLConnection? = null
@@ -210,6 +212,7 @@ class Uploader(
             append("&kind=").append(kind)
             append("&codec=wav&sample_rate=").append(sampleRate())
             append("&language=").append(enc(settings.language))
+            sha256(file)?.let { append("&sha256=").append(it) }
             append("&sync=1")
         }
 
@@ -286,6 +289,27 @@ class Uploader(
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    /**
+     * Digest of the bytes as they sit on disk, so the server can reject a
+     * segment that changed on the way rather than storing the damage.
+     *
+     * Read separately from the upload rather than hashed while streaming: the
+     * point is to describe what is *on disk*, and a single extra pass over
+     * 270 KB is nothing next to the round trip that follows.
+     */
+    private fun sha256(file: File): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull()
 
     /** Sidecar holding the per-second loudness written when the segment closed. */
     private fun envelopeFile(audio: File) =

@@ -1,0 +1,11 @@
+-- End-to-end checksum of the audio, computed on the device before upload.
+--
+-- R2 already guards its own storage, but nothing checked the path in between:
+-- a segment truncated or mangled on the way out of the device would be stored
+-- faithfully as whatever arrived, and the only symptom would be a transcript
+-- that reads slightly wrong years later. Handing the digest to R2 at write
+-- time makes it reject a mismatch instead, and keeping it here lets the object
+-- be re-verified at any point afterwards.
+--
+-- NULL for everything uploaded before the device sent one.
+ALTER TABLE segments ADD COLUMN sha256 TEXT;
