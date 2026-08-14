@@ -118,6 +118,7 @@ class Uploader(
             append("&started_at=").append(enc(startedAt))
             append("&kind=lifelog&sample_rate=").append(sampleRate())
             append("&codec=").append(if (opus) "opus" else "wav")
+            append("&language=").append(enc(settings.language))
         }
 
         var connection: HttpURLConnection? = null
@@ -200,7 +201,9 @@ class Uploader(
             append("?device_id=").append(enc(settings.deviceId))
             append("&started_at=").append(enc(stamp.format(Date(startedAtMs))))
             append("&kind=").append(kind)
-            append("&codec=wav&sample_rate=").append(sampleRate()).append("&sync=1")
+            append("&codec=wav&sample_rate=").append(sampleRate())
+            append("&language=").append(enc(settings.language))
+            append("&sync=1")
         }
 
         var connection: HttpURLConnection? = null

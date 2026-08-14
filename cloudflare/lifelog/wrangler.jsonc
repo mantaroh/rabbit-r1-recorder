@@ -6,6 +6,12 @@
 
   "observability": { "enabled": true },
 
+  // Default language handed to Whisper. The device sends `?language=` from its
+  // own setting and wins; this covers the paths with no device behind them
+  // (backfill, reindex). "auto" restores guessing — which drifts, see
+  // languageFor() in src/index.ts.
+  "vars": { "TRANSCRIBE_LANGUAGE": "ja" },
+
   // Cloudflare Access can only protect a hostname in a zone you own, so the
   // Worker has to leave *.workers.dev to sit behind the same Service Auth
   // policy as the Hermes gateway.

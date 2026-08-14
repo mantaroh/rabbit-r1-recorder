@@ -21,9 +21,16 @@ class UploadSettings(context: Context) {
         private const val KEY_ACCESS_SECRET = "access_client_secret"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_UNMETERED_ONLY = "unmetered_only"
+        private const val KEY_LANGUAGE = "language"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
+
+        /** Japanese unless told otherwise; this device lives in Japan. */
+        private const val DEFAULT_LANGUAGE = "ja"
+
+        /** Offered in the UI, in cycle order. */
+        val LANGUAGES = listOf("ja", "en", "auto")
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -60,6 +67,20 @@ class UploadSettings(context: Context) {
     var unmeteredOnly: Boolean
         get() = prefs.getBoolean(KEY_UNMETERED_ONLY, true)
         set(v) = prefs.edit().putBoolean(KEY_UNMETERED_ONLY, v).apply()
+
+    /**
+     * Language told to Whisper, as an ISO 639-1 code, or "auto" to let it
+     * guess. Persisted here rather than on the server so it can be changed
+     * without a deploy.
+     *
+     * Guessing drifts: one drive came back as `en`, `ja` and `ko` across
+     * consecutive minutes of the same conversation, the Korean stretch being
+     * hangul spelling out Japanese. Naming the language removes that entirely,
+     * at the cost of mistranscribing anything genuinely spoken in another one.
+     */
+    var language: String
+        get() = prefs.getString(KEY_LANGUAGE, DEFAULT_LANGUAGE).orEmpty()
+        set(v) = prefs.edit().putString(KEY_LANGUAGE, v.trim()).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

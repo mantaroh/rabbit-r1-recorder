@@ -162,6 +162,14 @@ class MainActivity : Activity() {
             it.text = if (upload.unmeteredOnly) "Unmetered only: ON" else "Unmetered only: OFF"
         }, wide())
 
+        // Cycles ja → en → auto. Three options do not justify a spinner on a
+        // 240 dp panel, and the label always shows the current value.
+        column.addView(toggle("Language: ja") {
+            val order = UploadSettings.LANGUAGES
+            upload.language = order[(order.indexOf(upload.language) + 1) % order.size]
+            (it as Button).text = "Language: ${upload.language}"
+        }.also { it.text = "Language: ${upload.language}" }, wide())
+
         column.addView(button("Quit") { finishAndRemoveTask() }, wide())
 
         infoView = TextView(this).apply {

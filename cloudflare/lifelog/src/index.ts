@@ -22,11 +22,15 @@ interface Env {
   TRANSCRIBE_QUEUE: Queue<TranscribeMessage>;
   AI: Ai;
   INGEST_TOKEN: string;
+  /** Spoken language to assume. "auto" lets Whisper guess. See LANGUAGE below. */
+  TRANSCRIBE_LANGUAGE?: string;
 }
 
 interface TranscribeMessage {
   segmentId: string;
   key: string;
+  /** Carried per message so a queued segment keeps the language it arrived with. */
+  language?: string;
 }
 
 /** Queue messages stay tiny — 128 KB cap — so they carry a key, never audio. */
@@ -247,12 +251,15 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
   // needs the last couple of minutes transcribed *now*; going through the
   // queue puts them behind whatever backlog is already in flight, which on a
   // Wi-Fi-only upload policy can be hours of audio.
+  // The device carries its own language setting; fall back to the Worker's.
+  const language = languageFor(env, url.searchParams.get("language"));
+
   if (url.searchParams.get("sync") === "1") {
     try {
       const bytes = new Uint8Array(
         await (await env.BUCKET.get(key))!.arrayBuffer(),
       );
-      const t = await runWhisper(bytes, env);
+      const t = await runWhisper(bytes, env, language);
       await storeTranscript(env, segmentId, t);
 
       return json({
@@ -268,7 +275,7 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       // The bytes are already durable, so fall back to the queue rather than
       // failing the upload — the caller loses immediacy, not the recording.
       console.error("sync transcribe failed, queueing", segmentId, error);
-      await env.TRANSCRIBE_QUEUE.send({ segmentId, key });
+      await env.TRANSCRIBE_QUEUE.send({ segmentId, key, language: language ?? "auto" });
       return json(
         {
           segment_id: segmentId,
@@ -282,7 +289,7 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
     }
   }
 
-  await env.TRANSCRIBE_QUEUE.send({ segmentId, key });
+  await env.TRANSCRIBE_QUEUE.send({ segmentId, key, language: language ?? "auto" });
 
   return json(
     {
@@ -325,7 +332,7 @@ async function transcribe(message: TranscribeMessage, env: Env): Promise<void> {
   }
 
   const bytes = new Uint8Array(await object.arrayBuffer());
-  const t = await runWhisper(bytes, env);
+  const t = await runWhisper(bytes, env, languageFor(env, message.language));
   await storeTranscript(env, message.segmentId, t);
 }
 
@@ -365,10 +372,47 @@ interface Transcription {
  * segment over an input-format mismatch. Only turbo returns the per-segment
  * timings the quality signals are derived from.
  */
-async function runWhisper(bytes: Uint8Array, env: Env): Promise<Transcription> {
+/**
+ * Which language to tell Whisper it is listening to.
+ *
+ * Left to guess, it drifts: one drive produced `en`, `ja` and `ko` across
+ * consecutive minutes of the same conversation, and the Korean one came back
+ * as hangul transliterating Japanese. Road noise is enough to tip it. Naming
+ * the language costs nothing and removes the whole failure mode.
+ *
+ * Order: the request wins (the device carries its own setting), then the
+ * Worker's var, then Japanese. "auto" anywhere restores guessing.
+ */
+function languageFor(env: Env, requested?: string | null): string | null {
+  const choice = requested || env.TRANSCRIBE_LANGUAGE || "ja";
+  return choice === "auto" ? null : choice;
+}
+
+async function runWhisper(
+  bytes: Uint8Array,
+  env: Env,
+  language: string | null,
+): Promise<Transcription> {
   try {
     const result: any = await env.AI.run("@cf/openai/whisper-large-v3-turbo" as any, {
       audio: base64(bytes),
+      ...(language ? { language } : {}),
+
+      // The model ships its own VAD, off by default, and we were not asking
+      // for it — the hallucinated "Thank you." over a silent 3 a.m. hour was
+      // Whisper being handed silence and told to transcribe it. This drops
+      // the silence before the decoder ever sees it.
+      vad_filter: true,
+
+      // Whisper feeds each window its own previous output as context, which
+      // is how a stutter becomes a loop: "ん ん ん ん ん ん", the same
+      // sentence three times, "Thank you. Thank you." Turning it off is the
+      // documented remedy and costs a little cross-sentence coherence.
+      condition_on_previous_text: false,
+
+      // Anything quieter than this for two seconds is skipped rather than
+      // guessed at.
+      hallucination_silence_threshold: 2,
     } as any);
     const text = result?.text;
     if (typeof text !== "string") {
@@ -396,6 +440,7 @@ async function runWhisper(bytes: Uint8Array, env: Env): Promise<Transcription> {
     console.warn("whisper turbo failed, falling back", error);
     const result: any = await env.AI.run("@cf/openai/whisper" as any, {
       audio: [...bytes],
+      ...(language ? { language } : {}),
     } as any);
     // The fallback reports no timings, so it carries no quality signal.
     return {
@@ -548,7 +593,7 @@ async function debugWhisper(env: Env, url: URL): Promise<Response> {
 
   // Report the derived signals, not raw JSON: the raw reply runs to kilobytes
   // of per-word timings and truncating it makes the output unparseable.
-  const t = await runWhisper(bytes, env);
+  const t = await runWhisper(bytes, env, languageFor(env, url.searchParams.get("language")));
 
   // Optionally persist, so a backfill can reuse this path.
   if (url.searchParams.get("store") === "1") {
@@ -586,6 +631,7 @@ async function backfill(env: Env, url: URL): Promise<Response> {
     .all<{ segment_id: string; r2_key: string }>();
 
   const todo = rows.results ?? [];
+  const lang = languageFor(env, url.searchParams.get("language"));
   let done = 0;
   let failed = 0;
 
@@ -603,7 +649,7 @@ async function backfill(env: Env, url: URL): Promise<Response> {
         continue;
       }
       const bytes = new Uint8Array(await object.arrayBuffer());
-      await storeTranscript(env, row.segment_id, await runWhisper(bytes, env));
+      await storeTranscript(env, row.segment_id, await runWhisper(bytes, env, lang));
       done += 1;
     } catch (error) {
       console.error("backfill failed", row.segment_id, error);
@@ -751,7 +797,11 @@ async function reindex(env: Env, url: URL): Promise<Response> {
       .run();
 
     if (transcribe) {
-      await env.TRANSCRIBE_QUEUE.send({ segmentId: id, key: item.key });
+      await env.TRANSCRIBE_QUEUE.send({
+        segmentId: id,
+        key: item.key,
+        language: url.searchParams.get("language") ?? undefined,
+      });
     }
     restored += 1;
   }
