@@ -38,6 +38,9 @@ class MainActivity : Activity() {
 
         /** Begin recording as soon as the Activity is up; see onCreate. */
         const val EXTRA_AUTOSTART = "autostart"
+
+        /** Run the two-microphone experiment; see MicProbe. */
+        const val EXTRA_MIC_PROBE = "micprobe"
     }
 
     private lateinit var statusView: TextView
@@ -83,7 +86,34 @@ class MainActivity : Activity() {
         // started from the background on Android 14, so anything that wants
         // recording to resume — a boot receiver, a shell, a person in a hurry —
         // has to come through this Activity.
-        if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) start()
+        applyLaunchExtras(intent)
+    }
+
+    /**
+     * A second `am start` while this Activity is already up.
+     *
+     * Without this the extras are silently dropped — Android delivers the
+     * Intent nowhere and simply brings the task forward, so the command looks
+     * like it worked and does nothing. Exactly the failure the chat client had
+     * with handed-over prompts.
+     */
+    override fun onNewIntent(incoming: Intent?) {
+        super.onNewIntent(incoming)
+        setIntent(incoming)
+        applyLaunchExtras(incoming)
+    }
+
+    private fun applyLaunchExtras(source: Intent?) {
+        if (source?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) start()
+
+        // The service is not exported, so a shell cannot address it directly;
+        // this Activity is the only door in. Same reason as autostart.
+        if (source?.getBooleanExtra(EXTRA_MIC_PROBE, false) == true) {
+            startService(
+                Intent(this, RecorderService::class.java)
+                    .setAction(RecorderService.ACTION_MIC_PROBE),
+            )
+        }
     }
 
     override fun onResume() {

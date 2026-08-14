@@ -36,8 +36,21 @@ object MicProbe {
      * capture thread with the mono recorder released, because two AudioRecords
      * on one device is a good way to be handed silence.
      */
+    /**
+     * [cue] is buzzed with a count so the person in the room knows which half
+     * they are in. Telling them over a chat window does not work: by the time
+     * the message is read the window has already started, and the whole
+     * experiment depends on knowing which side each measurement came from.
+     * One buzz — speak from the front. Two — move behind. Three — done.
+     */
     @SuppressLint("MissingPermission")
-    fun run(sampleRate: Int, audioSource: Int, seconds: Int, metrics: Metrics) {
+    fun run(
+        sampleRate: Int,
+        audioSource: Int,
+        seconds: Int,
+        metrics: Metrics,
+        cue: (Int) -> Unit,
+    ) {
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_STEREO,
@@ -74,9 +87,18 @@ object MicProbe {
             // Interleaved L,R,L,R — one window of each per read.
             val frames = (sampleRate * WINDOW_MS / 1000).toInt()
             val buffer = ShortArray(frames * 2)
-            val until = System.currentTimeMillis() + seconds * 1000L
+            val started = System.currentTimeMillis()
+            val until = started + seconds * 1000L
+            val halfway = started + seconds * 500L
+            var switched = false
 
+            cue(1)
             while (System.currentTimeMillis() < until) {
+                if (!switched && System.currentTimeMillis() >= halfway) {
+                    switched = true
+                    cue(2)
+                    metrics.write("mic_probe", mapOf("state" to "switch"))
+                }
                 val read = record.read(buffer, 0, buffer.size)
                 if (read <= 0) continue
 
@@ -109,6 +131,10 @@ object MicProbe {
                         } else "n/a",
                         // Bit-identical channels mean one capsule duplicated.
                         "identical" to identical,
+                        // Which half this window belongs to, so the two
+                        // populations can be compared without matching
+                        // timestamps by hand.
+                        "half" to if (switched) "behind" else "front",
                     ),
                 )
             }
@@ -118,6 +144,7 @@ object MicProbe {
         } finally {
             runCatching { record.stop() }
             runCatching { record.release() }
+            cue(3)
             metrics.write("mic_probe", mapOf("state" to "done"))
         }
     }

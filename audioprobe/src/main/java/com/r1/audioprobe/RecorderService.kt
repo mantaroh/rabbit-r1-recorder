@@ -58,6 +58,12 @@ class RecorderService : Service() {
 
         const val ACTION_SAMPLE = "com.r1.audioprobe.SAMPLE"
 
+        /** Are the two built-in microphones actually separate? See MicProbe. */
+        const val ACTION_MIC_PROBE = "com.r1.audioprobe.MIC_PROBE"
+
+        /** Long enough to speak from in front, then from behind. */
+        private const val MIC_PROBE_SECONDS = 40
+
         /** Rotation period for continuous capture, matching the design's max segment. */
         private const val SEGMENT_SECONDS = 60
 
@@ -143,6 +149,7 @@ class RecorderService : Service() {
     @Volatile private var writeAudio = false
     @Volatile private var useOpus = false
     @Volatile private var photosEnabled = true
+    @Volatile private var micProbeRequested = false
     private var timelapse: Timelapse? = null
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
@@ -253,6 +260,10 @@ class RecorderService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_SAMPLE) {
             sampleRequested = true
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_MIC_PROBE) {
+            micProbeRequested = true
             return START_STICKY
         }
         if (running) return START_STICKY
@@ -447,6 +458,24 @@ class RecorderService : Service() {
         var pendingSamples = 0
 
         while (!stop) {
+            // A one-off experiment that needs the microphone to itself: two
+            // AudioRecords on one device is a reliable way to be handed
+            // silence, so the archive pauses for the duration.
+            if (micProbeRequested) {
+                micProbeRequested = false
+                pending?.let { closeSegment(it) }
+                pending = null
+                releaseRecorder()
+                MicProbe.run(sampleRate, audioSource, MIC_PROBE_SECONDS, metrics) { count ->
+                    repeat(count) {
+                        buzz()
+                        runCatching { Thread.sleep(220) }
+                    }
+                }
+                reinitialise()
+                continue
+            }
+
             val read = runCatching { recorder?.read(buffer, 0, buffer.size) ?: -1 }
                 .getOrElse { -1 }
 
