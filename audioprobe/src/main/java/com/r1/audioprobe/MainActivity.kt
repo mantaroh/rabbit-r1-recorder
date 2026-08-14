@@ -47,6 +47,9 @@ class MainActivity : Activity() {
 
         /** Show the 23:00 question now, for looking at it. */
         const val EXTRA_SHOW_PROMPT = "showprompt"
+
+        /** Open the chat. Not exported, so a shell has to come through here. */
+        const val EXTRA_CHAT = "chat"
     }
 
     private lateinit var statusView: TextView
@@ -125,6 +128,10 @@ class MainActivity : Activity() {
             startActivity(Intent(this, StopPromptActivity::class.java))
         }
 
+        if (source?.getBooleanExtra(EXTRA_CHAT, false) == true) {
+            startActivity(Intent(this, com.r1.hermes.ChatActivity::class.java))
+        }
+
         if (source?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) start()
 
         // The service is not exported, so a shell cannot address it directly;
@@ -168,6 +175,14 @@ class MainActivity : Activity() {
             setPadding(0, dp(4), 0, dp(4))
         }
         column.addView(statusView, wide())
+
+        // The chat now lives in this app; these are its two doors.
+        column.addView(button("Chat") {
+            startActivity(Intent(this, com.r1.hermes.ChatActivity::class.java))
+        }, wide())
+        column.addView(button("Chat settings") {
+            startActivity(Intent(this, com.r1.hermes.MainActivity::class.java))
+        }, wide())
 
         column.addView(button("Start") { start() }, wide())
         column.addView(button("Stop") { stop() }, wide())

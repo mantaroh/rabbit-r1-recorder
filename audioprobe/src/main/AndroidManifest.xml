@@ -56,6 +56,47 @@
             android:exported="false"
             android:foregroundServiceType="microphone|camera" />
 
+        <!-- The chat client, compiled from :hermes's sources (see
+             build.gradle.kts). Not exported: the recorder now hands a spoken
+             question straight to it in-process, so the cross-app permission
+             the standalone version needs has no job here. -->
+        <activity
+            android:name="com.r1.hermes.ChatActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name="com.r1.hermes.SessionsActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- Photo attachments for a chat message. -->
+        <activity
+            android:name="com.r1.hermes.CaptureActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- Gateway URL and token. Kept because the merged app otherwise has
+             no way to configure the chat it now contains. -->
+        <activity
+            android:name="com.r1.hermes.MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- Reachable from the screen above, so it has to be declared: an
+             undeclared Activity is a crash the moment somebody taps it. -->
+        <activity
+            android:name="com.r1.hermes.ProbeActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <!-- The 23:00 question. Wakes the screen because it fires while the
              device is asleep on a table, and is often read from a distance. -->
         <activity

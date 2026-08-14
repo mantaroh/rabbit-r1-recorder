@@ -699,13 +699,17 @@ class RecorderService : Service() {
      * worse version of something that works.
      */
     private fun handOffToChat(prompt: String) {
-        val intent = Intent()
-            .setClassName("com.r1.hermes", "com.r1.hermes.ChatActivity")
-            .putExtra("prompt", prompt)
+        // In-process now that the chat lives in this app. The cross-app
+        // version was where questions went missing: a warm ChatActivity in
+        // another package was brought to the front without ever being handed
+        // the Intent. Same class, same singleTask launch mode, one fewer
+        // process boundary to lose things across.
+        val intent = Intent(this, com.r1.hermes.ChatActivity::class.java)
+            .putExtra(com.r1.hermes.ChatActivity.EXTRA_PROMPT, prompt)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { startActivity(intent) }
             .onFailure {
-                Log.e(TAG, "chat client unavailable", it)
+                Log.e(TAG, "chat screen unavailable", it)
                 metrics.write("query", mapOf("state" to "no_chat_client"))
             }
     }
