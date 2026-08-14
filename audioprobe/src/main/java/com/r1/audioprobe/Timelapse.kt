@@ -146,6 +146,9 @@ class Timelapse(
      */
     @Volatile private var lastLuma = -1
 
+    /** Only log the network verdict when it changes, not every cycle. */
+    private var lastHomeVerdict: Boolean? = null
+
     /** Called once per second of captured audio, from the capture thread. */
     fun noteSecond(rms: Int) {
         secondsNoted += 1
@@ -173,13 +176,24 @@ class Timelapse(
 
         val info = runCatching {
             wifiManager?.connectionInfo
-        }.getOrNull() ?: return false
+        }.getOrNull()
 
         // The platform wraps it in quotes, and reports this literal when it is
         // withholding the name rather than when there is no network.
-        val ssid = info.ssid.orEmpty().trim('"')
-        if (ssid.isEmpty() || ssid == "<unknown ssid>") return false
-        return ssid.equals(wanted, ignoreCase = true)
+        val ssid = info?.ssid.orEmpty().trim('"')
+        val home = ssid.isNotEmpty() &&
+            ssid != "<unknown ssid>" &&
+            ssid.equals(wanted, ignoreCase = true)
+
+        // Logged because this decision is invisible in its effects: getting it
+        // wrong does not fail, it quietly triples the shutter rate and turns
+        // off the quiet-and-dark rule, which reads as "the timelapse is busy"
+        // rather than as a fault.
+        if (home != lastHomeVerdict) {
+            lastHomeVerdict = home
+            metrics.write("photo_network", mapOf("ssid" to ssid, "home" to home))
+        }
+        return home
     }
 
     @Volatile private var busy = false
@@ -200,6 +214,11 @@ class Timelapse(
         // would push the first real photograph past every restart, and
         // installs are frequent.
         if (secondsNoted < WARMUP_SECONDS) return
+
+        // Nothing can be due before the shorter of the two intervals, and this
+        // runs ten times a second — asking WifiManager that often to answer a
+        // question that cannot matter yet is pure waste.
+        if (nowMs - lastRunAt < AWAY_INTERVAL_MS) return
 
         // Away from home the scene changes constantly and every frame is one
         // that will never recur, so the shutter runs faster. At home the room
