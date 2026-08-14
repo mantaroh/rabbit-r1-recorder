@@ -27,6 +27,7 @@ class UploadSettings(context: Context) {
         private const val KEY_ANSWERED_AT = "answered_at"
         private const val KEY_STARTED_AT = "schedule_started_at"
         private const val KEY_RECORDING = "recording"
+        private const val KEY_SIGNAGE = "signage_ids"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -130,6 +131,21 @@ class UploadSettings(context: Context) {
     var recording: Boolean
         get() = prefs.getBoolean(KEY_RECORDING, true)
         set(v) = prefs.edit().putBoolean(KEY_RECORDING, v).apply()
+
+    /**
+     * Which standby screens to cycle through, in order, by id.
+     *
+     * Stored as ids rather than indices so reordering [Signage.ALL] or adding
+     * a screen cannot silently change what somebody chose. Empty means the
+     * first one only.
+     */
+    var signageIds: List<String>
+        get() = prefs.getString(KEY_SIGNAGE, null)
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?: Signage.ALL.map { it.id }
+        set(v) = prefs.edit().putString(KEY_SIGNAGE, v.joinToString(",")).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

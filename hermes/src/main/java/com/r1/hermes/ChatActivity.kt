@@ -137,6 +137,27 @@ class ChatActivity : Activity() {
         client.connect()
     }
 
+    /**
+     * The idle timer decides when the device drops to a standby display. What
+     * that display is belongs to whichever app is hosting this screen — the
+     * standalone client sets nothing and never goes to standby, which is right
+     * for something only ever open because somebody is using it.
+     */
+    override fun onResume() {
+        super.onResume()
+        com.r1.core.Idle.watch(this)
+    }
+
+    override fun onPause() {
+        com.r1.core.Idle.release(this)
+        super.onPause()
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        com.r1.core.Idle.touch()
+    }
+
     override fun onDestroy() {
         recorder.cancel()
         client.setListener(null)

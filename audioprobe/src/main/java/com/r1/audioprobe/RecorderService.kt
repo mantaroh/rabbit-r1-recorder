@@ -134,6 +134,9 @@ class RecorderService : Service() {
 
         @Volatile var running = false; private set
         @Volatile var snapshot: String = "idle"; private set
+
+        /** Whether audio is being archived, for the standby display to show. */
+        @Volatile var recordingAudio = false; private set
     }
 
     private lateinit var metrics: Metrics
@@ -159,12 +162,20 @@ class RecorderService : Service() {
     @Volatile private var stalls = 0
     @Volatile private var sampleRequested = false
     /**
-     * Off by default. The device now records only so it can answer a question:
-     * audio lives in the ring buffer and leaves the device when asked, so
-     * nothing is written to disk or uploaded in normal operation. Turn it on
-     * to go back to a continuous lifelog.
+     * Whether audio is being archived.
+     *
+     * A property rather than a field so [recordingAudio] cannot drift: it is
+     * set from four places — the launch extra, the morning start, the evening
+     * answer, and disk pressure — and mirroring it by hand at each one is a
+     * bug waiting for the fifth.
      */
-    @Volatile private var writeAudio = false
+    @Volatile private var writeAudioBacking = false
+    private var writeAudio: Boolean
+        get() = writeAudioBacking
+        set(value) {
+            writeAudioBacking = value
+            recordingAudio = value
+        }
     @Volatile private var useOpus = false
     @Volatile private var photosEnabled = true
     @Volatile private var micProbeRequested = false

@@ -147,11 +147,19 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ticker.post(tick)
+        com.r1.core.Idle.watch(this)
     }
 
     override fun onPause() {
         ticker.removeCallbacks(tick)
+        com.r1.core.Idle.release(this)
         super.onPause()
+    }
+
+    /** Every tap and key comes through here; it is what resets the timer. */
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        com.r1.core.Idle.touch()
     }
 
     private fun buildUi(): View {
