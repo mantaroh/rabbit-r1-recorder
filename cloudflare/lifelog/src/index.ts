@@ -78,6 +78,12 @@ export default {
     if (request.method === "GET" && url.pathname.startsWith("/v1/segments/")) {
       return getSegment(env, url);
     }
+    if (request.method === "PUT" && url.pathname.startsWith("/v1/photos/")) {
+      return putPhoto(request, env, url);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/photos") {
+      return listPhotos(env, url);
+    }
     if (request.method === "GET" && url.pathname === "/v1/context") {
       return getContext(env, url);
     }
@@ -380,6 +386,101 @@ async function getSegment(env: Env, url: URL): Promise<Response> {
     .bind(segmentId)
     .first();
   return row ? json(row) : json({ error: "not found" }, 404);
+}
+
+// ---------------------------------------------------------------- photos ---
+
+/**
+ * A timelapse frame. Stored and indexed; never transcribed, never queued.
+ *
+ * The same durability contract as audio — the row is written only after the
+ * bytes are in R2, and the device deletes its copy only on a 2xx — because a
+ * photograph of a moment is exactly as unrepeatable as a recording of one.
+ */
+async function putPhoto(request: Request, env: Env, url: URL): Promise<Response> {
+  const photoId = url.pathname.slice("/v1/photos/".length);
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(photoId)) {
+    return json({ error: "photo id must be 8-64 chars of [A-Za-z0-9_-]" }, 400);
+  }
+
+  const takenAt = url.searchParams.get("taken_at");
+  if (!takenAt || Number.isNaN(Date.parse(takenAt))) {
+    return json({ error: "taken_at must be an ISO 8601 timestamp" }, 400);
+  }
+
+  const facing = url.searchParams.get("facing") === "rear" ? "rear" : "front";
+  const deviceId = url.searchParams.get("device_id") ?? "unknown";
+
+  const existing = await env.DB.prepare(
+    `SELECT r2_key FROM photos WHERE photo_id = ?1`,
+  )
+    .bind(photoId)
+    .first<{ r2_key: string }>();
+  if (existing) {
+    return json({ photo_id: photoId, key: existing.r2_key, duplicate: true });
+  }
+
+  if (!request.body) return json({ error: "empty body" }, 400);
+
+  const sha256 = url.searchParams.get("sha256")?.toLowerCase() ?? null;
+  if (sha256 !== null && !/^[0-9a-f]{64}$/.test(sha256)) {
+    return json({ error: "sha256 must be 64 hex characters" }, 400);
+  }
+
+  const day = takenAt.slice(0, 10).replace(/-/g, "/");
+  const key = `photo/${day}/${photoId}.jpg`;
+
+  let object: R2Object | null;
+  try {
+    object = await env.BUCKET.put(key, request.body, {
+      httpMetadata: { contentType: "image/jpeg" },
+      customMetadata: { photoId, deviceId, facing, takenAt },
+      ...(sha256 ? { sha256 } : {}),
+    });
+  } catch (error) {
+    return json({ photo_id: photoId, error: "checksum mismatch" }, 422);
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO photos
+       (photo_id, device_id, r2_key, facing, taken_at, taken_epoch, bytes,
+        sha256, received_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+     ON CONFLICT(photo_id) DO NOTHING`,
+  )
+    .bind(
+      photoId,
+      deviceId,
+      key,
+      facing,
+      takenAt,
+      Math.floor(Date.parse(takenAt) / 1000),
+      object?.size ?? null,
+      sha256,
+      new Date().toISOString(),
+    )
+    .run();
+
+  return json({ photo_id: photoId, key, bytes: object?.size ?? null }, 201);
+}
+
+/** What was in front of the device over a window; metadata only, no bytes. */
+async function listPhotos(env: Env, url: URL): Promise<Response> {
+  const at = url.searchParams.get("at") ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(at))) return json({ error: "bad at" }, 400);
+  const beforeSec = intParam(url, "before_sec") ?? 3600;
+  const atEpoch = Math.floor(Date.parse(at) / 1000);
+
+  const rows = await env.DB.prepare(
+    `SELECT photo_id, facing, taken_at, bytes, r2_key FROM photos
+      WHERE taken_epoch >= ?1 AND taken_epoch <= ?2
+      ORDER BY taken_epoch ASC
+      LIMIT 500`,
+  )
+    .bind(atEpoch - beforeSec, atEpoch)
+    .all();
+
+  return json({ at, before_sec: beforeSec, count: rows.results?.length ?? 0, photos: rows.results });
 }
 
 // ----------------------------------------------------------- transcribe ---

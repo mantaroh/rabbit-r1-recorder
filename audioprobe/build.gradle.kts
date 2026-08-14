@@ -39,6 +39,9 @@ android {
 }
 
 dependencies {
-    // Deliberately none: this measures the platform, so nothing should sit
-    // between the probe and AudioRecord/ConnectivityManager.
+    // Still nothing third-party: the audio path measures the platform, so
+    // nothing should sit between the probe and AudioRecord/ConnectivityManager.
+    // :core is our own, and holds the two things that talk to this particular
+    // hardware — the motorised arm and a headless Camera2 capture.
+    implementation(project(":core"))
 }

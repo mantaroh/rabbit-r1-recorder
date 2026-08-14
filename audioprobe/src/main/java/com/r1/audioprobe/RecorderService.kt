@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.util.Base64
+import com.r1.core.R1Motor
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioFormat
@@ -80,6 +81,14 @@ class RecorderService : Service() {
          * This is the whole of "what were we just saying" — nothing else is
          * uploaded, so the window is the memory the agent gets.
          */
+        const val EXTRA_PHOTOS = "photos"
+
+        /**
+         * One front/rear pair every five minutes: 288 cycles a day, about
+         * 23 MB, and few enough trips for the arm that wear is not a concern.
+         */
+        private const val PHOTO_INTERVAL_MS = 5 * 60_000L
+
         private const val CONTEXT_MS = 120_000L
 
         /**
@@ -133,6 +142,8 @@ class RecorderService : Service() {
      */
     @Volatile private var writeAudio = false
     @Volatile private var useOpus = false
+    @Volatile private var photosEnabled = true
+    private var timelapse: Timelapse? = null
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
     @Volatile private var diskFull = false
@@ -251,6 +262,13 @@ class RecorderService : Service() {
             ?: MediaRecorder.AudioSource.MIC
         writeAudio = intent?.getBooleanExtra(EXTRA_WRITE_AUDIO, true) ?: true
         useOpus = intent?.getBooleanExtra(EXTRA_OPUS, false) ?: false
+        photosEnabled = intent?.getBooleanExtra(EXTRA_PHOTOS, true) ?: true
+        if (photosEnabled) {
+            timelapse = Timelapse(this, metrics, photoDir())
+            // The arm's real position is unknown until carroot is asked, and
+            // the first cycle needs somewhere to put it back to.
+            R1Motor.syncFromDevice()
+        }
 
         startForeground(NOTIFICATION_ID, buildNotification("starting"))
 
@@ -314,6 +332,10 @@ class RecorderService : Service() {
             runCatching { syncNetworkFromSystem() }
             runCatching { uploader?.pump(dir, openSegment) }
                 .onFailure { Log.e(TAG, "upload pass failed", it) }
+            // Photos go after the audio, deliberately: they are the smaller
+            // loss if the link dies mid-pass.
+            runCatching { uploader?.pumpPhotos(photoDir()) }
+                .onFailure { Log.e(TAG, "photo upload pass failed", it) }
             runCatching { Thread.sleep(UPLOAD_INTERVAL_MS) }
         }
     }
@@ -454,6 +476,13 @@ class RecorderService : Service() {
             ring?.append(buffer, read, now)
             val ended = vad.accept(buffer, read, now)
             query.tick(now, vad.isSpeaking, ended, vad.utteranceStart)
+
+            // Returns immediately; the cycle itself runs on its own thread.
+            // Skipped entirely while a question is in flight — the camera and
+            // the arm have no business moving mid-question.
+            if (photosEnabled && query.state == QueryController.State.LIFELOG) {
+                timelapse?.tick(now, PHOTO_INTERVAL_MS, vad.isSpeaking)
+            }
 
             // Continuous capture to disk. Amplitude statistics prove the stream
             // is alive; only the audio itself proves it is usable, and only
@@ -748,6 +777,13 @@ class RecorderService : Service() {
     // --------------------------------------------------------------- wav ----
 
     private fun audioDir(): File = File(filesDir, "audio").apply { mkdirs() }
+
+    /**
+     * Separate from the audio: the uploader's queue depth and the `audio_mb`
+     * metric both sum whatever is in a directory, and photos sitting alongside
+     * segments would quietly corrupt both readings.
+     */
+    private fun photoDir(): File = File(filesDir, "photos").apply { mkdirs() }
 
     private fun openSegmentWriter(): SegmentWriter? {
         val dir = audioDir()

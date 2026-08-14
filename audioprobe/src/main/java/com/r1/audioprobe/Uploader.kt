@@ -288,6 +288,90 @@ class Uploader(
         return stamp.format(date)
     }
 
+    /**
+     * Ships timelapse frames. Same durability contract as audio — deleted only
+     * once the server has acknowledged — but they ride the unmetered rule
+     * without exception, since nothing is waiting on a photograph.
+     */
+    fun pumpPhotos(dir: File, limit: Int = 6) {
+        if (blockedReason() != null) return
+
+        val pending = dir.listFiles { f -> f.isFile && f.name.endsWith(".jpg", true) }
+            .orEmpty()
+            .sortedBy { it.name }
+            .take(limit)
+
+        for (file in pending) {
+            if (blockedReason() != null) return
+            if (!uploadPhoto(file)) return
+        }
+    }
+
+    private fun uploadPhoto(file: File): Boolean {
+        // img_yyyyMMdd_HHmmss_front.jpg — the stamp is the instant of capture.
+        val match = Regex("""^img_(\d{8})_(\d{6})_(front|rear)$""")
+            .find(file.nameWithoutExtension)
+            ?: run {
+                metrics.write("photo_skip", mapOf("file" to file.name, "why" to "unparsable"))
+                file.delete()
+                return true
+            }
+
+        val parser = SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
+            .apply { timeZone = TimeZone.getDefault() }
+        val takenAt = runCatching {
+            parser.parse(match.groupValues[1] + match.groupValues[2])
+        }.getOrNull() ?: return true
+
+        val url = buildString {
+            append(settings.baseUrl)
+            append("/v1/photos/").append(file.nameWithoutExtension)
+            append("?device_id=").append(enc(settings.deviceId))
+            append("&taken_at=").append(enc(stamp.format(takenAt)))
+            append("&facing=").append(match.groupValues[3])
+            sha256(file)?.let { append("&sha256=").append(it) }
+        }
+
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "PUT"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                doOutput = true
+                setRequestProperty("Content-Type", "image/jpeg")
+                setRequestProperty("Authorization", "Bearer " + settings.bearer)
+                if (settings.accessClientId.isNotEmpty()) {
+                    setRequestProperty("CF-Access-Client-Id", settings.accessClientId)
+                    setRequestProperty("CF-Access-Client-Secret", settings.accessClientSecret)
+                }
+                setFixedLengthStreamingMode(file.length())
+            }
+            FileInputStream(file).use { input ->
+                connection.outputStream.use { output -> input.copyTo(output, 64 * 1024) }
+            }
+
+            val code = connection.responseCode
+            if (code in 200..299) {
+                val bytes = file.length()
+                file.delete()
+                metrics.write("photo_upload_ok", mapOf("file" to file.name, "bytes" to bytes))
+                true
+            } else {
+                metrics.write("photo_upload_fail", mapOf("code" to code))
+                false
+            }
+        } catch (t: Throwable) {
+            metrics.write("photo_upload_fail", mapOf("error" to (t.message ?: "?").take(120)))
+            false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    fun photoQueueDepth(dir: File): Int =
+        dir.listFiles { f -> f.isFile && f.name.endsWith(".jpg", true) }.orEmpty().size
+
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     /**
