@@ -171,6 +171,15 @@ class RecorderService : Service() {
 
     @Volatile private var schedule = Scheduler.State()
     private var lastScheduleCheck = 0L
+
+    /**
+     * Anything that makes a noise or opens a window. Beeps have gaps in them
+     * and Activity launches block; neither belongs on the thread that reads
+     * AudioRecord, which is the one thing here that cannot be late.
+     */
+    private val alerts = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "probe-alerts").apply { isDaemon = true }
+    }
     private var timelapse: Timelapse? = null
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
@@ -293,7 +302,11 @@ class RecorderService : Service() {
         if (intent?.action == ACTION_PROMPT_ANSWER) {
             val stop = intent.getBooleanExtra(EXTRA_STOP_RECORDING, false)
             schedule = schedule.copy(answeredAt = System.currentTimeMillis())
-            if (stop) writeAudio = false
+            uploadSettings.scheduleState = schedule
+            if (stop) {
+                writeAudio = false
+                uploadSettings.recording = false
+            }
             metrics.write("schedule", mapOf("what" to "answered", "stopped" to stop))
             return START_STICKY
         }
@@ -302,7 +315,16 @@ class RecorderService : Service() {
         val holdWakeLock = intent?.getBooleanExtra(EXTRA_WAKELOCK, true) ?: true
         audioSource = intent?.getIntExtra(EXTRA_SOURCE, MediaRecorder.AudioSource.MIC)
             ?: MediaRecorder.AudioSource.MIC
-        writeAudio = intent?.getBooleanExtra(EXTRA_WRITE_AUDIO, true) ?: true
+        // The stored state wins over the launch extra. Autostart passes "true"
+        // unconditionally, and a reinstall or a reboot would otherwise undo an
+        // explicit "stop for today" minutes after it was given, with nothing
+        // on screen to say so.
+        schedule = uploadSettings.scheduleState
+        writeAudio = if (Scheduler.firedToday(schedule.answeredAt, System.currentTimeMillis())) {
+            uploadSettings.recording
+        } else {
+            intent?.getBooleanExtra(EXTRA_WRITE_AUDIO, true) ?: true
+        }
         useOpus = intent?.getBooleanExtra(EXTRA_OPUS, false) ?: false
         photosEnabled = intent?.getBooleanExtra(EXTRA_PHOTOS, true) ?: true
         if (photosEnabled) {
@@ -702,30 +724,39 @@ class RecorderService : Service() {
 
             Scheduler.Action.START -> {
                 writeAudio = true
+                uploadSettings.recording = true
                 schedule = schedule.copy(startedAt = nowMs)
+                uploadSettings.scheduleState = schedule
                 metrics.write("schedule", mapOf("what" to "auto_start"))
             }
 
             Scheduler.Action.ASK_TO_STOP -> {
                 val first = !Scheduler.firedToday(schedule.promptedAt, nowMs)
                 schedule = schedule.copy(promptedAt = nowMs)
+                uploadSettings.scheduleState = schedule
                 metrics.write("schedule", mapOf("what" to "prompt", "first" to first))
 
-                // Sound first: the screen may be face down, or the person may
-                // be on another floor. Three tones so it does not read as an
-                // upload chirp.
-                repeat(3) {
-                    beep()
-                    buzz()
-                    runCatching { Thread.sleep(260) }
+                // Off the capture thread. Three tones with gaps, a vibration
+                // and an Activity launch is the better part of two seconds,
+                // and this runs on the thread that reads AudioRecord: the
+                // first version pushed max_gap_ms from 105 to 1731.
+                alerts.execute {
+                    // Sound first: the screen may be face down, or the person
+                    // may be on another floor. Three tones so it does not read
+                    // as an upload chirp.
+                    repeat(3) {
+                        beep()
+                        buzz()
+                        runCatching { Thread.sleep(260) }
+                    }
+                    runCatching {
+                        startActivity(
+                            Intent(this, StopPromptActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                        )
+                    }.onFailure { Log.w(TAG, "stop prompt could not be shown", it) }
                 }
-                runCatching {
-                    startActivity(
-                        Intent(this, StopPromptActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                    )
-                }.onFailure { Log.w(TAG, "stop prompt could not be shown", it) }
             }
         }
     }

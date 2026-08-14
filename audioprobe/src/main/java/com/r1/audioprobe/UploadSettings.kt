@@ -23,6 +23,10 @@ class UploadSettings(context: Context) {
         private const val KEY_UNMETERED_ONLY = "unmetered_only"
         private const val KEY_LANGUAGE = "language"
         private const val KEY_PHOTO_SSID = "photo_ssid"
+        private const val KEY_PROMPTED_AT = "prompted_at"
+        private const val KEY_ANSWERED_AT = "answered_at"
+        private const val KEY_STARTED_AT = "schedule_started_at"
+        private const val KEY_RECORDING = "recording"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -94,6 +98,38 @@ class UploadSettings(context: Context) {
     var photoSsid: String
         get() = prefs.getString(KEY_PHOTO_SSID, "").orEmpty()
         set(v) = prefs.edit().putString(KEY_PHOTO_SSID, v.trim()).apply()
+
+    /**
+     * The day's schedule state, so an explicit "stop for today" survives a
+     * restart.
+     *
+     * Reinstalls and reboots are frequent here, and without this any of them
+     * would quietly undo an instruction the user gave deliberately — the
+     * device would be recording again minutes after being told not to, with
+     * nothing on screen to say so. The morning start clears it anyway, so the
+     * decision only ever lasts as long as the night it was made for.
+     */
+    var scheduleState: Scheduler.State
+        get() = Scheduler.State(
+            promptedAt = prefs.getLong(KEY_PROMPTED_AT, 0L),
+            answeredAt = prefs.getLong(KEY_ANSWERED_AT, 0L),
+            startedAt = prefs.getLong(KEY_STARTED_AT, 0L),
+        )
+        set(v) = prefs.edit()
+            .putLong(KEY_PROMPTED_AT, v.promptedAt)
+            .putLong(KEY_ANSWERED_AT, v.answeredAt)
+            .putLong(KEY_STARTED_AT, v.startedAt)
+            .apply()
+
+    /**
+     * Whether audio was being written when the service last stopped.
+     *
+     * Restored on start so a restart does not resurrect a recording the user
+     * ended, nor end one they had running.
+     */
+    var recording: Boolean
+        get() = prefs.getBoolean(KEY_RECORDING, true)
+        set(v) = prefs.edit().putBoolean(KEY_RECORDING, v).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()
