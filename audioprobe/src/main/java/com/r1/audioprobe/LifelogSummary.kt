@@ -51,8 +51,10 @@ object LifelogSummary {
         val codexResetsAt: Long?,
         val claudeOutputTokens: Long,
         val claudeMessages: Int,
-        /** Subscription tier, reported but never turned into a percentage. */
         val claudePlan: String?,
+        /** Anthropic's own utilisation, or null when the token would not answer. */
+        val claudeFiveHourPercent: Double?,
+        val claudeSevenDayPercent: Double?,
         /** Seconds since the reporting machine measured it. */
         val ageSeconds: Long?,
     )
@@ -105,9 +107,17 @@ object LifelogSummary {
             claudePlan = claude?.optJSONObject("plan")
                 ?.optString("subscription")
                 ?.takeIf { it.isNotEmpty() && it != "null" },
+            claudeFiveHourPercent = claude?.optJSONObject("limits")
+                ?.optJSONObject("five_hour")?.percentOrNull(),
+            claudeSevenDayPercent = claude?.optJSONObject("limits")
+                ?.optJSONObject("seven_day")?.percentOrNull(),
             ageSeconds = json.optLong("age_seconds").takeIf { json.has("age_seconds") },
         )
     }
+
+    /** Absent and "explicitly null" both mean no figure, never zero. */
+    private fun JSONObject.percentOrNull(): Double? =
+        if (isNull("used_percent")) null else optDouble("used_percent").takeIf { !it.isNaN() }
 
     private fun request(settings: UploadSettings, path: String): String? {
         var connection: HttpURLConnection? = null

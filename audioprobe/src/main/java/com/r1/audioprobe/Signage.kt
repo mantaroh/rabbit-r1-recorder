@@ -226,15 +226,23 @@ private class AgentUsageScreen : SignageScreen {
                     append("  —\n")
                 }
 
-                append('\n').append("Claude Code  5h")
+                append('\n').append("Claude Code")
                 agents.claudePlan?.let { append("  (").append(it).append(')') }
                 append('\n')
-                // No percentage. The plan is known but its limits are
-                // published as approximate message counts that vary with model
-                // and context, so a proportion built on them would carry tens
-                // of percent of error and look authoritative anyway.
-                append("  out ").append(tokens(agents.claudeOutputTokens))
-                append(" / ").append(agents.claudeMessages).append("msg")
+
+                // Anthropic's own utilisation, the same kind of figure as the
+                // Codex one above rather than a proportion of a guessed quota.
+                if (agents.claudeFiveHourPercent != null) {
+                    append("  5h  ").append(percent(agents.claudeFiveHourPercent))
+                    agents.claudeSevenDayPercent?.let {
+                        append("   7d  ").append(percent(it))
+                    }
+                } else {
+                    // Token counts survive an expired token; the percentage
+                    // does not, and a stale one would be worse than none.
+                    append("  out ").append(tokens(agents.claudeOutputTokens))
+                    append(" / ").append(agents.claudeMessages).append("msg")
+                }
 
                 // Numbers this old are worth doubting, so say how old.
                 agents.ageSeconds?.takeIf { it > 900 }?.let {

@@ -168,14 +168,84 @@ def claude_tokens() -> dict:
         except OSError:
             continue
 
+    # The server's own figure when it can be had; the token counts stay either
+    # way, because "how much is left" and "how much was spent" are different
+    # questions and the second one is the only one that survives an expired
+    # token.
+    limits = claude_oauth_usage()
+
     return {
         "available": True,
-        "used_percent": None,
-        "note": "Claude Code stores no rate limits locally; tokens only",
+        "limits": limits,
         "plan": claude_plan(),
         "windows": {f"{hours}h": buckets[hours] for hours in WINDOWS},
-        "source": "claude session logs",
+        "source": "oauth usage api + claude session logs" if limits
+        else "claude session logs (no limits: token expired or refused)",
     }
+
+
+def claude_oauth_usage() -> dict | None:
+    """
+    Anthropic's own utilisation figures, from the endpoint Claude Code uses.
+
+    The server reports the percentage; nothing is inferred from local token
+    counts. Two windows come back — five_hour and seven_day — each with a
+    utilisation and a reset time, which is the same shape Codex reports and
+    makes the two comparable on screen.
+
+    OAuth only. An API key gets a 401 here, so the access token Claude Code
+    already wrote is the credential, used for exactly what it exists for:
+    reporting this account's own usage.
+
+    Returns None when the token has expired or the endpoint refuses, and the
+    caller falls back to counting tokens. No percentage is better than one
+    built on a stale reading.
+    """
+    import urllib.error
+    import urllib.request
+
+    path = os.path.expanduser("~/.claude/.credentials.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            oauth = json.load(handle).get("claudeAiOauth") or {}
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    token = oauth.get("accessToken")
+    if not token:
+        return None
+
+    request = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/usage",
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.1.0",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        return None
+
+    windows = {}
+    for key, minutes in (("five_hour", 300), ("seven_day", 10080)):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        raw = block.get("utilization")
+        if raw is None:
+            continue
+        windows[key] = {
+            "used_percent": max(0.0, min(100.0, float(raw))),
+            "window_minutes": minutes,
+            "resets_at": block.get("resets_at"),
+        }
+
+    return windows or None
 
 
 def claude_plan() -> dict:
