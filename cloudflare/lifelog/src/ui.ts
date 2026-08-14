@@ -61,8 +61,9 @@ export const UI_HTML = `<!doctype html>
   .shots { display: flex; flex-wrap: wrap; gap: 10px; }
   .shot { width: 210px; }
   .shot img {
-    width: 100%; border-radius: 6px; border: 1px solid var(--line);
-    display: block; background: #000; cursor: zoom-in;
+    width: 100%; aspect-ratio: 3 / 4;
+    border-radius: 6px; border: 1px solid var(--line);
+    display: block; background: #000; cursor: zoom-in; object-fit: cover;
   }
   .shot .cap { font-size: 12px; color: var(--dim); margin-top: 4px; }
   .facing { font-size: 11px; color: var(--warn); }
@@ -115,9 +116,14 @@ function escapeHtml(s) {
 
 function renderEntry(e) {
   if (e.kind === 'photo') {
+    // width/height and the matching aspect-ratio in CSS are what make
+    // loading="lazy" work: without them the browser lays every image out at
+    // zero height, decides the whole day is above the fold, and fetches all
+    // 160 frames at once. Measured doing exactly that.
     const shots = e.shots.map((s) => \`
       <div class="shot">
-        <img loading="lazy" src="/v1/media/photo/\${encodeURIComponent(s.id)}"
+        <img loading="lazy" decoding="async" width="480" height="640"
+             src="/v1/media/photo/\${encodeURIComponent(s.id)}"
              data-full="/v1/media/photo/\${encodeURIComponent(s.id)}" alt="">
         <div class="facing">\${s.facing === 'front' ? '前' : '後'}</div>
         <div class="cap">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
