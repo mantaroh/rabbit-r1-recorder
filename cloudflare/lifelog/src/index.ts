@@ -195,6 +195,7 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
   const codec = (url.searchParams.get("codec") ?? "wav").toLowerCase();
   const extension = CODEC_EXTENSIONS[codec] ?? "bin";
   const sampleRate = intParam(url, "sample_rate");
+  const channels = intParam(url, "channels");
   const endedAt = url.searchParams.get("ended_at");
 
   // Re-uploading a segment we already transcribed would bill another Whisper
@@ -267,8 +268,8 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
     `INSERT INTO segments
        (segment_id, device_id, kind, r2_key, codec, sample_rate,
         started_at, started_epoch, ended_at, duration_ms, bytes,
-        received_at, status, rms_envelope, voiced_ratio, sha256)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+        received_at, status, rms_envelope, voiced_ratio, sha256, channels)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
      ON CONFLICT(segment_id) DO UPDATE SET
        r2_key = excluded.r2_key,
        bytes = excluded.bytes,
@@ -302,6 +303,7 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       envelopeRaw,
       ratio,
       sha256,
+      channels,
     )
     .run();
 

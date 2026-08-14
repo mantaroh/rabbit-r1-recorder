@@ -111,6 +111,21 @@ class RecorderService : Service() {
          */
         private const val TARGET_RATE = 48_000
 
+        /**
+         * Stereo, though the two capsules turned out not to encode direction.
+         *
+         * Measured with someone speaking from in front and then from behind:
+         * 0.2 dB apart broadband, 0.3 dB in the high band where the body
+         * should shadow. Whatever separates the channels — they are never
+         * bit-identical — it is not where the speaker is standing.
+         *
+         * Kept anyway, on the same grounds as the sample rate: a channel not
+         * captured cannot be recovered later, and the alternative is deciding
+         * on the archive's behalf that a difference we cannot currently read
+         * is a difference nobody will ever read. Doubles the bytes.
+         */
+        private const val TARGET_CHANNELS = 2
+
         private const val SAMPLE_INTERVAL_MS = 30_000L
 
         /** A read gap beyond this means the pipeline stalled, not just jittered. */
@@ -159,6 +174,9 @@ class RecorderService : Service() {
 
     private var startedAt = 0L
     private var sampleRate = TARGET_RATE
+
+    /** What the device actually gave us, which may be fewer than asked for. */
+    private var channels = 1
 
     /** Per-second loudness of the segment currently being written. */
     private val envelope = ArrayList<Int>(SEGMENT_SECONDS + 2)
@@ -329,7 +347,7 @@ class RecorderService : Service() {
         // Uploading runs on its own thread: a slow or stalled network must
         // never delay a read from AudioRecord, which is the one thing in this
         // service that cannot be late.
-        uploader = Uploader(uploadSettings, metrics, { sampleRate }) { netState }
+        uploader = Uploader(uploadSettings, metrics, { sampleRate }, { channels }) { netState }
         uploadThread = Thread({ uploadLoop() }, "probe-upload").apply { start() }
 
         return START_STICKY
@@ -396,41 +414,59 @@ class RecorderService : Service() {
     // ------------------------------------------------------------ capture ---
 
     private fun openRecorder(): Boolean {
-        for (rate in intArrayOf(TARGET_RATE, 44_100, 16_000)) {
-            val minBuffer = AudioRecord.getMinBufferSize(
-                rate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            if (minBuffer <= 0) {
-                metrics.write("rate_rejected", mapOf("rate" to rate, "minBuffer" to minBuffer))
-                continue
-            }
-
-            val record = runCatching {
-                @Suppress("MissingPermission")
-                AudioRecord(
-                    audioSource,
+        // Stereo first, mono as the fallback. The two capsules carry almost no
+        // difference that tracks where a speaker is standing — measured, twice
+        // — but they are not the same signal, and a channel not captured is
+        // one no later work can recover. Same reasoning as the sample rate.
+        val layouts = intArrayOf(TARGET_CHANNELS, 1)
+        for (wantChannels in layouts) {
+            val mask =
+                if (wantChannels == 2) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
+            for (rate in intArrayOf(TARGET_RATE, 44_100, 16_000)) {
+                val minBuffer = AudioRecord.getMinBufferSize(
                     rate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    minBuffer * 4
+                    mask,
+                    AudioFormat.ENCODING_PCM_16BIT
                 )
-            }.getOrNull()
+                if (minBuffer <= 0) {
+                    metrics.write(
+                        "rate_rejected",
+                        mapOf("rate" to rate, "channels" to wantChannels, "minBuffer" to minBuffer),
+                    )
+                    continue
+                }
 
-            if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
-                runCatching { record?.release() }
-                metrics.write("rate_failed", mapOf("rate" to rate))
-                continue
+                val record = runCatching {
+                    @Suppress("MissingPermission")
+                    AudioRecord(
+                        audioSource,
+                        rate,
+                        mask,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        minBuffer * 4
+                    )
+                }.getOrNull()
+
+                if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+                    runCatching { record?.release() }
+                    metrics.write("rate_failed", mapOf("rate" to rate, "channels" to wantChannels))
+                    continue
+                }
+
+                recorder = record
+                sampleRate = rate
+                channels = record.channelCount
+                metrics.write(
+                    "recorder_open",
+                    mapOf(
+                        "rate" to rate,
+                        "channels" to channels,
+                        "minBuffer" to minBuffer,
+                        "source" to sourceName(audioSource),
+                    )
+                )
+                return true
             }
-
-            recorder = record
-            sampleRate = rate
-            metrics.write(
-                "recorder_open",
-                mapOf("rate" to rate, "minBuffer" to minBuffer, "source" to sourceName(audioSource))
-            )
-            return true
         }
         return false
     }
@@ -451,9 +487,9 @@ class RecorderService : Service() {
 
         val record = recorder ?: return
         runCatching { record.startRecording() }
-        ring = RingBuffer(sampleRate)
+        ring = RingBuffer(sampleRate, channels)
 
-        val buffer = ShortArray(sampleRate / 10) // ~100 ms
+        val buffer = ShortArray(sampleRate * channels / 10) // ~100 ms
         var lastSampleAt = System.currentTimeMillis()
         lastFrameAt = lastSampleAt
         var pending: SegmentWriter? = null
@@ -536,7 +572,7 @@ class RecorderService : Service() {
                         .onFailure { writeErrors += 1 }
                     pendingSamples += read
 
-                    val limit = sampleRate * if (writeAudio) SEGMENT_SECONDS else 5
+                    val limit = sampleRate * channels * if (writeAudio) SEGMENT_SECONDS else 5
                     if (pendingSamples >= limit) {
                         closeSegment(writer)
                         pending = null
@@ -581,7 +617,7 @@ class RecorderService : Service() {
             if (context != null && context.isNotEmpty()) {
                 runCatching {
                     val ctxFile = File(cacheDir, "context.wav")
-                    val writer = WavSegmentWriter(ctxFile, sampleRate)
+                    val writer = WavSegmentWriter(ctxFile, sampleRate, channels)
                     writer.write(context, context.size)
                     if (writer.close() > 0) {
                         val ctxId = "ctx_" + wavStamp.format(Date(fromMs - CONTEXT_MS))
@@ -592,7 +628,7 @@ class RecorderService : Service() {
 
             val file = File(cacheDir, "query.wav")
             val ok = runCatching {
-                val writer = WavSegmentWriter(file, sampleRate)
+                val writer = WavSegmentWriter(file, sampleRate, channels)
                 writer.write(samples, samples.size)
                 writer.close() > 0
             }.getOrDefault(false)
@@ -659,16 +695,21 @@ class RecorderService : Service() {
         val size = writer.close()
         segments += 1
 
-        // The envelope travels as a sidecar because uploading happens on
+        // The sidecar travels with the segment because uploading happens on
         // another thread, minutes to days later — by which time this one has
         // long since moved on. Written before the segment is published so the
         // uploader never sees audio without it.
-        takeEnvelope()?.let { envelope ->
-            runCatching {
-                File(writer.file.parentFile, writer.file.nameWithoutExtension + ".rms")
-                    .writeText(envelope)
-            }.onFailure { metrics.write("envelope_write_failed", mapOf("file" to writer.file.name)) }
-        }
+        //
+        // It carries the format as well as the envelope, and that is not
+        // decoration: the uploader used to report whatever the recorder was
+        // configured for *at upload time*, so a mono file still queued when
+        // the recorder restarted in stereo was archived labelled stereo. A
+        // recording described wrongly is decoded wrongly forever.
+        runCatching {
+            val envelope = takeEnvelope().orEmpty()
+            File(writer.file.parentFile, writer.file.nameWithoutExtension + ".rms")
+                .writeText("rate=$sampleRate channels=$channels\n$envelope")
+        }.onFailure { metrics.write("sidecar_write_failed", mapOf("file" to writer.file.name)) }
 
         // Published only once the container is finalised; before that the file
         // is not a valid segment and must never be uploaded.
@@ -712,7 +753,8 @@ class RecorderService : Service() {
         // has the PCM in hand.
         secondSumSquares += bufferSum
         secondSamples += read
-        if (secondSamples >= sampleRate) {
+        // A second of *audio*, not of samples: stereo delivers twice as many.
+        if (secondSamples >= sampleRate * channels) {
             val level = rmsByte(secondSumSquares, secondSamples)
             envelope.add(level)
             // The same measurement decides whether the scene is worth
@@ -846,7 +888,11 @@ class RecorderService : Service() {
 
         val stem = "seg_${wavStamp.format(Date())}"
         val writer = if (useOpus) {
-            OpusSegmentWriter.createOrNull(File(dir, "$stem.opus"), sampleRate, OPUS_BITRATE)
+            // Bit rate scales with the channel count, so stereo keeps the same
+            // per-channel quality rather than halving it to stay the same size.
+            OpusSegmentWriter.createOrNull(
+                File(dir, "$stem.opus"), sampleRate, OPUS_BITRATE * channels, channels,
+            )
                 ?: run {
                     // Better a large segment than none: fall back rather than
                     // stop recording because a codec is missing.
@@ -857,7 +903,9 @@ class RecorderService : Service() {
         } else null
 
         val result = writer
-            ?: runCatching { WavSegmentWriter(File(dir, "$stem.wav"), sampleRate) }.getOrNull()
+            ?: runCatching {
+                WavSegmentWriter(File(dir, "$stem.wav"), sampleRate, channels)
+            }.getOrNull()
 
         // Publish it so the uploader skips it: a partial file shipped under a
         // complete-looking id would be indistinguishable from a good segment.

@@ -41,6 +41,8 @@ class Uploader(
      * segment mislabelled here is a segment a future decoder resamples wrongly.
      */
     private val sampleRate: () -> Int,
+    /** Also negotiated rather than chosen; a mislabelled layout plays wrong. */
+    private val channels: () -> Int,
     private val network: () -> NetworkState,
 ) {
 
@@ -117,15 +119,18 @@ class Uploader(
             append(segmentId)
             append("?device_id=").append(enc(settings.deviceId))
             append("&started_at=").append(enc(startedAt))
-            append("&kind=lifelog&sample_rate=").append(sampleRate())
+            // From the sidecar, not from the recorder's current settings: this
+            // segment may have been captured under a different configuration
+            // and queued across a restart.
+            val sidecar = readSidecar(file)
+            append("&kind=lifelog&sample_rate=").append(sidecar.rate ?: sampleRate())
+            append("&channels=").append(sidecar.channels ?: channels())
             append("&codec=").append(if (opus) "opus" else "wav")
             append("&language=").append(enc(settings.language))
             // Lets the server skip Whisper on a silent minute. Absent for
             // segments written before this existed, which the server then
             // transcribes unconditionally rather than guessing.
-            envelopeFile(file).takeIf { it.exists() }?.let {
-                append("&rms=").append(enc(it.readText().trim()))
-            }
+            sidecar.envelope?.let { append("&rms=").append(enc(it)) }
             sha256(file)?.let { append("&sha256=").append(it) }
         }
 
@@ -211,6 +216,7 @@ class Uploader(
             append("&started_at=").append(enc(stamp.format(Date(startedAtMs))))
             append("&kind=").append(kind)
             append("&codec=wav&sample_rate=").append(sampleRate())
+            append("&channels=").append(channels())
             append("&language=").append(enc(settings.language))
             sha256(file)?.let { append("&sha256=").append(it) }
             append("&sync=1")
@@ -398,6 +404,35 @@ class Uploader(
     /** Sidecar holding the per-second loudness written when the segment closed. */
     private fun envelopeFile(audio: File) =
         File(audio.parentFile, audio.nameWithoutExtension + ".rms")
+
+    /** What the recorder was doing when this particular segment was written. */
+    private data class Sidecar(
+        val rate: Int? = null,
+        val channels: Int? = null,
+        val envelope: String? = null,
+    )
+
+    private fun readSidecar(audio: File): Sidecar {
+        val file = envelopeFile(audio)
+        if (!file.exists()) return Sidecar()
+        return runCatching {
+            val lines = file.readText().split("\n")
+            // Older sidecars are a bare envelope with no header line.
+            val header = lines.firstOrNull().orEmpty()
+            if (!header.startsWith("rate=")) {
+                return@runCatching Sidecar(envelope = header.trim().ifEmpty { null })
+            }
+            val fields = header.split(" ").mapNotNull {
+                val parts = it.split("=")
+                if (parts.size == 2) parts[0] to parts[1] else null
+            }.toMap()
+            Sidecar(
+                rate = fields["rate"]?.toIntOrNull(),
+                channels = fields["channels"]?.toIntOrNull(),
+                envelope = lines.getOrNull(1)?.trim()?.ifEmpty { null },
+            )
+        }.getOrElse { Sidecar() }
+    }
 
     private fun isSegment(name: String) =
         name.endsWith(".wav", true) || name.endsWith(".opus", true)

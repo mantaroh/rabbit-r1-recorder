@@ -40,9 +40,13 @@ interface SegmentWriter {
  * Refreshing costs a seek roughly once a second, and bounds the loss from an
  * interrupted segment to the samples written since the last refresh.
  */
-class WavSegmentWriter(override val file: File, private val sampleRate: Int) : SegmentWriter {
+class WavSegmentWriter(
+    override val file: File,
+    private val sampleRate: Int,
+    private val channels: Int = 1,
+) : SegmentWriter {
 
-    private val raf = RandomAccessFile(file, "rw").apply { write(header(0, sampleRate)) }
+    private val raf = RandomAccessFile(file, "rw").apply { write(header(0, sampleRate, channels)) }
     private var dataBytes = 0
     private var declaredBytes = 0
 
@@ -54,12 +58,12 @@ class WavSegmentWriter(override val file: File, private val sampleRate: Int) : S
         raf.write(bb.array())
         dataBytes += count * 2
 
-        if (dataBytes - declaredBytes >= sampleRate * 2) refreshHeader()
+        if (dataBytes - declaredBytes >= sampleRate * 2 * channels) refreshHeader()
     }
 
     private fun refreshHeader() {
         raf.seek(0)
-        raf.write(header(dataBytes, sampleRate))
+        raf.write(header(dataBytes, sampleRate, channels))
         declaredBytes = dataBytes
     }
 
@@ -74,13 +78,16 @@ class WavSegmentWriter(override val file: File, private val sampleRate: Int) : S
     private companion object {
         const val HEADER_BYTES = 44
 
-        fun header(dataBytes: Int, sampleRate: Int): ByteArray {
+        fun header(dataBytes: Int, sampleRate: Int, channels: Int): ByteArray {
             val h = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
             h.put("RIFF".toByteArray()); h.putInt(36 + dataBytes)
             h.put("WAVE".toByteArray()); h.put("fmt ".toByteArray())
-            h.putInt(16); h.putShort(1); h.putShort(1)
-            h.putInt(sampleRate); h.putInt(sampleRate * 2)
-            h.putShort(2); h.putShort(16)
+            h.putInt(16); h.putShort(1); h.putShort(channels.toShort())
+            h.putInt(sampleRate)
+            // Byte rate and block align both scale with the channel count; a
+            // stereo file described as mono plays at half speed.
+            h.putInt(sampleRate * 2 * channels)
+            h.putShort((2 * channels).toShort()); h.putShort(16)
             h.put("data".toByteArray()); h.putInt(dataBytes)
             return h.array()
         }
@@ -98,14 +105,20 @@ class OpusSegmentWriter(
     override val file: File,
     private val sampleRate: Int,
     bitRate: Int,
+    private val channels: Int = 1,
 ) : SegmentWriter {
 
     companion object {
         private const val TAG = "R1AudioProbe"
 
         /** Returns null when this device cannot encode Opus, so the caller can fall back. */
-        fun createOrNull(file: File, sampleRate: Int, bitRate: Int): OpusSegmentWriter? =
-            runCatching { OpusSegmentWriter(file, sampleRate, bitRate) }
+        fun createOrNull(
+            file: File,
+            sampleRate: Int,
+            bitRate: Int,
+            channels: Int = 1,
+        ): OpusSegmentWriter? =
+            runCatching { OpusSegmentWriter(file, sampleRate, bitRate, channels) }
                 .onFailure { Log.w(TAG, "opus encoder unavailable", it) }
                 .getOrNull()
     }
@@ -119,7 +132,7 @@ class OpusSegmentWriter(
 
     init {
         val format = MediaFormat.createAudioFormat(
-            MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, 1,
+            MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, channels,
         ).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(
@@ -146,10 +159,16 @@ class OpusSegmentWriter(
             val buffer = codec.getInputBuffer(index) ?: return
             buffer.clear()
             val room = buffer.capacity() / 2
-            val take = minOf(room, count - offset)
+            // Whole frames only: splitting an interleaved pair across two
+            // input buffers would swap the channels for everything after it.
+            val take = (minOf(room, count - offset) / channels) * channels
+            if (take == 0) {
+                drain(endOfStream = false)
+                return
+            }
             val shorts = buffer.order(ByteOrder.nativeOrder()).asShortBuffer()
             shorts.put(samples, offset, take)
-            val presentationUs = samplesWritten * 1_000_000L / sampleRate
+            val presentationUs = samplesWritten * 1_000_000L / (sampleRate * channels)
             codec.queueInputBuffer(index, 0, take * 2, presentationUs, 0)
             samplesWritten += take
             offset += take
@@ -191,7 +210,7 @@ class OpusSegmentWriter(
             if (index >= 0) {
                 codec.queueInputBuffer(
                     index, 0, 0,
-                    samplesWritten * 1_000_000L / sampleRate,
+                    samplesWritten * 1_000_000L / (sampleRate * channels),
                     MediaCodec.BUFFER_FLAG_END_OF_STREAM,
                 )
             }
