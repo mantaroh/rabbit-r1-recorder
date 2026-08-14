@@ -15,6 +15,7 @@
  */
 
 import { handleMcp } from "./mcp";
+import { UI_HTML } from "./ui";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -96,6 +97,17 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/admin/caption-backfill") {
       return captionBackfill(env, url);
+    }
+    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/ui")) {
+      return new Response(UI_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/day") {
+      return dayView(env, url);
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/v1/media/")) {
+      return serveMedia(request, env, url);
     }
     if (request.method === "GET" && url.pathname === "/v1/context") {
       return getContext(env, url);
@@ -184,10 +196,20 @@ function authorise(request: Request, env: Env): Response | null {
 
   const header = request.headers.get("authorization") ?? "";
   const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!presented || !timingSafeEqual(presented, expected)) {
-    return json({ error: "unauthorized" }, 401);
-  }
-  return null;
+  if (presented && timingSafeEqual(presented, expected)) return null;
+
+  // A browser cannot attach a bearer to a navigation, so the web UI leans on
+  // the perimeter instead. Access stamps this header onto every request it
+  // lets through, and Access is the only way in: the workers.dev route does
+  // not serve this Worker, so there is no path to it that skips the check.
+  //
+  // The assertion is not verified here. Doing so properly means fetching and
+  // caching Cloudflare's signing keys, and it would only defend against
+  // someone who could already reach the origin directly — which is the thing
+  // that is closed off.
+  if (request.headers.get("cf-access-jwt-assertion")) return null;
+
+  return json({ error: "unauthorized" }, 401);
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
@@ -408,6 +430,160 @@ async function getSegment(env: Env, url: URL): Promise<Response> {
     .bind(segmentId)
     .first();
   return row ? json(row) : json({ error: "not found" }, 404);
+}
+
+// -------------------------------------------------------------------- ui ---
+
+/**
+ * One day, audio and photographs interleaved in time.
+ *
+ * Photographs arrive in front/rear pairs seconds apart and belong together on
+ * the page, so they are grouped by the minute they were taken rather than
+ * listed twice.
+ *
+ * Silent segments are included. They carry no transcript, but the recording
+ * exists and is the thing being archived — leaving them out would make the
+ * page disagree with the bucket. The UI hides them by default.
+ */
+async function dayView(env: Env, url: URL): Promise<Response> {
+  const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "date must be YYYY-MM-DD" }, 400);
+
+  // The device stamps +09:00 and started_epoch is UTC seconds; a day is the
+  // local one, so the window is shifted rather than the timestamps.
+  const from = Math.floor(Date.parse(`${date}T00:00:00+09:00`) / 1000);
+  const to = from + 86_400;
+
+  const segments = await env.DB.prepare(
+    `SELECT segment_id, started_at, status, transcript, stock_phrase, voiced_ratio
+       FROM segments
+      WHERE started_epoch >= ?1 AND started_epoch < ?2 AND kind = 'lifelog'
+      ORDER BY started_epoch ASC
+      LIMIT 2000`,
+  )
+    .bind(from, to)
+    .all<any>();
+
+  const photos = await env.DB.prepare(
+    `SELECT photo_id, taken_at, taken_epoch, facing, caption
+       FROM photos
+      WHERE taken_epoch >= ?1 AND taken_epoch < ?2
+      ORDER BY taken_epoch ASC
+      LIMIT 1000`,
+  )
+    .bind(from, to)
+    .all<any>();
+
+  const entries: any[] = [];
+  let withText = 0;
+
+  for (const row of segments.results ?? []) {
+    // A stock phrase is Whisper talking to itself; the recording stays, the
+    // text does not get shown.
+    const text = row.stock_phrase ? "" : String(row.transcript ?? "").trim();
+    if (text) withText += 1;
+    entries.push({
+      kind: "audio",
+      at: row.started_at,
+      id: row.segment_id,
+      status: row.status,
+      voiced: row.voiced_ratio,
+      text,
+    });
+  }
+
+  // Group the pair that was taken together.
+  const byMinute = new Map<number, any[]>();
+  for (const row of photos.results ?? []) {
+    const minute = Math.floor(row.taken_epoch / 60);
+    if (!byMinute.has(minute)) byMinute.set(minute, []);
+    byMinute.get(minute)!.push(row);
+  }
+  for (const [, shots] of byMinute) {
+    entries.push({
+      kind: "photo",
+      at: shots[0].taken_at,
+      shots: shots.map((s: any) => ({
+        id: s.photo_id,
+        facing: s.facing,
+        caption: s.caption ?? "",
+      })),
+    });
+  }
+
+  entries.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+
+  return json({
+    date,
+    entries,
+    stats: {
+      segments: segments.results?.length ?? 0,
+      with_text: withText,
+      photos: photos.results?.length ?? 0,
+    },
+  });
+}
+
+/**
+ * Streams an object straight out of R2.
+ *
+ * Range requests are honoured because an audio element asks for them when the
+ * user drags the scrub bar, and a minute of Opus is small enough that getting
+ * this wrong is invisible until the day someone opens an hour-long one.
+ */
+async function serveMedia(request: Request, env: Env, url: URL): Promise<Response> {
+  const rest = url.pathname.slice("/v1/media/".length);
+  const slash = rest.indexOf("/");
+  if (slash < 0) return json({ error: "bad media path" }, 400);
+
+  const kind = rest.slice(0, slash);
+  const id = decodeURIComponent(rest.slice(slash + 1));
+
+  let key: string | null = null;
+  let contentType = "application/octet-stream";
+
+  if (kind === "audio") {
+    const row = await env.DB.prepare(`SELECT r2_key, codec FROM segments WHERE segment_id = ?1`)
+      .bind(id)
+      .first<{ r2_key: string; codec: string }>();
+    if (!row) return json({ error: "not found" }, 404);
+    key = row.r2_key;
+    contentType = row.codec === "opus" ? "audio/ogg" : "audio/wav";
+  } else if (kind === "photo") {
+    const row = await env.DB.prepare(`SELECT r2_key FROM photos WHERE photo_id = ?1`)
+      .bind(id)
+      .first<{ r2_key: string }>();
+    if (!row) return json({ error: "not found" }, 404);
+    key = row.r2_key;
+    contentType = "image/jpeg";
+  } else {
+    return json({ error: "media kind must be audio or photo" }, 400);
+  }
+
+  const range = request.headers.get("range");
+  const object = await env.BUCKET.get(key!, range ? { range: request.headers } : undefined);
+  if (!object) return json({ error: "object missing" }, 404);
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("content-type", contentType);
+  headers.set("etag", object.httpEtag);
+  // Immutable: an object is written once under a key that is never reused.
+  headers.set("cache-control", "private, max-age=31536000, immutable");
+  headers.set("accept-ranges", "bytes");
+
+  // Only when the client actually asked. R2 reports a range on a plain GET
+  // too — covering the whole object — and answering 206 to a request that
+  // carried no Range header is a lie about what was sent.
+  if (range && object.range && "offset" in object.range) {
+    const offset = object.range.offset ?? 0;
+    const length = object.range.length ?? object.size - offset;
+    headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
+    return new Response(object.body, { status: 206, headers });
+  }
+
+  headers.set("content-length", String(object.size));
+  return new Response(object.body, { headers });
 }
 
 // ---------------------------------------------------------------- photos ---

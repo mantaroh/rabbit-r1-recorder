@@ -6,6 +6,11 @@
 
   "observability": { "enabled": true },
 
+  // No workers.dev route. The browser UI authenticates by trusting that
+  // Cloudflare Access has already vetted the request, which is only sound
+  // while the custom domain is the single way in.
+  "workers_dev": false,
+
   // Default language handed to Whisper. The device sends `?language=` from its
   // own setting and wins; this covers the paths with no device behind them
   // (backfill, reindex). "auto" restores guessing — which drifts, see
