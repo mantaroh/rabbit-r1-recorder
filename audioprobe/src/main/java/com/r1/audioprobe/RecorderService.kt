@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.util.Base64
 import com.r1.core.R1Motor
 import android.content.Intent
@@ -467,9 +469,14 @@ class RecorderService : Service() {
                 pending = null
                 releaseRecorder()
                 MicProbe.run(sampleRate, audioSource, MIC_PROBE_SECONDS, metrics) { count ->
+                    // Audible, because the vibration on this device is too
+                    // faint to notice while talking. Nothing the probe hears
+                    // is archived, so a beep costs nothing — and it lands in
+                    // the measurement as a marker for where each phase began.
                     repeat(count) {
+                        beep()
                         buzz()
-                        runCatching { Thread.sleep(220) }
+                        runCatching { Thread.sleep(280) }
                     }
                 }
                 reinitialise()
@@ -626,6 +633,16 @@ class RecorderService : Service() {
                 Log.e(TAG, "chat client unavailable", it)
                 metrics.write("query", mapOf("state" to "no_chat_client"))
             }
+    }
+
+    /** A short tone, loud enough to hear across a room while speaking. */
+    private fun beep() {
+        runCatching {
+            val tone = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+            tone.startTone(ToneGenerator.TONE_CDMA_HIGH_L, 180)
+            Thread.sleep(220)
+            tone.release()
+        }
     }
 
     /** Confirms the gesture without asking the user to look at the screen. */

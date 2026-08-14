@@ -32,6 +32,51 @@ object MicProbe {
     private const val WINDOW_MS = 250L
 
     /**
+     * Where shadowing starts to work.
+     *
+     * A broadband measurement found nothing — 0.2 dB between speaking in front
+     * and speaking behind — and the reason is diffraction, not the device.
+     * Speech energy sits between roughly 100 Hz and 4 kHz, which is 8.6 cm to
+     * 3.4 m of wavelength against a body about 8 cm across; sound whose
+     * wavelength exceeds the obstacle simply passes around it.
+     *
+     * Above 4 kHz the wavelength drops below the device and it can finally
+     * cast an acoustic shadow. Fricatives and sibilance live there. So the
+     * high band is measured separately, alongside the broadband figure that is
+     * known not to work, because the comparison is the whole point.
+     */
+    private const val HIGHPASS_HZ = 4000.0
+
+    /** One-pole sections cascaded; 4 gives 24 dB/octave, ~48 dB down at 1 kHz. */
+    private const val HIGHPASS_POLES = 4
+
+    /**
+     * Cascaded one-pole high-pass. Not a good filter, but a predictable one,
+     * and steep enough that what reaches the accumulator is the band the
+     * experiment is about.
+     */
+    private class HighPass(cutoffHz: Double, sampleRate: Int, poles: Int) {
+        private val alpha: Double = run {
+            val rc = 1.0 / (2.0 * Math.PI * cutoffHz)
+            val dt = 1.0 / sampleRate
+            rc / (rc + dt)
+        }
+        private val lastIn = DoubleArray(poles)
+        private val lastOut = DoubleArray(poles)
+
+        fun process(sample: Double): Double {
+            var x = sample
+            for (i in lastIn.indices) {
+                val y = alpha * (lastOut[i] + x - lastIn[i])
+                lastIn[i] = x
+                lastOut[i] = y
+                x = y
+            }
+            return x
+        }
+    }
+
+    /**
      * Blocks for [seconds], writing one metrics line per window. Runs on the
      * capture thread with the mono recorder released, because two AudioRecords
      * on one device is a good way to be handed silence.
@@ -92,6 +137,12 @@ object MicProbe {
             val halfway = started + seconds * 500L
             var switched = false
 
+            // State has to survive across reads, so the filters live outside
+            // the loop; restarting them every window would ring at every
+            // boundary and put energy back into the band being measured.
+            val hpL = HighPass(HIGHPASS_HZ, sampleRate, HIGHPASS_POLES)
+            val hpR = HighPass(HIGHPASS_HZ, sampleRate, HIGHPASS_POLES)
+
             cue(1)
             while (System.currentTimeMillis() < until) {
                 if (!switched && System.currentTimeMillis() >= halfway) {
@@ -104,6 +155,8 @@ object MicProbe {
 
                 var sumL = 0.0
                 var sumR = 0.0
+                var highL = 0.0
+                var highR = 0.0
                 var identical = true
                 var i = 0
                 while (i + 1 < read) {
@@ -112,6 +165,10 @@ object MicProbe {
                     if (identical && abs(l - r) > 0.5) identical = false
                     sumL += l * l
                     sumR += r * r
+                    val fl = hpL.process(l)
+                    val fr = hpR.process(r)
+                    highL += fl * fl
+                    highR += fr * fr
                     i += 2
                 }
                 val pairs = read / 2
@@ -119,6 +176,8 @@ object MicProbe {
 
                 val rmsL = sqrt(sumL / pairs)
                 val rmsR = sqrt(sumR / pairs)
+                val hiL = sqrt(highL / pairs)
+                val hiR = sqrt(highR / pairs)
                 metrics.write(
                     "mic_probe",
                     mapOf(
@@ -128,6 +187,12 @@ object MicProbe {
                         "r" to rmsR.toInt(),
                         "db" to if (rmsR > 1 && rmsL > 1) {
                             String.format("%.1f", 20 * kotlin.math.log10(rmsL / rmsR))
+                        } else "n/a",
+                        // The band where the body can actually shadow.
+                        "hl" to hiL.toInt(),
+                        "hr" to hiR.toInt(),
+                        "hdb" to if (hiR > 1 && hiL > 1) {
+                            String.format("%.1f", 20 * kotlin.math.log10(hiL / hiR))
                         } else "n/a",
                         // Bit-identical channels mean one capsule duplicated.
                         "identical" to identical,
