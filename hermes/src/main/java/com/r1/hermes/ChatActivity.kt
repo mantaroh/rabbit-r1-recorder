@@ -349,6 +349,26 @@ class ChatActivity : Activity() {
         }
     }
 
+    /**
+     * A second question, asked while this screen already exists.
+     *
+     * Without this the audio probe's hand-off silently did nothing on every
+     * question after the first: `startActivity` was allowed and the task came
+     * to the front, but a standard-launchMode activity that is already running
+     * is never handed the new Intent, so the transcript was dropped and the
+     * user saw the previous conversation. The manifest asks for singleTask so
+     * the Intent arrives here instead of creating a second instance.
+     */
+    override fun onNewIntent(incoming: Intent) {
+        super.onNewIntent(incoming)
+        setIntent(incoming)
+
+        val prompt = incoming.getStringExtra(EXTRA_PROMPT)?.trim()?.ifEmpty { null } ?: return
+        // Submit straight away when there is a session to submit to; otherwise
+        // hold it for applyAttachResult, exactly as a cold start does.
+        if (sessionId != null && !running) submit(prompt) else pendingPrompt = prompt
+    }
+
     private fun applyAttachResult(result: JSONObject) {
         sessionId = result.optString("session_id").ifEmpty { sessionId }
         // Once attached the session is live in the gateway, so a reconnect

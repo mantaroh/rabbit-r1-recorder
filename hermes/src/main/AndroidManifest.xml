@@ -45,10 +45,15 @@
         <!-- Exported so the recorder can hand over a spoken question. Both
              apps ship from the same signing key, so the permission keeps this
              entry point to them. -->
+        <!-- singleTask so a question asked while this screen already exists is
+             delivered to onNewIntent. With the default launch mode the task was
+             brought to the front and the Intent thrown away, which lost every
+             question after the first. -->
         <activity
             android:name=".ChatActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
+            android:launchMode="singleTask"
             android:permission="com.r1.hermes.permission.ASK"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize" />
