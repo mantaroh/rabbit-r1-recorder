@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.util.Base64
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioFormat
@@ -138,6 +139,11 @@ class RecorderService : Service() {
 
     private var startedAt = 0L
     private var sampleRate = TARGET_RATE
+
+    /** Per-second loudness of the segment currently being written. */
+    private val envelope = ArrayList<Int>(SEGMENT_SECONDS + 2)
+    private var secondSumSquares = 0.0
+    private var secondSamples = 0
     private var audioSource = MediaRecorder.AudioSource.MIC
 
     // Peak/RMS over the current reporting window, reset on each sample.
@@ -576,6 +582,18 @@ class RecorderService : Service() {
     private fun closeSegment(writer: SegmentWriter) {
         val size = writer.close()
         segments += 1
+
+        // The envelope travels as a sidecar because uploading happens on
+        // another thread, minutes to days later — by which time this one has
+        // long since moved on. Written before the segment is published so the
+        // uploader never sees audio without it.
+        takeEnvelope()?.let { envelope ->
+            runCatching {
+                File(writer.file.parentFile, writer.file.nameWithoutExtension + ".rms")
+                    .writeText(envelope)
+            }.onFailure { metrics.write("envelope_write_failed", mapOf("file" to writer.file.name)) }
+        }
+
         // Published only once the container is finalised; before that the file
         // is not a valid segment and must never be uploaded.
         openSegment = null
@@ -601,16 +619,54 @@ class RecorderService : Service() {
 
     private fun accumulate(buffer: ShortArray, read: Int) {
         var peak = windowPeak
-        var sum = windowSumSquares
+        var bufferSum = 0.0
         for (i in 0 until read) {
             val v = buffer[i].toDouble() / Short.MAX_VALUE
             val a = abs(v)
             if (a > peak) peak = a
-            sum += v * v
+            bufferSum += v * v
         }
         windowPeak = peak
-        windowSumSquares = sum
+        windowSumSquares += bufferSum
         windowSamples += read
+
+        // Second-by-second loudness for the segment being written. The server
+        // decides from this whether the minute is worth transcribing; it cannot
+        // measure that itself without decoding Opus, and this thread already
+        // has the PCM in hand.
+        secondSumSquares += bufferSum
+        secondSamples += read
+        if (secondSamples >= sampleRate) {
+            envelope.add(rmsByte(secondSumSquares, secondSamples))
+            secondSumSquares = 0.0
+            secondSamples = 0
+        }
+    }
+
+    /**
+     * One byte of loudness: raw RMS shifted down four bits, saturating.
+     *
+     * Measured rooms land at 11 (quiet), 22 (background activity) and 152–221
+     * (speech), so a byte holds the whole useful range with the interesting
+     * decisions nowhere near either end.
+     */
+    private fun rmsByte(sumSquares: Double, samples: Int): Int {
+        if (samples <= 0) return 0
+        val raw = sqrt(sumSquares / samples) * Short.MAX_VALUE
+        return (raw / 16).toInt().coerceIn(0, 255)
+    }
+
+    /** Base64 of the per-second bytes, or null when nothing was measured. */
+    private fun takeEnvelope(): String? {
+        if (secondSamples > 0) {
+            envelope.add(rmsByte(secondSumSquares, secondSamples))
+        }
+        secondSumSquares = 0.0
+        secondSamples = 0
+        if (envelope.isEmpty()) return null
+        val bytes = ByteArray(envelope.size) { envelope[it].toByte() }
+        envelope.clear()
+        return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 
     private fun emitSample() {

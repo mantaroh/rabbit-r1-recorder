@@ -99,6 +99,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/v1/admin/reindex") {
       return reindex(env, url);
     }
+    if (request.method === "POST" && url.pathname === "/v1/admin/rejudge") {
+      return rejudge(env, url);
+    }
 
     // Same auth as everything else, so the agent uses the token it already has.
     if (url.pathname === "/mcp") {
@@ -215,17 +218,27 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       ? Date.parse(endedAt) - Date.parse(startedAt)
       : null;
 
+  const envelopeRaw = url.searchParams.get("rms");
+  const envelope = decodeEnvelope(envelopeRaw);
+  const ratio = envelope ? voicedRatio(envelope) : null;
+
+  // A question is always transcribed. It is short, it was asked deliberately,
+  // and somebody is waiting for the answer — the wrong place to be thrifty.
+  const silent = kind !== "query" && ratio !== null && ratio < MIN_VOICED_RATIO;
+
   await env.DB.prepare(
     `INSERT INTO segments
        (segment_id, device_id, kind, r2_key, codec, sample_rate,
         started_at, started_epoch, ended_at, duration_ms, bytes,
-        received_at, status)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending')
+        received_at, status, rms_envelope, voiced_ratio)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
      ON CONFLICT(segment_id) DO UPDATE SET
        r2_key = excluded.r2_key,
        bytes = excluded.bytes,
        received_at = excluded.received_at,
-       status = 'pending',
+       status = excluded.status,
+       rms_envelope = excluded.rms_envelope,
+       voiced_ratio = excluded.voiced_ratio,
        error = NULL`,
   )
     .bind(
@@ -244,8 +257,28 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
       durationMs,
       object?.size ?? null,
       new Date().toISOString(),
+      // 'silent' is a terminal state, not a failure: the audio is archived and
+      // the envelope explains the decision, so a later threshold can revisit
+      // it without the recording having been touched.
+      silent ? "silent" : "pending",
+      envelopeRaw,
+      ratio,
     )
     .run();
+
+  if (silent) {
+    return json(
+      {
+        segment_id: segmentId,
+        key,
+        bytes: object?.size ?? null,
+        status: "silent",
+        voiced_ratio: ratio,
+        duplicate: false,
+      },
+      202,
+    );
+  }
 
   // `sync=1` jumps the queue. A question about "what we were just saying"
   // needs the last couple of minutes transcribed *now*; going through the
@@ -372,6 +405,56 @@ interface Transcription {
  * segment over an input-format mismatch. Only turbo returns the per-segment
  * timings the quality signals are derived from.
  */
+// -------------------------------------------------------------------- vad ---
+
+/**
+ * Whether a segment is worth handing to Whisper.
+ *
+ * Sending everything is what makes Whisper hallucinate: given a silent minute
+ * it returns whatever its training data suggests — "Thank you.",
+ * "ご視聴ありがとうございました" — with no signal that it invented them. Its
+ * own `vad_filter` stops most of that, but only after the call has been made
+ * and billed, and roughly 89 % of a day is not speech.
+ *
+ * The measurement happens on the device because that is the only place the
+ * PCM exists without decoding Opus, and Opus here is effectively CBR — a
+ * silent minute and a talkative one differ by 8 % in size, with the ranges
+ * overlapping, so nothing useful can be read off the packets. The device
+ * sends a raw envelope rather than a verdict; the policy below is the
+ * Worker's, and can be re-run over stored envelopes when it changes.
+ */
+
+/** One byte per second, RMS >> 4, base64. */
+function decodeEnvelope(raw: string | null): number[] | null {
+  if (!raw) return null;
+  try {
+    const binary = atob(raw.replace(/-/g, "+").replace(/_/g, "/"));
+    return Array.from(binary, (c) => c.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Measured ambient levels: quiet room 176, background activity 352, speech
+ * 2440–3536. Divided by 16 that is 11, 22, and 152–221, so 32 (RMS 512) sits
+ * above any room this device has been in and far below anything spoken.
+ */
+const VOICED_RMS = 32;
+
+/**
+ * Skip only when a segment is unambiguously empty. The asymmetry is
+ * deliberate: a wrong skip loses a transcript of something real until someone
+ * notices, while a wrong transcribe costs $0.0005. Two seconds of the minute
+ * is enough to buy the call.
+ */
+const MIN_VOICED_RATIO = 0.033;
+
+function voicedRatio(envelope: number[]): number {
+  if (envelope.length === 0) return 1; // no evidence is not evidence of silence
+  return envelope.filter((v) => v >= VOICED_RMS).length / envelope.length;
+}
+
 /**
  * Which language to tell Whisper it is listening to.
  *
@@ -819,6 +902,66 @@ function startedAtFromId(id: string): { iso: string; epoch: number } | null {
   const iso = `${y}-${mo}-${d}T${h}:${mi}:${s}.000+09:00`;
   const epoch = Math.floor(Date.parse(iso) / 1000);
   return Number.isFinite(epoch) ? { iso, epoch } : null;
+}
+
+/**
+ * Re-apply the speech threshold to stored envelopes.
+ *
+ * The threshold above is a guess checked against one device in a handful of
+ * rooms. `?dry=1` reports what a different one would have decided; without it
+ * the newly-voiced segments are queued for transcription. Either way no audio
+ * is read, which is the whole reason the envelope is kept.
+ */
+async function rejudge(env: Env, url: URL): Promise<Response> {
+  const rms = intParam(url, "rms") ?? VOICED_RMS;
+  const floor = Number(url.searchParams.get("ratio") ?? MIN_VOICED_RATIO);
+  const dry = url.searchParams.get("dry") === "1";
+  const limit = Math.min(intParam(url, "limit") ?? 500, 2000);
+
+  const rows = await env.DB.prepare(
+    `SELECT segment_id, r2_key, status, rms_envelope
+       FROM segments
+      WHERE rms_envelope IS NOT NULL AND kind = 'lifelog'
+      ORDER BY started_epoch DESC
+      LIMIT ?1`,
+  )
+    .bind(limit)
+    .all<{ segment_id: string; r2_key: string; status: string; rms_envelope: string }>();
+
+  let wouldTranscribe = 0;
+  let wouldSkip = 0;
+  let queued = 0;
+
+  for (const row of rows.results ?? []) {
+    const envelope = decodeEnvelope(row.rms_envelope);
+    if (!envelope) continue;
+    const ratio = envelope.length
+      ? envelope.filter((v) => v >= rms).length / envelope.length
+      : 1;
+    const voiced = ratio >= floor;
+    if (voiced) wouldTranscribe += 1;
+    else wouldSkip += 1;
+
+    if (!dry && voiced && row.status === "silent") {
+      await env.DB.prepare(
+        `UPDATE segments SET status = 'pending', voiced_ratio = ?1 WHERE segment_id = ?2`,
+      )
+        .bind(ratio, row.segment_id)
+        .run();
+      await env.TRANSCRIBE_QUEUE.send({ segmentId: row.segment_id, key: row.r2_key });
+      queued += 1;
+    }
+  }
+
+  return json({
+    examined: rows.results?.length ?? 0,
+    rms_threshold: rms,
+    ratio_threshold: floor,
+    would_transcribe: wouldTranscribe,
+    would_skip: wouldSkip,
+    queued,
+    dry,
+  });
 }
 
 async function stats(env: Env): Promise<Response> {

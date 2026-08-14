@@ -99,19 +99,42 @@ can be re-transcribed at any time. See below.
 
 ## What the VAD is for
 
-Gating **transcription**, never storage.
+Gating **transcription**, never storage. Everything recorded is uploaded and
+kept; only the decision to spend a Whisper call is gated.
 
-The VAD has only ever been wired to the question path. Gating the recording on
-it was considered, and is the right way to cut the transcription bill: measured
-across a day, roughly **11 % of what the device records is speech** — 4–20 % in
-workday hours, 10–53 % at home in the evening, near zero asleep.
+Handing Whisper a silent minute is what makes it hallucinate — it returns
+`Thank you.` or `ご視聴ありがとうございました` with no signal that it invented
+them. Its own `vad_filter` (now on) suppresses most of that, but only after the
+call has been made and billed, and roughly **11 % of what the device records is
+speech**: 4–20 % in workday hours, 10–53 % at home in the evening, near zero
+asleep.
 
-But an energy gate must not decide what survives. It would discard exactly the
-ambient sound that a future model might reconstruct a room from, permanently,
-on the basis of a threshold nobody validated for that purpose. Speech is what
-we can use today; it is not what is worth keeping.
+**Where the measurement happens is forced by the codec.** Opus here is
+effectively constant bit rate — a silent minute averages 271,859 bytes against
+293,769 for a talkative one, with the ranges fully overlapping — so nothing
+useful can be read off the packets without decoding. The Worker would need a
+WASM Opus decoder to see a waveform; the device has the PCM already and is
+computing RMS on every frame regardless.
 
-So: upload everything, transcribe selectively.
+So the device sends **one byte of loudness per second**, base64, alongside the
+upload — 60 bytes a minute, about 500 KB a year — and the Worker applies the
+threshold. The device reports a measurement; the Worker owns the policy.
+
+| | RMS ÷ 16 |
+| --- | --- |
+| Quiet room, measured over a full minute | 6 – 16 |
+| Threshold | **32** |
+| Speech | 152 – 221 |
+
+A segment is skipped only if fewer than 2 seconds of the 60 clear the
+threshold. The asymmetry is deliberate: a wrong skip loses a transcript until
+someone notices, a wrong transcribe costs $0.0005.
+
+Nothing about this is irreversible. The envelope is stored, so
+`POST /v1/admin/rejudge` re-applies a different threshold to history — with
+`?dry=1` to see what would change — and re-queues anything newly judged voiced,
+without reading a byte of audio. That is the reason to store the measurement
+rather than only the verdict.
 
 ## Asking a question
 
@@ -197,9 +220,11 @@ someone notices.
 
 - **Restart after reboot.** The gap above. An archival device that stops
   because the battery died and came back is broken, and this one is.
-- **Transcription gating.** Everything recorded is currently transcribed,
-  which is now the dominant running cost and buys hallucinated text for the
-  ~89 % of the day that is not speech.
+- **Confirmation that the gate passes real speech.** The silent side is
+  measured; the speech side rests on FINDINGS' 2440–3536 RMS for speech being
+  5× the threshold. The first real conversation settles it, and a wrong
+  threshold costs nothing permanent — the audio is archived and `rejudge`
+  re-queues.
 - **Integrity checking beyond `/v1/admin/reconcile`.** No checksums, no second
   copy. One bucket, one account, one bad decision away from the whole archive.
 - **Dual-mic capture.** `Built-In Back Mic` exists and is unused. Stereo would

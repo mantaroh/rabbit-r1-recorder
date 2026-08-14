@@ -119,6 +119,12 @@ class Uploader(
             append("&kind=lifelog&sample_rate=").append(sampleRate())
             append("&codec=").append(if (opus) "opus" else "wav")
             append("&language=").append(enc(settings.language))
+            // Lets the server skip Whisper on a silent minute. Absent for
+            // segments written before this existed, which the server then
+            // transcribes unconditionally rather than guessing.
+            envelopeFile(file).takeIf { it.exists() }?.let {
+                append("&rms=").append(enc(it.readText().trim()))
+            }
         }
 
         var connection: HttpURLConnection? = null
@@ -147,6 +153,7 @@ class Uploader(
                     // Acknowledged: only now is it safe to lose the local copy.
                     val bytes = file.length()
                     file.delete()
+                    envelopeFile(file).delete()
                     uploaded += 1
                     lastUploadAt = System.currentTimeMillis()
                     consecutiveFailures = 0
@@ -279,6 +286,10 @@ class Uploader(
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    /** Sidecar holding the per-second loudness written when the segment closed. */
+    private fun envelopeFile(audio: File) =
+        File(audio.parentFile, audio.nameWithoutExtension + ".rms")
 
     private fun isSegment(name: String) =
         name.endsWith(".wav", true) || name.endsWith(".opus", true)
