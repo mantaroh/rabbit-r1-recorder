@@ -91,18 +91,6 @@ class RecorderService : Service() {
          */
         const val EXTRA_PHOTOS = "photos"
 
-        /**
-         * One front/rear pair every fifteen minutes.
-         *
-         * Five was the first guess and it produced a photograph every single
-         * cycle: in an occupied room some speech falls inside any five-minute
-         * window, so the gate that was meant to skip quiet periods passed
-         * everything and the result read as continuous. Fifteen keeps the
-         * timelapse continuous enough to follow while cutting the volume to a
-         * third.
-         */
-        private const val PHOTO_INTERVAL_MS = 15 * 60_000L
-
         private const val CONTEXT_MS = 120_000L
 
         /**
@@ -560,7 +548,7 @@ class RecorderService : Service() {
             // the arm have no business moving mid-question.
             if (photosEnabled && query.state == QueryController.State.LIFELOG) {
                 if (vad.isSpeaking) timelapse?.noteSpeech()
-                timelapse?.tick(now, PHOTO_INTERVAL_MS, vad.isSpeaking)
+                timelapse?.tick(now, vad.isSpeaking)
             }
 
             // Continuous capture to disk. Amplitude statistics prove the stream

@@ -42,14 +42,19 @@ class Timelapse(
         private const val MAX_EDGE = 640
 
         /**
-         * Mean luma below which the frame is discarded, 0-255.
+         * Mean luma, 0-255, below which the room counts as dark.
          *
-         * A lit room sits well above this; a dark bedroom at night sits far
-         * below. 18 is low enough that a dim room still gets photographed and
-         * high enough that a black frame never reaches the captioning model,
-         * which will otherwise describe one in confident detail.
+         * A lit room sits well above this; a bedroom at night sits far below.
+         * 18 leaves a dim room on the lit side of the line, which is the safer
+         * direction to err — the rule it feeds stops photography altogether.
          */
         private const val MIN_LUMA = 18
+
+        /** At home the room is mostly the same room. */
+        private const val HOME_INTERVAL_MS = 15 * 60_000L
+
+        /** Out, every frame is one that will never recur. */
+        private const val AWAY_INTERVAL_MS = 5 * 60_000L
 
         /** How long a cycle may be deferred before it is skipped outright. */
         private const val MAX_DEFER_MS = 120_000L
@@ -132,6 +137,15 @@ class Timelapse(
     private var speechSeen = false
     private var secondsNoted = 0
 
+    /**
+     * Brightness of the last front-facing frame, or -1 before the first one.
+     *
+     * -1 deliberately fails the darkness test, so a freshly started service
+     * photographs once rather than deciding the house is asleep on no
+     * evidence.
+     */
+    @Volatile private var lastLuma = -1
+
     /** Called once per second of captured audio, from the capture thread. */
     fun noteSecond(rms: Int) {
         secondsNoted += 1
@@ -177,7 +191,7 @@ class Timelapse(
      * Called from the capture thread; returns immediately. [speaking] defers
      * the cycle rather than laying motor noise over a conversation.
      */
-    fun tick(nowMs: Long, intervalMs: Long, speaking: Boolean) {
+    fun tick(nowMs: Long, speaking: Boolean) {
         if (busy) return
 
         // A freshly started service has heard nothing yet, so there is no
@@ -187,30 +201,32 @@ class Timelapse(
         // installs are frequent.
         if (secondsNoted < WARMUP_SECONDS) return
 
+        // Away from home the scene changes constantly and every frame is one
+        // that will never recur, so the shutter runs faster. At home the room
+        // is mostly the same room, and a slower cadence says as much with a
+        // third of the frames.
+        val home = onHomeNetwork()
+        val intervalMs = if (home) HOME_INTERVAL_MS else AWAY_INTERVAL_MS
         if (nowMs - lastRunAt < intervalMs) return
 
-        // Photographs are taken at home and nowhere else. Audio travels
-        // wherever the device does; a camera pointed at whatever room the
-        // owner happens to be standing in is a different proposition, and the
-        // network the device is on is the cheapest available proxy for "this
-        // is the place where that was agreed". Checked here rather than in the
-        // uploader so nothing is captured in the first place.
-        if (!onHomeNetwork()) {
-            metrics.write("photo_skip", mapOf("why" to "away"))
-            resetWindow()
-            lastRunAt = nowMs
-            dueSince = 0L
-            return
-        }
-
-        // Nothing happened since the last pair, so the pair would be identical
-        // to it. Reset the window and wait — including the clock, so the next
-        // event is photographed promptly rather than at the next multiple of
-        // the interval.
-        if (!interesting()) {
+        // Asleep: at home, nothing has made a sound, and the last look at the
+        // room came back dark. All three together, because any one alone is
+        // ordinary — a quiet lit room is someone reading, a dark noisy one is
+        // a film. Only the conjunction means the house has gone to bed.
+        //
+        // Darkness is taken from the previous cycle because it cannot be known
+        // before the shutter fires, and a room that was dark fifteen minutes
+        // ago is almost certainly still dark. The cost of being wrong is one
+        // pair of frames, late.
+        if (home && !interesting() && lastLuma in 0 until MIN_LUMA) {
             metrics.write(
                 "photo_idle",
-                mapOf("peak" to windowPeak, "baseline" to baseline.toInt()),
+                mapOf(
+                    "why" to "asleep",
+                    "peak" to windowPeak,
+                    "baseline" to baseline.toInt(),
+                    "luma" to lastLuma,
+                ),
             )
             resetWindow()
             lastRunAt = nowMs
@@ -280,16 +296,11 @@ class Timelapse(
                 continue
             }
 
-            // A dark room photographs as noise, and the captioning model does
-            // to a black frame what Whisper does to silence: invents something
-            // plausible. One frame taken before the exposure fix came back
-            // described as a lit overpass at night. Cheaper to notice here
-            // than to store, upload, caption and then filter.
-            val luma = meanLuma(bytes)
-            if (luma != null && luma < MIN_LUMA) {
-                metrics.write("photo_skip", mapOf("why" to "dark", "luma" to luma, "side" to label))
-                continue
-            }
+            // Measured and remembered, not acted on here: the darkness rule is
+            // a conjunction with silence, decided before the next shutter.
+            // A dark frame with something happening in it is worth keeping —
+            // a conversation with the lights off is still a conversation.
+            meanLuma(bytes)?.let { if (label == "front") lastLuma = it }
 
             val file = File(dir, "img_${at}_$label.jpg")
             runCatching { file.writeBytes(bytes) }
