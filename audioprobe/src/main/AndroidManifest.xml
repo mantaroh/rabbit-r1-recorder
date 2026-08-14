@@ -56,6 +56,18 @@
             android:exported="false"
             android:foregroundServiceType="microphone|camera" />
 
+        <!-- The 23:00 question. Wakes the screen because it fires while the
+             device is asleep on a table, and is often read from a distance. -->
+        <activity
+            android:name=".StopPromptActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
         <!-- Shown the instant the gesture arms, since the press itself dims
              the screen and otherwise nothing acknowledges it. -->
         <activity

@@ -63,6 +63,13 @@ class RecorderService : Service() {
         /** Are the two built-in microphones actually separate? See MicProbe. */
         const val ACTION_MIC_PROBE = "com.r1.audioprobe.MIC_PROBE"
 
+        /** The evening prompt came back with an answer; see StopPromptActivity. */
+        const val ACTION_PROMPT_ANSWER = "com.r1.audioprobe.PROMPT_ANSWER"
+        const val EXTRA_STOP_RECORDING = "stop_recording"
+
+        /** How often the wall clock is consulted. */
+        private const val SCHEDULE_INTERVAL_MS = 30_000L
+
         /** Long enough to speak from in front, then from behind. */
         private const val MIC_PROBE_SECONDS = 40
 
@@ -161,6 +168,9 @@ class RecorderService : Service() {
     @Volatile private var useOpus = false
     @Volatile private var photosEnabled = true
     @Volatile private var micProbeRequested = false
+
+    @Volatile private var schedule = Scheduler.State()
+    private var lastScheduleCheck = 0L
     private var timelapse: Timelapse? = null
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
@@ -278,6 +288,13 @@ class RecorderService : Service() {
         }
         if (intent?.action == ACTION_MIC_PROBE) {
             micProbeRequested = true
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_PROMPT_ANSWER) {
+            val stop = intent.getBooleanExtra(EXTRA_STOP_RECORDING, false)
+            schedule = schedule.copy(answeredAt = System.currentTimeMillis())
+            if (stop) writeAudio = false
+            metrics.write("schedule", mapOf("what" to "answered", "stopped" to stop))
             return START_STICKY
         }
         if (running) return START_STICKY
@@ -577,6 +594,12 @@ class RecorderService : Service() {
                 pending = null
             }
 
+            if (now - lastScheduleCheck >= SCHEDULE_INTERVAL_MS) {
+                lastScheduleCheck = now
+                runCatching { applySchedule(now) }
+                    .onFailure { Log.w(TAG, "schedule check failed", it) }
+            }
+
             if (now - lastSampleAt >= SAMPLE_INTERVAL_MS) {
                 lastSampleAt = now
                 emitSample()
@@ -663,6 +686,48 @@ class RecorderService : Service() {
                 Log.e(TAG, "chat client unavailable", it)
                 metrics.write("query", mapOf("state" to "no_chat_client"))
             }
+    }
+
+    /**
+     * The day's shape, checked twice a minute against the wall clock.
+     *
+     * The evening prompt is a question, never a decision: it beeps, it shows a
+     * screen, and if nobody answers it comes back in ten minutes and the
+     * recording carries on regardless. Losing a night because the room was
+     * empty is the one outcome worth ruling out.
+     */
+    private fun applySchedule(nowMs: Long) {
+        when (Scheduler.decide(nowMs, writeAudio, schedule)) {
+            Scheduler.Action.NONE -> Unit
+
+            Scheduler.Action.START -> {
+                writeAudio = true
+                schedule = schedule.copy(startedAt = nowMs)
+                metrics.write("schedule", mapOf("what" to "auto_start"))
+            }
+
+            Scheduler.Action.ASK_TO_STOP -> {
+                val first = !Scheduler.firedToday(schedule.promptedAt, nowMs)
+                schedule = schedule.copy(promptedAt = nowMs)
+                metrics.write("schedule", mapOf("what" to "prompt", "first" to first))
+
+                // Sound first: the screen may be face down, or the person may
+                // be on another floor. Three tones so it does not read as an
+                // upload chirp.
+                repeat(3) {
+                    beep()
+                    buzz()
+                    runCatching { Thread.sleep(260) }
+                }
+                runCatching {
+                    startActivity(
+                        Intent(this, StopPromptActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    )
+                }.onFailure { Log.w(TAG, "stop prompt could not be shown", it) }
+            }
+        }
     }
 
     /** A short tone, loud enough to hear across a room while speaking. */

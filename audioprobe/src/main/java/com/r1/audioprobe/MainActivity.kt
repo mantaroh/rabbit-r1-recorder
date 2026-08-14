@@ -44,6 +44,9 @@ class MainActivity : Activity() {
 
         /** Wi-Fi the timelapse may photograph from; empty means anywhere. */
         const val EXTRA_PHOTO_SSID = "photo_ssid"
+
+        /** Show the 23:00 question now, for looking at it. */
+        const val EXTRA_SHOW_PROMPT = "showprompt"
     }
 
     private lateinit var statusView: TextView
@@ -114,6 +117,12 @@ class MainActivity : Activity() {
             upload.photoSsid = it
             photoSsidField.setText(upload.photoSsid)
             metrics.write("photo_ssid_set", mapOf("ssid" to upload.photoSsid))
+        }
+
+        // The evening prompt is not exported, and waiting until 23:00 to see
+        // whether it looks right is a poor way to work on it.
+        if (source?.getBooleanExtra(EXTRA_SHOW_PROMPT, false) == true) {
+            startActivity(Intent(this, StopPromptActivity::class.java))
         }
 
         if (source?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) start()
