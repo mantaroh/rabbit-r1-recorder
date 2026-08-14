@@ -48,6 +48,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Also a home screen, so the device comes back here rather than
+                 to the stock launcher and the standby display is what it shows
+                 when left alone.
+
+                 Not exclusive: CarrotOS's launcher stays installed and can be
+                 chosen again, which matters because it owns the side button
+                 through an accessibility service. That service is independent
+                 of which app is home, but it has never been tested with a
+                 different one in front. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
         </activity>
 
         <!-- Started from the visible Activity: Android 14 restricts starting a

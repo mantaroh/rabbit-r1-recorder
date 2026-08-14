@@ -57,6 +57,7 @@ class SignageActivity : Activity() {
             if (now - lastFetch >= FETCH_MS) {
                 lastFetch = now
                 LifelogSummary.refresh(settings)
+                HermesStatus.refresh(this@SignageActivity)
             }
             if (screens.size > 1 && now - lastRotate >= ROTATE_MS) {
                 lastRotate = now
@@ -90,6 +91,7 @@ class SignageActivity : Activity() {
 
         lastRotate = System.currentTimeMillis()
         LifelogSummary.refresh(settings)
+        HermesStatus.refresh(this)
         lastFetch = System.currentTimeMillis()
     }
 

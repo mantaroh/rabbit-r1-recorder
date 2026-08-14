@@ -73,15 +73,15 @@ object SignageStyle {
 
 object Signage {
 
-    /**
-     * Every screen the device knows how to show, in picker order.
-     *
-     * Two more are wanted and not here yet — Claude Code and Codex usage, and
-     * the tasks Hermes is tracking — because neither has a source to read
-     * from yet. They will be additions to this list and nothing else.
-     */
+    /** Every screen the device knows how to show, in picker order. */
     val ALL: List<SignageScreen> by lazy {
-        listOf(ClockScreen(), TodayScreen(), RecentSpeechScreen())
+        listOf(
+            ClockScreen(),
+            TodayScreen(),
+            RecentSpeechScreen(),
+            AgentUsageScreen(),
+            TasksScreen(),
+        )
     }
 
     fun byId(id: String): SignageScreen? = ALL.firstOrNull { it.id == id }
@@ -179,6 +179,97 @@ private class RecentSpeechScreen : SignageScreen {
     override fun refresh(data: LifelogSummary.Snapshot?) {
         stamp.text = data?.latestAt ?: "直近の発話"
         body.text = data?.latestText?.takeIf { it.isNotBlank() } ?: "—"
+    }
+}
+
+/**
+ * How hard the agent has been working today, per billing provider.
+ *
+ * Tokens rather than money: the provider here is a subscription, so every
+ * session reports a cost of zero and a spend figure would read as "free" no
+ * matter how much ran. Token volume is the thing that actually moved.
+ */
+private class AgentUsageScreen : SignageScreen {
+    override val id = "usage"
+    override val title = "エージェント稼働"
+
+    private lateinit var heading: TextView
+    private lateinit var body: TextView
+
+    override fun createView(context: Context): View {
+        val column = SignageStyle.column(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        heading = SignageStyle.text(context, 15f, SignageStyle.ORANGE, bold = true).apply {
+            text = "今日のエージェント"
+        }
+        body = SignageStyle.text(context, 15f).apply { setLineSpacing(7f, 1f) }
+        column.addView(heading, SignageStyle.wide())
+        column.addView(body, SignageStyle.wide())
+        return column
+    }
+
+    override fun refresh(data: LifelogSummary.Snapshot?) {
+        val usage = HermesStatus.usage
+        body.text = when {
+            usage == null -> "—"
+            usage.providers.isEmpty() -> "今日はまだ動いていません"
+            else -> buildString {
+                for (provider in usage.providers.take(3)) {
+                    // "openai-codex" reads better as "codex" on a 240 dp panel.
+                    val short = provider.name.substringAfter('-').ifEmpty { provider.name }
+                    append(short).append("  ").append(provider.sessions).append("回\n")
+                    append("  in ").append(tokens(provider.inputTokens))
+                    append(" / out ").append(tokens(provider.outputTokens)).append('\n')
+                }
+                append("ツール ").append(usage.toolCalls).append("回")
+            }
+        }
+    }
+
+    private fun tokens(count: Long): String =
+        if (count >= 1000) "${count / 1000}k" else count.toString()
+}
+
+/** The Kanban board Hermes keeps, summarised to fit. */
+private class TasksScreen : SignageScreen {
+    override val id = "tasks"
+    override val title = "タスク"
+
+    private lateinit var heading: TextView
+    private lateinit var body: TextView
+
+    override fun createView(context: Context): View {
+        val column = SignageStyle.column(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        heading = SignageStyle.text(context, 15f, SignageStyle.ORANGE, bold = true).apply {
+            text = "タスク"
+        }
+        body = SignageStyle.text(context, 15f).apply {
+            setLineSpacing(7f, 1f)
+            maxLines = 9
+        }
+        column.addView(heading, SignageStyle.wide())
+        column.addView(body, SignageStyle.wide())
+        return column
+    }
+
+    override fun refresh(data: LifelogSummary.Snapshot?) {
+        val board = HermesStatus.board
+        body.text = when {
+            board == null -> "—"
+            board.total == 0 -> "カードはありません"
+            else -> buildString {
+                for ((name, count) in board.columns) {
+                    append(name).append("  ").append(count).append('\n')
+                }
+                // What is actually moving matters more than the counts.
+                board.running.firstOrNull()?.let {
+                    append('\n').append("▶ ").append(it.take(40))
+                }
+            }
+        }
     }
 }
 
