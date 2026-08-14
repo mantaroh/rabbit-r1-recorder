@@ -102,6 +102,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/v1/admin/rejudge") {
       return rejudge(env, url);
     }
+    if (request.method === "POST" && url.pathname === "/v1/admin/retranscribe") {
+      return retranscribe(env, url);
+    }
 
     // Same auth as everything else, so the agent uses the token it already has.
     if (url.pathname === "/mcp") {
@@ -962,6 +965,53 @@ async function rejudge(env: Env, url: URL): Promise<Response> {
     queued,
     dry,
   });
+}
+
+/**
+ * Re-transcribe a window of already-transcribed audio.
+ *
+ * Distinct from backfill, which only picks up rows that never got quality
+ * signals. This exists because the transcription settings themselves change —
+ * a language, a VAD flag — and everything recorded before the change is
+ * carrying worse text than the same bytes would produce today. The recordings
+ * are kept precisely so that this is possible.
+ */
+async function retranscribe(env: Env, url: URL): Promise<Response> {
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  if (!from || Number.isNaN(Date.parse(from))) return json({ error: "from required" }, 400);
+  if (!to || Number.isNaN(Date.parse(to))) return json({ error: "to required" }, 400);
+
+  const dry = url.searchParams.get("dry") === "1";
+  const limit = Math.min(intParam(url, "limit") ?? 200, 1000);
+  const language = url.searchParams.get("language") ?? undefined;
+
+  const rows = await env.DB.prepare(
+    `SELECT segment_id, r2_key FROM segments
+      WHERE started_epoch >= ?1 AND started_epoch <= ?2
+        AND r2_key IS NOT NULL
+      ORDER BY started_epoch ASC
+      LIMIT ?3`,
+  )
+    .bind(
+      Math.floor(Date.parse(from) / 1000),
+      Math.floor(Date.parse(to) / 1000),
+      limit,
+    )
+    .all<{ segment_id: string; r2_key: string }>();
+
+  const todo = rows.results ?? [];
+  if (dry) return json({ matched: todo.length, dry: true });
+
+  for (const row of todo) {
+    await env.TRANSCRIBE_QUEUE.send({
+      segmentId: row.segment_id,
+      key: row.r2_key,
+      language,
+    });
+  }
+
+  return json({ matched: todo.length, queued: todo.length, language: language ?? "default" });
 }
 
 async function stats(env: Env): Promise<Response> {
