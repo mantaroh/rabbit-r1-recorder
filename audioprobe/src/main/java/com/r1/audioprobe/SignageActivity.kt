@@ -32,21 +32,33 @@ import android.widget.FrameLayout
 class SignageActivity : Activity() {
 
     companion object {
-        /** How long a screen holds before the next one. */
-        private const val ROTATE_MS = 20_000L
-
         /** How often the visible screen is asked to redraw. */
         private const val TICK_MS = 1_000L
 
         /** How often the server is asked what today looks like. */
         private const val FETCH_MS = 120_000L
+
+        /**
+         * The instance currently on screen, or null.
+         *
+         * Held so a side-button press — which arrives at the accessibility
+         * service, not at any window — can dismiss it. Cleared in onDestroy so
+         * a stale reference cannot be told to finish twice.
+         */
+        @Volatile private var showing: SignageActivity? = null
+
+        /** True if the press was used to leave standby. */
+        fun dismiss(): Boolean {
+            val activity = showing ?: return false
+            activity.runOnUiThread { activity.finish() }
+            return true
+        }
     }
 
     private lateinit var frame: FrameLayout
     private lateinit var settings: UploadSettings
     private var screens: List<SignageScreen> = emptyList()
     private var index = 0
-    private var lastRotate = 0L
     private var lastFetch = 0L
 
     private val ticker = Handler(Looper.getMainLooper())
@@ -59,10 +71,10 @@ class SignageActivity : Activity() {
                 LifelogSummary.refresh(settings)
                 HermesStatus.refresh(this@SignageActivity)
             }
-            if (screens.size > 1 && now - lastRotate >= ROTATE_MS) {
-                lastRotate = now
-                show((index + 1) % screens.size)
-            }
+            // The screen only changes when the wheel is turned. A display that
+            // rotates on its own is one you have to wait for when you want a
+            // particular thing, and this one is often glanced at rather than
+            // watched.
             screens.getOrNull(index)?.refresh(LifelogSummary.current)
 
             ticker.postDelayed(this, TICK_MS)
@@ -89,10 +101,14 @@ class SignageActivity : Activity() {
             .ifEmpty { listOf(Signage.ALL.first()) }
         show(0)
 
-        lastRotate = System.currentTimeMillis()
         LifelogSummary.refresh(settings)
         HermesStatus.refresh(this)
         lastFetch = System.currentTimeMillis()
+
+        // The side button is the way out, and it does not reach a focused
+        // Activity — the launcher's accessibility service has it first. This
+        // is how the press gets here.
+        showing = this
     }
 
     override fun onResume() {
@@ -140,24 +156,27 @@ class SignageActivity : Activity() {
         }
     }
 
-    /** The wheel steps between screens; it does not dismiss. */
+    /**
+     * The wheel steps between screens and never dismisses.
+     *
+     * Leaving is the side button's job: once to come back to the device, twice
+     * to ask a question. Both arrive through KeyService rather than here — the
+     * button is taken by the launcher's accessibility service before window
+     * focus is consulted, so a focused Activity never sees it.
+     */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
-                lastRotate = System.currentTimeMillis()
                 show((index - 1 + screens.size) % screens.size)
                 return true
             }
 
             KeyEvent.KEYCODE_DPAD_DOWN -> {
-                lastRotate = System.currentTimeMillis()
                 show((index + 1) % screens.size)
                 return true
             }
         }
-        // Anything else is someone wanting the device back.
-        finish()
-        return true
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
@@ -171,5 +190,10 @@ class SignageActivity : Activity() {
     override fun onUserLeaveHint() {
         finish()
         super.onUserLeaveHint()
+    }
+
+    override fun onDestroy() {
+        if (showing === this) showing = null
+        super.onDestroy()
     }
 }

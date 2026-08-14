@@ -37,10 +37,25 @@ class KeyService : AccessibilityService() {
          * machine without a trip through the system.
          */
         @Volatile var onDoublePress: ((Long) -> Unit)? = null
+
+        /**
+         * A press that turned out to be on its own, reported once the window
+         * for a second one has passed.
+         *
+         * Deciding "single" costs [DOUBLE_PRESS_MS] of waiting, which is why
+         * this is a separate callback rather than something the double-press
+         * path can infer. It is what dismisses the standby display.
+         */
+        @Volatile var onSinglePress: (() -> Unit)? = null
     }
 
     private lateinit var metrics: Metrics
     private var lastDownAt = 0L
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val singlePress = Runnable {
+        runCatching { onSinglePress?.invoke() }
+            .onFailure { Log.e(TAG, "single-press handler failed", it) }
+    }
 
     override fun onServiceConnected() {
         metrics = Metrics(this)
@@ -82,8 +97,15 @@ class KeyService : AccessibilityService() {
             )
 
             if (isDouble) {
+                // The pending "this was a single press" never happens.
+                handler.removeCallbacks(singlePress)
                 runCatching { onDoublePress?.invoke(now) }
                     .onFailure { Log.e(TAG, "double-press handler failed", it) }
+            } else if (event.keyCode == KeyEvent.KEYCODE_BUTTON_1) {
+                // Might still become the first half of a pair; wait out the
+                // window before calling it a single.
+                handler.removeCallbacks(singlePress)
+                handler.postDelayed(singlePress, DOUBLE_PRESS_MS + 40)
             }
         }
 
