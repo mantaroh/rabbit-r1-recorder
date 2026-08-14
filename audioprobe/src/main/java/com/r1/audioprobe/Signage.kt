@@ -210,20 +210,46 @@ private class AgentUsageScreen : SignageScreen {
     }
 
     override fun refresh(data: LifelogSummary.Snapshot?) {
-        val usage = HermesStatus.usage
+        val agents = LifelogSummary.agents
         body.text = when {
-            usage == null -> "—"
-            usage.providers.isEmpty() -> "今日はまだ動いていません"
+            agents == null -> "—"
             else -> buildString {
-                for (provider in usage.providers.take(3)) {
-                    // "openai-codex" reads better as "codex" on a 240 dp panel.
-                    val short = provider.name.substringAfter('-').ifEmpty { provider.name }
-                    append(short).append("  ").append(provider.sessions).append("回\n")
-                    append("  in ").append(tokens(provider.inputTokens))
-                    append(" / out ").append(tokens(provider.outputTokens)).append('\n')
+                append("Codex\n")
+                if (agents.codexPercent != null) {
+                    append("  ").append(percent(agents.codexPercent))
+                    agents.codexPlan?.let { append("  (").append(it).append(')') }
+                    append('\n')
+                    agents.codexResetsAt?.let {
+                        append("  reset ").append(untilReset(it)).append('\n')
+                    }
+                } else {
+                    append("  —\n")
                 }
-                append("ツール ").append(usage.toolCalls).append("回")
+
+                append('\n').append("Claude Code  5h\n")
+                // No percentage: Claude Code stores no limits on the machine
+                // it runs on, so there is nothing to be a percentage of.
+                append("  out ").append(tokens(agents.claudeOutputTokens))
+                append(" / ").append(agents.claudeMessages).append("msg")
+
+                // Numbers this old are worth doubting, so say how old.
+                agents.ageSeconds?.takeIf { it > 900 }?.let {
+                    append('\n').append("  ").append(it / 60).append("分前の値")
+                }
             }
+        }
+    }
+
+    private fun percent(value: Double): String =
+        if (value >= 10) "${value.toInt()}%" else String.format("%.1f%%", value)
+
+    /** Coarse on purpose: the exact minute of a weekly reset is not news. */
+    private fun untilReset(epochSeconds: Long): String {
+        val hours = (epochSeconds - System.currentTimeMillis() / 1000) / 3600
+        return when {
+            hours < 0 -> "まもなく"
+            hours < 24 -> "${hours}時間後"
+            else -> "${hours / 24}日後"
         }
     }
 

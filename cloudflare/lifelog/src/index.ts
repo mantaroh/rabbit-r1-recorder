@@ -106,6 +106,9 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/day") {
       return dayView(env, url);
     }
+    if (url.pathname === "/v1/usage") {
+      return request.method === "PUT" ? putUsage(request, env) : getUsage(env);
+    }
     if (request.method === "GET" && url.pathname.startsWith("/v1/media/")) {
       return serveMedia(request, env, url);
     }
@@ -584,6 +587,62 @@ async function serveMedia(request: Request, env: Env, url: URL): Promise<Respons
 
   headers.set("content-length", String(object.size));
   return new Response(object.body, { headers });
+}
+
+// ----------------------------------------------------------------- usage ---
+
+/**
+ * The latest reading from the machine Codex and Claude Code run on.
+ *
+ * Stored as the JSON it arrived as, not parsed into columns. The two tools
+ * report different shapes — one has a real percentage, the other only tokens —
+ * and that asymmetry is theirs to change, not something to freeze into a
+ * schema here.
+ */
+async function putUsage(request: Request, env: Env): Promise<Response> {
+  const text = await request.text();
+  if (text.length > 64 * 1024) return json({ error: "too large" }, 413);
+
+  let generatedAt: number | null = null;
+  try {
+    generatedAt = Number(JSON.parse(text)?.generated_at) || null;
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO usage_snapshot (id, body, generated_at, received_at)
+     VALUES (1, ?1, ?2, ?3)
+     ON CONFLICT(id) DO UPDATE SET
+       body = excluded.body,
+       generated_at = excluded.generated_at,
+       received_at = excluded.received_at`,
+  )
+    .bind(text, generatedAt, new Date().toISOString())
+    .run();
+
+  return json({ stored: true, generated_at: generatedAt });
+}
+
+async function getUsage(env: Env): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT body, generated_at, received_at FROM usage_snapshot WHERE id = 1`,
+  ).first<{ body: string; generated_at: number | null; received_at: string }>();
+
+  if (!row) return json({ available: false, reason: "nothing reported yet" }, 200);
+
+  // Age is what decides whether the numbers can be trusted, and the device
+  // should not have to work it out from two clocks.
+  const ageSeconds = row.generated_at
+    ? Math.max(0, Math.floor(Date.now() / 1000) - row.generated_at)
+    : null;
+
+  return json({
+    available: true,
+    age_seconds: ageSeconds,
+    received_at: row.received_at,
+    usage: JSON.parse(row.body),
+  });
 }
 
 // ---------------------------------------------------------------- photos ---

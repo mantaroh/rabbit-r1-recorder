@@ -37,7 +37,26 @@ object LifelogSummary {
         val latestText: String?,
     )
 
+    /**
+     * Codex and Claude Code, as reported by the machine they run on.
+     *
+     * Deliberately not symmetrical, because they are not: Codex publishes a
+     * real percentage of its plan and Claude Code publishes nothing but
+     * tokens. [codexPercent] is null when there is no percentage to show
+     * rather than a zero, which would read as "unused".
+     */
+    data class AgentUsage(
+        val codexPercent: Double?,
+        val codexPlan: String?,
+        val codexResetsAt: Long?,
+        val claudeOutputTokens: Long,
+        val claudeMessages: Int,
+        /** Seconds since the reporting machine measured it. */
+        val ageSeconds: Long?,
+    )
+
     @Volatile var current: Snapshot? = null; private set
+    @Volatile var agents: AgentUsage? = null; private set
 
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "signage-fetch").apply { isDaemon = true }
@@ -52,11 +71,57 @@ object LifelogSummary {
         worker.execute {
             try {
                 fetch(settings)?.let { current = it }
+                fetchAgents(settings)?.let { agents = it }
             } catch (t: Throwable) {
                 Log.w(TAG, "signage fetch failed", t)
             } finally {
                 inFlight = false
             }
+        }
+    }
+
+    /** The reading the reporting machine last pushed, via the same Worker. */
+    private fun fetchAgents(settings: UploadSettings): AgentUsage? {
+        val body = request(settings, "/v1/usage") ?: return null
+        val json = JSONObject(body)
+        if (!json.optBoolean("available")) return null
+
+        val usage = json.optJSONObject("usage") ?: return null
+        val codex = usage.optJSONObject("codex")
+        val primary = codex?.optJSONObject("primary")
+        val claude = usage.optJSONObject("claude_code")
+        val fiveHour = claude?.optJSONObject("windows")?.optJSONObject("5h")
+
+        return AgentUsage(
+            codexPercent = primary?.let {
+                if (it.isNull("used_percent")) null else it.optDouble("used_percent")
+            },
+            codexPlan = codex?.optString("plan")?.takeIf { it.isNotEmpty() && it != "null" },
+            codexResetsAt = primary?.optLong("resets_at")?.takeIf { it > 0 },
+            claudeOutputTokens = fiveHour?.optLong("output") ?: 0,
+            claudeMessages = fiveHour?.optInt("messages") ?: 0,
+            ageSeconds = json.optLong("age_seconds").takeIf { json.has("age_seconds") },
+        )
+    }
+
+    private fun request(settings: UploadSettings, path: String): String? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL(settings.baseUrl.trimEnd('/') + path).openConnection()
+                as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
+                setRequestProperty("Authorization", "Bearer " + settings.bearer)
+                if (settings.accessClientId.isNotEmpty()) {
+                    setRequestProperty("CF-Access-Client-Id", settings.accessClientId)
+                    setRequestProperty("CF-Access-Client-Secret", settings.accessClientSecret)
+                }
+            }
+            if (connection.responseCode !in 200..299) return null
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection?.disconnect()
         }
     }
 
