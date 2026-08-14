@@ -26,11 +26,18 @@ interface Env {
   TRANSCRIBE_LANGUAGE?: string;
 }
 
+/**
+ * One queue carries both jobs. They differ only in which model reads the
+ * object, and a second queue would mean a second consumer, a second dead
+ * letter queue and two backlogs to reason about instead of one.
+ */
 interface TranscribeMessage {
   segmentId: string;
   key: string;
   /** Carried per message so a queued segment keeps the language it arrived with. */
   language?: string;
+  /** Absent means audio, for messages queued before captioning existed. */
+  kind?: "audio" | "photo";
 }
 
 /** Queue messages stay tiny — 128 KB cap — so they carry a key, never audio. */
@@ -84,6 +91,12 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/photos") {
       return listPhotos(env, url);
     }
+    if (request.method === "GET" && url.pathname === "/v1/debug/caption") {
+      return debugCaption(env, url);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/caption-backfill") {
+      return captionBackfill(env, url);
+    }
     if (request.method === "GET" && url.pathname === "/v1/context") {
       return getContext(env, url);
     }
@@ -132,15 +145,22 @@ export default {
 
   async queue(batch: MessageBatch<TranscribeMessage>, env: Env): Promise<void> {
     for (const message of batch.messages) {
+      const isPhoto = message.body.kind === "photo";
       try {
-        await transcribe(message.body, env);
+        if (isPhoto) {
+          await captionPhoto(message.body, env);
+        } else {
+          await transcribe(message.body, env);
+        }
         message.ack();
       } catch (error) {
-        // Let the queue redeliver: a Whisper hiccup should not cost the audio,
-        // which is already durable in R2.
-        console.error("transcribe failed", message.body.segmentId, error);
+        // Let the queue redeliver: a model hiccup should not cost the
+        // recording, which is already durable in R2.
+        console.error("job failed", message.body.segmentId, error);
+        const table = isPhoto ? "photos" : "segments";
+        const column = isPhoto ? "photo_id" : "segment_id";
         await env.DB.prepare(
-          `UPDATE segments SET error = ?1 WHERE segment_id = ?2`,
+          `UPDATE ${table} SET error = ?1 WHERE ${column} = ?2`,
         )
           .bind(String(error).slice(0, 500), message.body.segmentId)
           .run();
@@ -463,7 +483,113 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     )
     .run();
 
+  // Captioning takes about five seconds, so it goes behind the queue for the
+  // same reason transcription does: the upload returns once the bytes are
+  // durable, which is the part that cannot be retried later.
+  await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key, kind: "photo" });
+
   return json({ photo_id: photoId, key, bytes: object?.size ?? null }, 201);
+}
+
+/**
+ * What the vision model is asked for.
+ *
+ * Japanese, because the transcripts are and a search that has to work across
+ * two languages works well in neither. Concrete and short: the caption exists
+ * so a frame can be found later, not so it can be read for pleasure, and
+ * every token is billed.
+ */
+const CAPTION_PROMPT =
+  "この写真に写っているものを日本語で簡潔に説明してください。" +
+  "人物の有無、場所の様子、目立つ物を2〜3文で。推測は避け、見えるものだけを述べてください。";
+
+/**
+ * Room for the answer, and a ceiling on what a runaway one can cost.
+ *
+ * The measurement that justified this feature came back truncated at 128, so
+ * this is higher; output is 14x the price of input per token, which is why it
+ * is not higher still.
+ */
+const CAPTION_MAX_TOKENS = 220;
+
+/** Captions one photograph and records what it cost. */
+async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void> {
+  const object = await env.BUCKET.get(message.key);
+  if (!object) {
+    await env.DB.prepare(
+      `UPDATE photos SET status = 'failed', error = 'r2 object missing'
+        WHERE photo_id = ?1`,
+    )
+      .bind(message.segmentId)
+      .run();
+    return;
+  }
+
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  const result: any = await env.AI.run(
+    "@cf/meta/llama-3.2-11b-vision-instruct" as any,
+    { image: [...bytes], prompt: CAPTION_PROMPT, max_tokens: CAPTION_MAX_TOKENS } as any,
+  );
+
+  const text = String(result?.response ?? "").trim();
+  await env.DB.prepare(
+    `UPDATE photos
+        SET caption = ?1, caption_at = ?2, caption_neurons = ?3,
+            status = 'captioned', error = NULL
+      WHERE photo_id = ?4`,
+  )
+    .bind(
+      text,
+      new Date().toISOString(),
+      Number(result?.usage?.neurons) || null,
+      message.segmentId,
+    )
+    .run();
+}
+
+/**
+ * Runs one stored photograph through the vision model and reports what it
+ * cost, so the price of captioning the archive is measured rather than
+ * guessed.
+ *
+ * The pricing page bills vision input per token and does not say how many
+ * tokens an image becomes — the model tiles at 560x560, so a 640x480 frame is
+ * somewhere between one and four tiles and the estimate spans 4x. The raw
+ * response is returned unedited because whether it carries a usage block is
+ * exactly what needs finding out.
+ */
+async function debugCaption(env: Env, url: URL): Promise<Response> {
+  const photoId = url.searchParams.get("photo_id");
+  if (!photoId) return json({ error: "photo_id required" }, 400);
+
+  const row = await env.DB.prepare(`SELECT r2_key FROM photos WHERE photo_id = ?1`)
+    .bind(photoId)
+    .first<{ r2_key: string }>();
+  if (!row) return json({ error: "not found" }, 404);
+
+  const object = await env.BUCKET.get(row.r2_key);
+  if (!object) return json({ error: "image missing" }, 404);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+
+  const prompt = url.searchParams.get("prompt") ??
+    "この写真に写っているものを日本語で簡潔に説明してください。";
+
+  const started = Date.now();
+  try {
+    const result: any = await env.AI.run(
+      "@cf/meta/llama-3.2-11b-vision-instruct" as any,
+      { image: [...bytes], prompt, max_tokens: 128 } as any,
+    );
+    return json({
+      photo_id: photoId,
+      image_bytes: bytes.length,
+      elapsed_ms: Date.now() - started,
+      // Verbatim: the usage block, if there is one, is the whole point.
+      raw: result,
+    });
+  } catch (error) {
+    return json({ photo_id: photoId, error: String(error).slice(0, 400) }, 500);
+  }
 }
 
 /** What was in front of the device over a window; metadata only, no bytes. */
@@ -474,7 +600,8 @@ async function listPhotos(env: Env, url: URL): Promise<Response> {
   const atEpoch = Math.floor(Date.parse(at) / 1000);
 
   const rows = await env.DB.prepare(
-    `SELECT photo_id, facing, taken_at, bytes, r2_key FROM photos
+    `SELECT photo_id, facing, taken_at, bytes, r2_key, caption, status
+       FROM photos
       WHERE taken_epoch >= ?1 AND taken_epoch <= ?2
       ORDER BY taken_epoch ASC
       LIMIT 500`,
@@ -483,6 +610,41 @@ async function listPhotos(env: Env, url: URL): Promise<Response> {
     .all();
 
   return json({ at, before_sec: beforeSec, count: rows.results?.length ?? 0, photos: rows.results });
+}
+
+/**
+ * Captions photographs that predate captioning, oldest first.
+ *
+ * Bounded per call rather than looping to exhaustion: each one is a five
+ * second model call, and a request that tried to do hundreds would hit the
+ * Worker's limits long before it ran out of work.
+ */
+async function captionBackfill(env: Env, url: URL): Promise<Response> {
+  const limit = Math.min(intParam(url, "limit") ?? 50, 500);
+
+  const rows = await env.DB.prepare(
+    `SELECT photo_id, r2_key FROM photos
+      WHERE caption IS NULL AND status != 'failed'
+      ORDER BY taken_epoch ASC
+      LIMIT ?1`,
+  )
+    .bind(limit)
+    .all<{ photo_id: string; r2_key: string }>();
+
+  const todo = rows.results ?? [];
+  for (const row of todo) {
+    await env.TRANSCRIBE_QUEUE.send({
+      segmentId: row.photo_id,
+      key: row.r2_key,
+      kind: "photo",
+    });
+  }
+
+  const remaining = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status != 'failed'`,
+  ).first<{ n: number }>();
+
+  return json({ queued: todo.length, remaining: remaining?.n ?? 0 });
 }
 
 // ----------------------------------------------------------- transcribe ---
