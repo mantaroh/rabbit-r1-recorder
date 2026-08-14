@@ -339,7 +339,7 @@ class RecorderService : Service() {
         // explicit "stop for today" minutes after it was given, with nothing
         // on screen to say so.
         schedule = uploadSettings.scheduleState
-        writeAudio = if (Scheduler.firedToday(schedule.answeredAt, System.currentTimeMillis())) {
+        writeAudio = if (Scheduler.stopStillStands(schedule.answeredAt, System.currentTimeMillis())) {
             uploadSettings.recording
         } else {
             intent?.getBooleanExtra(EXTRA_WRITE_AUDIO, true) ?: true

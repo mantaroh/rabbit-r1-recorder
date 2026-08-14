@@ -88,6 +88,34 @@ object Scheduler {
         return if (sinceMs >= SNOOZE_MINUTES * 60_000L) Action.ASK_TO_STOP else Action.NONE
     }
 
+    /**
+     * Whether an evening "stop for today" is still in force.
+     *
+     * Measured against the last morning start, not against the calendar day.
+     * A decision made at 23:00 expires at midnight if you count days, which is
+     * one hour later — so a reboot at 03:00 would resume recording that
+     * somebody deliberately ended, silently, in an empty house. It should hold
+     * until the morning it was meant to end at.
+     */
+    fun stopStillStands(answeredAt: Long, nowMs: Long): Boolean {
+        if (answeredAt == 0L) return false
+        return answeredAt >= lastMorningBoundary(nowMs)
+    }
+
+    /** The most recent [MORNING_HOUR]:[MORNING_MINUTE] at or before [nowMs]. */
+    private fun lastMorningBoundary(nowMs: Long): Long {
+        val boundary = Calendar.getInstance().apply {
+            timeInMillis = nowMs
+            set(Calendar.HOUR_OF_DAY, MORNING_HOUR)
+            set(Calendar.MINUTE, MORNING_MINUTE)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        // Before this morning's start, the boundary that matters is yesterday's.
+        if (boundary.timeInMillis > nowMs) boundary.add(Calendar.DAY_OF_YEAR, -1)
+        return boundary.timeInMillis
+    }
+
     /** True when [nowMs] is at or past the given wall-clock time today. */
     private fun isSameDayAtOrAfter(now: Calendar, hour: Int, minute: Int): Boolean {
         val h = now.get(Calendar.HOUR_OF_DAY)
