@@ -105,6 +105,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/v1/admin/retranscribe") {
       return retranscribe(env, url);
     }
+    if (request.method === "POST" && url.pathname === "/v1/admin/reflag") {
+      return reflag(env, url);
+    }
 
     // Same auth as everything else, so the agent uses the token it already has.
     if (url.pathname === "/mcp") {
@@ -377,8 +380,8 @@ async function storeTranscript(env: Env, segmentId: string, t: Transcription) {
     `UPDATE segments
         SET transcript = ?1, status = 'transcribed', transcribed_at = ?2,
             speech_ratio = ?3, language = ?4, language_prob = ?5,
-            word_count = ?6, error = NULL
-      WHERE segment_id = ?7`,
+            word_count = ?6, stock_phrase = ?7, error = NULL
+      WHERE segment_id = ?8`,
   )
     .bind(
       t.text,
@@ -387,6 +390,7 @@ async function storeTranscript(env: Env, segmentId: string, t: Transcription) {
       t.language,
       t.languageProb,
       t.wordCount,
+      isStockPhrase(t.text) ? 1 : 0,
       segmentId,
     )
     .run();
@@ -408,6 +412,66 @@ interface Transcription {
  * segment over an input-format mismatch. Only turbo returns the per-segment
  * timings the quality signals are derived from.
  */
+// --------------------------------------------------------- stock phrases ---
+
+/**
+ * Whisper's fallbacks when it has audio but nothing to say.
+ *
+ * These are artefacts of a training set full of video: sign-offs, subtitle
+ * credits, thanks. Measured over 1900 segments, the top of the list is
+ * "Thank you. Thank you." 272 times and "ご視聴ありがとうございました" 160.
+ *
+ * The speech_ratio filter does not reach them. "All right. All right." scores
+ * 0.23 and "お疲れ様でした" 0.54, both clear of the 0.15 threshold, because
+ * Whisper genuinely distributed words across the audio — they are just the
+ * wrong words, produced from clattering plates and half-heard speech.
+ */
+const STOCK_PHRASES = [
+  "thank you",
+  "thanks for watching",
+  "all right",
+  "okay",
+  "bye",
+  "obrigado",
+  "vamos lá",
+  "amém",
+  "gracias",
+  "продолжение следует",
+  "ご視聴ありがとうございました",
+  "ありがとうございました",
+  "お疲れ様でした",
+  "おつかれさまでした",
+  "次回もお楽しみに",
+  "チャンネル登録お願いします",
+  "エンディング",
+];
+
+/**
+ * True when the transcript is *entirely* one stock phrase, repeated or not.
+ *
+ * Deliberately not a substring test. "ありがとうございました" and
+ * "お疲れ様でした" are ordinary things for a person to say, and a rule that
+ * struck them from the middle of a real sentence would quietly delete the
+ * evidence it was meant to protect. What marks the hallucination is that the
+ * phrase is the *whole* of a sixty-second minute.
+ */
+function isStockPhrase(text: string): boolean {
+  const normalised = text
+    .toLowerCase()
+    .replace(/[.,!?。、！？…]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalised) return false;
+
+  for (const phrase of STOCK_PHRASES) {
+    // Strip the phrase wherever it occurs; if nothing else was said, the
+    // segment was Whisper repeating itself into the void.
+    const stripped = normalised.split(phrase).join(" ").replace(/\s+/g, " ").trim();
+    if (stripped === "") return true;
+  }
+  return false;
+}
+
 // -------------------------------------------------------------------- vad ---
 
 /**
@@ -587,6 +651,7 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
        FROM segments
       WHERE status = 'transcribed'
         AND transcript IS NOT NULL AND transcript <> ''
+        AND stock_phrase = 0
         AND started_epoch >= ?1 AND started_epoch <= ?2
         AND (speech_ratio IS NULL OR speech_ratio >= ?3)
       ORDER BY started_epoch ASC
@@ -630,6 +695,7 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
            FROM segments_fts f
            JOIN segments s ON s.segment_id = f.segment_id
           WHERE segments_fts MATCH ?1
+            AND s.stock_phrase = 0
             AND (s.speech_ratio IS NULL OR s.speech_ratio >= ?3)
           ORDER BY s.started_epoch DESC
           LIMIT ?2`,
@@ -640,6 +706,7 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
         `SELECT segment_id, started_at, transcript, speech_ratio
            FROM segments
           WHERE transcript LIKE ?1 ESCAPE '\\'
+            AND stock_phrase = 0
             AND (speech_ratio IS NULL OR speech_ratio >= ?3)
           ORDER BY started_epoch DESC
           LIMIT ?2`,
@@ -1012,6 +1079,43 @@ async function retranscribe(env: Env, url: URL): Promise<Response> {
   }
 
   return json({ matched: todo.length, queued: todo.length, language: language ?? "default" });
+}
+
+/**
+ * Re-apply the stock-phrase test to transcripts already stored.
+ *
+ * Costs nothing and touches no audio — the text is right there. Exists so the
+ * phrase list can be edited and the whole archive brought into line, rather
+ * than only whatever happens to be transcribed next.
+ */
+async function reflag(env: Env, url: URL): Promise<Response> {
+  const dry = url.searchParams.get("dry") === "1";
+  const rows = await env.DB.prepare(
+    `SELECT segment_id, transcript, stock_phrase FROM segments
+      WHERE transcript IS NOT NULL AND transcript <> ''`,
+  ).all<{ segment_id: string; transcript: string; stock_phrase: number }>();
+
+  const changes: { id: string; to: number }[] = [];
+  for (const row of rows.results ?? []) {
+    const flag = isStockPhrase(row.transcript) ? 1 : 0;
+    if (flag !== row.stock_phrase) changes.push({ id: row.segment_id, to: flag });
+  }
+
+  if (!dry) {
+    for (const change of changes) {
+      await env.DB.prepare(`UPDATE segments SET stock_phrase = ?1 WHERE segment_id = ?2`)
+        .bind(change.to, change.id)
+        .run();
+    }
+  }
+
+  return json({
+    examined: rows.results?.length ?? 0,
+    changed: changes.length,
+    newly_flagged: changes.filter((c) => c.to === 1).length,
+    unflagged: changes.filter((c) => c.to === 0).length,
+    dry,
+  });
 }
 
 async function stats(env: Env): Promise<Response> {
