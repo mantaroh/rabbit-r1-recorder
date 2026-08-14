@@ -108,6 +108,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/v1/admin/reflag") {
       return reflag(env, url);
     }
+    if (request.method === "POST" && url.pathname === "/v1/admin/repair-wav") {
+      return repairWav(env, url);
+    }
 
     // Same auth as everything else, so the agent uses the token it already has.
     if (url.pathname === "/mcp") {
@@ -1116,6 +1119,101 @@ async function reflag(env: Env, url: URL): Promise<Response> {
     unflagged: changes.filter((c) => c.to === 0).length,
     dry,
   });
+}
+
+/**
+ * Rebuilds the WAV header on segments that arrived without one.
+ *
+ * The recorder used to write 44 zero bytes and fill them in on close, so any
+ * segment interrupted by a crash, an install or a flat battery reached R2 as
+ * headerless PCM. Whisper rejects those with `AiError: 3010` and they sit at
+ * status 'pending' forever — archived, intact, and unreadable by anything.
+ *
+ * Every field is recoverable: mono 16-bit is the only format this device has
+ * ever captured, and the sample rate is in the row. The writer no longer
+ * produces these, but the ones already stored are only broken in their first
+ * 44 bytes and there is no reason to leave them that way.
+ */
+async function repairWav(env: Env, url: URL): Promise<Response> {
+  const dry = url.searchParams.get("dry") === "1";
+  const limit = Math.min(intParam(url, "limit") ?? 50, 200);
+
+  const rows = await env.DB.prepare(
+    `SELECT segment_id, r2_key, sample_rate FROM segments
+      WHERE status = 'pending' AND r2_key LIKE '%.wav'
+      ORDER BY started_epoch ASC
+      LIMIT ?1`,
+  )
+    .bind(limit)
+    .all<{ segment_id: string; r2_key: string; sample_rate: number | null }>();
+
+  let repaired = 0;
+  let alreadyValid = 0;
+  let missing = 0;
+
+  for (const row of rows.results ?? []) {
+    const object = await env.BUCKET.get(row.r2_key);
+    if (!object) {
+      missing += 1;
+      continue;
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (bytes.length <= 44) {
+      missing += 1;
+      continue;
+    }
+
+    const riff = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+    if (riff === "RIFF") {
+      alreadyValid += 1;
+      continue;
+    }
+
+    if (dry) {
+      repaired += 1;
+      continue;
+    }
+
+    const rate = row.sample_rate ?? 16000;
+    bytes.set(wavHeader(bytes.length - 44, rate), 0);
+    await env.BUCKET.put(row.r2_key, bytes, {
+      httpMetadata: { contentType: "audio/wav" },
+    });
+    await env.TRANSCRIBE_QUEUE.send({ segmentId: row.segment_id, key: row.r2_key });
+    repaired += 1;
+  }
+
+  return json({
+    examined: rows.results?.length ?? 0,
+    repaired,
+    already_valid: alreadyValid,
+    missing,
+    dry,
+  });
+}
+
+/** Canonical 44-byte mono 16-bit PCM header. */
+function wavHeader(dataBytes: number, sampleRate: number): Uint8Array {
+  const header = new Uint8Array(44);
+  const view = new DataView(header.buffer);
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i += 1) header[offset + i] = text.charCodeAt(i);
+  };
+
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, dataBytes, true);
+  return header;
 }
 
 async function stats(env: Env): Promise<Response> {
