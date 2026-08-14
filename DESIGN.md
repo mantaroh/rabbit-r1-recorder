@@ -48,7 +48,7 @@ original design and made "さっきの話" work without special-casing.
 
 ## Capture format
 
-48 kHz mono, stored as Opus at 32 kbps.
+48 kHz stereo, stored as Opus at 32 kbps per channel.
 
 **Sample rate is the only decision here that cannot be revisited.** A recording
 band-limited to 8 kHz stays band-limited however good the model reading it
@@ -70,10 +70,22 @@ An upsampled 16 kHz signal falls off a cliff above 8 kHz. This does not:
 11–13 kHz carries more than 8.5–10 kHz. The content is real.
 
 Storage is the opposite kind of decision — reversible, and about money. Opus is
-lossy, but at 48 kHz it keeps the full band the microphone gives us for about a
-twenty-first of what PCM costs: **270 KB per minute, roughly 140 GB per year**.
-Storing 16 kHz PCM losslessly, as this system used to, spent eight times the
-bytes to preserve less of the room.
+lossy, but at 48 kHz it keeps the full band the microphone gives us for a small
+fraction of what PCM costs: **550 KB per minute in stereo, roughly 280 GB per
+year**. Storing 16 kHz PCM losslessly, as this system used to, spent more bytes
+to preserve less of the room.
+
+Both channels are kept, and the reason is not the one it was meant to be — see
+[Direction](#direction-and-why-there-is-none). They are genuinely distinct:
+after the Opus round trip the difference signal sits 15 dB below the channels
+rather than at the noise floor, so the encoder is carrying real stereo and not
+dual-mono.
+
+The format travels with each segment in a sidecar written when it closes. The
+uploader used to report whatever the recorder was configured for *at upload
+time*, which is wrong for anything still queued when the recorder restarts
+under different settings — a mono file was archived labelled stereo before this
+was noticed. A recording described wrongly is decoded wrongly forever.
 
 ## Retention
 
@@ -90,8 +102,9 @@ Cost, at R2's $0.015/GB-month, growing monotonically:
 
 | | Year 1 | Year 5 | 5-year total |
 | --- | --- | --- | --- |
-| Opus 48 kHz 32 kbps, ~140 GB/yr | ~$2/mo | ~$10/mo | ~$300 |
-| Whisper on everything recorded | \+ ~$22/mo | | |
+| Opus 48 kHz stereo, ~280 GB/yr | ~$4/mo | ~$19/mo | ~$570 |
+| Photographs, ~7 GB/yr | negligible | | |
+| Whisper, gated to ~11 % of the day | ~$3/mo | | |
 
 Transcription, not storage, is now the larger running cost — and it is the one
 that can be cut without losing anything permanent, because the audio stays and
@@ -135,6 +148,62 @@ Nothing about this is irreversible. The envelope is stored, so
 `?dry=1` to see what would change — and re-queues anything newly judged voiced,
 without reading a byte of audio. That is the reason to store the measurement
 rather than only the verdict.
+
+## Photographs
+
+One frame in each direction every five minutes, 640 px, ~60 KB each.
+
+The lens sits on a motorised arm with a single sensor, so "front and back"
+means physically rotating between two shots, and that arm is audible on a
+device whose purpose is to record audio. Two rules follow.
+
+**A cycle is deferred while anyone is speaking**, up to two minutes, so the
+motor does not run over a conversation. The shot is taken in the pause
+afterwards.
+
+**A cycle is skipped entirely when nothing has happened.** A room nobody has
+entered produces two frames identical to the last two; a room with a
+television produces the same thing while being far from silent. So a baseline
+tracks what the room normally sounds like — a slow average over roughly ten
+minutes — and a cycle only runs when the window since the last pair either
+contained speech or peaked meaningfully above that baseline. A television left
+on raises the baseline along with the peak and stops qualifying. Speech always
+qualifies.
+
+The per-second level this reads is the same one the VAD envelope already
+computes.
+
+## Direction, and why there is none
+
+The stereo capture was meant to let the device point the lens at whoever was
+talking. It cannot, and the reason is worth recording so it is not attempted
+again.
+
+**Level differences do not work.** Speaking from in front and then from behind
+differs by 0.2 dB broadband and 0.3 dB above 4 kHz, with the distributions
+overlapping. Sound whose wavelength exceeds the obstacle diffracts around it,
+and speech at 100 Hz – 4 kHz is 8.6 cm – 3.4 m against a body about 8 cm
+across. Measuring the high band, where the device is finally opaque, changed
+nothing.
+
+**Time of flight does not work either, for a different reason.** Diffraction
+does not remove propagation delay, so cross-correlation was the better
+instrument — and it found something: a frontal talker produces a lag of
+exactly zero in 30 of 35 windows. A talker behind produces lags scattered from
+−1 to −24 with no peak, which is a weak direct path being outvoted by
+reflections, not a delay.
+
+A frontal source landing reliably at zero says the two capsules are equidistant
+from it — a left/right symmetric pair. A source directly behind is equidistant
+too, so it also reads zero. That is the front-back ambiguity of any two-element
+array, and it is geometry rather than tuning.
+
+The arm compounds it: it rotates through the front-back axis, which is exactly
+the axis the microphones cannot resolve. What they could resolve, left versus
+right, is the one direction the arm cannot point.
+
+Photographing both directions every cycle sidesteps all of this. Whoever is
+talking is in one of the two frames.
 
 ## Asking a question
 
@@ -227,9 +296,14 @@ someone notices.
   re-queues.
 - **Integrity checking beyond `/v1/admin/reconcile`.** No checksums, no second
   copy. One bucket, one account, one bad decision away from the whole archive.
-- **Dual-mic capture.** `Built-In Back Mic` exists and is unused. Stereo would
-  preserve direction, which is the kind of thing "reconstruct the scene later"
-  actually needs.
+- **A context slice that is not 23 MB.** The two minutes handed to a question
+  still go up as WAV, which stereo at 48 kHz has now doubled. It is uploaded
+  synchronously, before Whisper even starts, so it is the largest part of the
+  round trip. It should be Opus.
+- **Recovery of the side button after a reboot.** Recording resumes; the
+  accessibility service is dropped from `enabled_accessibility_services` and
+  has to be re-enabled by hand, so the question feature stays dead until
+  someone notices. The root shell on 127.0.0.1:1337 could rewrite it.
 - **TTS.** Answers are read, not spoken.
 
 ## Measured hardware
