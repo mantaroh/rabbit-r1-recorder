@@ -481,6 +481,7 @@ class RecorderService : Service() {
             // Skipped entirely while a question is in flight — the camera and
             // the arm have no business moving mid-question.
             if (photosEnabled && query.state == QueryController.State.LIFELOG) {
+                if (vad.isSpeaking) timelapse?.noteSpeech()
                 timelapse?.tick(now, PHOTO_INTERVAL_MS, vad.isSpeaking)
             }
 
@@ -666,7 +667,11 @@ class RecorderService : Service() {
         secondSumSquares += bufferSum
         secondSamples += read
         if (secondSamples >= sampleRate) {
-            envelope.add(rmsByte(secondSumSquares, secondSamples))
+            val level = rmsByte(secondSumSquares, secondSamples)
+            envelope.add(level)
+            // The same measurement decides whether the scene is worth
+            // photographing; there is no reason to compute it twice.
+            timelapse?.noteSecond(level)
             secondSumSquares = 0.0
             secondSamples = 0
         }
