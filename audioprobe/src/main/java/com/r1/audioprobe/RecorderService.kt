@@ -293,14 +293,15 @@ class RecorderService : Service() {
         // One press leaves the standby display and does nothing otherwise —
         // the launcher still gets the key either way, so its own handling is
         // untouched.
-        KeyService.onSinglePress = { SignageActivity.dismiss() }
+        KeyService.onSinglePress = { downAt -> SignageActivity.dismiss(downAt) }
 
         // The accessibility service is the only thing that sees the side
         // button; it hands the gesture straight over.
         KeyService.onDoublePress = { now ->
             // Asking a question from standby should leave standby, not layer
-            // the question screen on top of it.
-            SignageActivity.dismiss()
+            // the question screen on top of it. `now` is the second press, so
+            // standby opened by the first one is still older and does close.
+            SignageActivity.dismiss(now)
             val before = query.state
             query.onDoublePress(now)
             if (before == QueryController.State.LIFELOG &&

@@ -47,13 +47,26 @@ class SignageActivity : Activity() {
          */
         @Volatile private var showing: SignageActivity? = null
 
-        /** True if the press was used to leave standby. */
-        fun dismiss(): Boolean {
+        /**
+         * True if the press was used to leave standby.
+         *
+         * [pressedAt] is when the button went down. A press that *opened*
+         * standby must not also close it: on the home menu the same button
+         * both activates the 待受 row and reaches KeyService, and deciding a
+         * press was single costs 440 ms of waiting — long enough for standby
+         * to be on screen by the time its own cause is delivered. Standby
+         * appeared and bounced straight back to the menu.
+         */
+        fun dismiss(pressedAt: Long): Boolean {
             val activity = showing ?: return false
+            if (activity.shownAt >= pressedAt) return false
             activity.runOnUiThread { activity.finish() }
             return true
         }
     }
+
+    /** When this instance reached the screen; see [dismiss]. */
+    @Volatile private var shownAt = 0L
 
     private lateinit var frame: FrameLayout
     private lateinit var settings: UploadSettings
@@ -108,6 +121,7 @@ class SignageActivity : Activity() {
         // The side button is the way out, and it does not reach a focused
         // Activity — the launcher's accessibility service has it first. This
         // is how the press gets here.
+        shownAt = System.currentTimeMillis()
         showing = this
     }
 

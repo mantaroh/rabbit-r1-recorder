@@ -40,20 +40,24 @@ class KeyService : AccessibilityService() {
 
         /**
          * A press that turned out to be on its own, reported once the window
-         * for a second one has passed.
+         * for a second one has passed, with the time the button went down.
          *
          * Deciding "single" costs [DOUBLE_PRESS_MS] of waiting, which is why
          * this is a separate callback rather than something the double-press
-         * path can infer. It is what dismisses the standby display.
+         * path can infer. It is what dismisses the standby display — and the
+         * delay is why the handler is told *when* the press was: by the time
+         * it arrives the screen may have changed because of that same press.
          */
-        @Volatile var onSinglePress: (() -> Unit)? = null
+        @Volatile var onSinglePress: ((Long) -> Unit)? = null
     }
 
     private lateinit var metrics: Metrics
     private var lastDownAt = 0L
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var pendingDownAt = 0L
     private val singlePress = Runnable {
-        runCatching { onSinglePress?.invoke() }
+        val at = pendingDownAt
+        runCatching { onSinglePress?.invoke(at) }
             .onFailure { Log.e(TAG, "single-press handler failed", it) }
     }
 
@@ -105,6 +109,7 @@ class KeyService : AccessibilityService() {
                 // Might still become the first half of a pair; wait out the
                 // window before calling it a single.
                 handler.removeCallbacks(singlePress)
+                pendingDownAt = now
                 handler.postDelayed(singlePress, DOUBLE_PRESS_MS + 40)
             }
         }
