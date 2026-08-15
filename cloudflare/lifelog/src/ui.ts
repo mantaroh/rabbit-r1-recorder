@@ -15,6 +15,23 @@ export const UI_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>R1 lifelog</title>
+<meta name="theme-color" content="#14161a">
+<!--
+  Five bars, tall in the middle and short at the ends: the loudness of one
+  utterance from the first word to the last. It is the signal this system
+  actually stores — one byte per second, the thing the VAD reads and the thing
+  rejudge re-reads — rather than a picture of a microphone.
+
+  Drawn as a filled orange tile with the bars knocked out of it, because a
+  16 px favicon is read by its silhouette and thin strokes on a transparent
+  ground disappear into a dark tab strip. The orange is the R1's own, which is
+  what ties this page to the object that filled it.
+
+  Inline as a data URI: the page is one file with no build step and no external
+  requests, and a favicon is not a good enough reason to break either. The
+  colour hashes have to be %23 or the URI ends at the first one.
+-->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23fe5000'/><g fill='%2314161a'><rect x='1' y='5' width='2' height='6'/><rect x='4' y='3' width='2' height='11'/><rect x='7' y='1' width='2' height='14'/><rect x='10' y='4' width='2' height='9'/><rect x='13' y='6' width='2' height='5'/></g></svg>">
 <style>
   :root {
     color-scheme: dark;
