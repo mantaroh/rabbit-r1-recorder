@@ -31,6 +31,10 @@ USAGE_PUSH_TOKEN=$USAGE_PUSH_TOKEN
 USAGE_PUSH_ACCESS_ID=${USAGE_PUSH_ACCESS_ID:-}
 USAGE_PUSH_ACCESS_SECRET=${USAGE_PUSH_ACCESS_SECRET:-}
 EOF
+# umask only applies to a file being created. Re-running over one that already
+# exists truncates it and keeps whatever mode it had, so a file that was once
+# world-readable stays world-readable with fresh secrets in it.
+chmod 600 "$ENV_FILE"
 umask 022
 
 cat > "$UNIT_DIR/usage-relay.service" <<EOF

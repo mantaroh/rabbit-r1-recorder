@@ -25,18 +25,20 @@ self-hosted Hermes agent answers it with the preceding two minutes as context.
                        │ double press
                        ▼
   microphone ──▶ RecorderService ──▶ RingBuffer (150 s, memory)
-   48 kHz mono        │  │                │
-                      │  └─ 60 s Opus segments ──┐
-                      │ VAD                      │ on question: utterance + 2 min
-                      ▼                          ▼
-                QueryController ──▶ PUT /v1/segments/{id}
+   48 kHz stereo      │  │                │
+                      │  ├─ 60 s Opus segments ─┐
+                      │  │  + RMS envelope      │ on question: utterance + 2 min
+                      │  └─ Timelapse ──▶ jpeg ─┤
+                      ▼                         ▼
+                QueryController ──▶ PUT /v1/segments/{id}, /v1/photos/{id}
                                              │
                                     Cloudflare Access
                                              ▼
-                                     Worker ──▶ R2 (audio, kept)
-                                             └─▶ Whisper ──▶ D1 (transcripts)
+                                     Worker ──▶ R2 (audio + photos, kept)
+                                             ├─▶ Whisper ──▶ D1 (transcripts)
+                                             └─▶ vision  ──▶ D1 (captions)
                                                               │
-  ChatActivity ◀── transcript                                 │
+  ChatActivity ◀── transcript              browser ──▶ GET / ─┤
        │                                                      │
        └──▶ Hermes gateway ──▶ agent ──MCP: lifelog_recent────┘
 ```
@@ -103,8 +105,9 @@ Cost, at R2's $0.015/GB-month, growing monotonically:
 | | Year 1 | Year 5 | 5-year total |
 | --- | --- | --- | --- |
 | Opus 48 kHz stereo, ~280 GB/yr | ~$4/mo | ~$19/mo | ~$570 |
-| Photographs, ~7 GB/yr | negligible | | |
+| Photographs, a few GB/yr | negligible | | |
 | Whisper, gated to ~11 % of the day | ~$3/mo | | |
+| Captioning, ~$0.00026 an image | under $1/mo | | |
 
 Transcription, not storage, is now the larger running cost — and it is the one
 that can be cut without losing anything permanent, because the audio stays and
@@ -151,11 +154,26 @@ rather than only the verdict.
 
 ## Photographs
 
-One frame in each direction every five minutes, 640 px, ~60 KB each.
+One frame in each direction per cycle, 640 px, ~60 KB each.
 
 The lens sits on a motorised arm with a single sensor, so "front and back"
 means physically rotating between two shots, and that arm is audible on a
-device whose purpose is to record audio. Two rules follow.
+device whose purpose is to record audio. Three rules follow.
+
+**The cadence depends on where the device is.**
+
+| | Interval |
+| --- | --- |
+| On the home Wi-Fi | 15 minutes |
+| Anywhere else | 5 minutes |
+| Home, and quiet, and dark | stopped |
+
+Home is where the interesting frames are rarest — the same room, the same
+furniture, hour after hour — and away is where they are densest and least
+repeatable. The verdict is read from the SSID, and it is now written to the
+metrics whenever it changes, because getting it wrong does not fail: it
+silently triples the shutter rate and reads as a busy timelapse rather than as
+a fault. It did exactly that for 48 minutes before anyone noticed.
 
 **A cycle is deferred while anyone is speaking**, up to two minutes, so the
 motor does not run over a conversation. The shot is taken in the pause
@@ -168,10 +186,22 @@ tracks what the room normally sounds like — a slow average over roughly ten
 minutes — and a cycle only runs when the window since the last pair either
 contained speech or peaked meaningfully above that baseline. A television left
 on raises the baseline along with the peak and stops qualifying. Speech always
-qualifies.
+qualifies. The stop rule is conjunctive: quiet *and* dark *and* home, so a dark
+room away from home is still photographed.
 
 The per-second level this reads is the same one the VAD envelope already
 computes.
+
+**Each frame is captioned once, by a vision model, on arrival.** About
+$0.00026 an image — a rounding error against the audio — and it is what makes
+the photographs searchable at all, since nothing else about a JPEG is. The
+caption is an index entry, not a record: it is filtered and re-derivable, and
+the frame behind it stands on its own.
+
+Orientation is per-camera and was calibrated against the stock camera app:
+front 180°, rear 0°. Both were overridden to 0° once, on the reasoning that a
+sensor is a sensor, which turned every selfie upside down. The original values
+were right.
 
 ## Direction, and why there is none
 
@@ -251,9 +281,75 @@ Beyond being able to revisit the threshold without paying to transcribe again,
 a hallucinated transcript is a defect in the *index*, not in the recording. The
 audio behind it is as real as any other minute.
 
+## The day, and who decides it
+
+The device runs itself. **07:00 starts recording, 23:00 asks whether to stop**,
+and if nobody answers it asks again every ten minutes — while the recording
+keeps running. That asymmetry is the whole design of the prompt: an unanswered
+question must not be able to end the archive, because the most likely reason
+for silence is that nobody was there.
+
+**A decision lasts until the next morning, not until midnight.** The first
+version compared against "today", so answering "stop" at 23:04 was undone at
+00:00 and the device resumed at 00:09 — found in the logs, not by noticing.
+The evening answer is also persisted, because reinstalls and reboots are
+frequent here and either would otherwise quietly overturn an instruction that
+was given deliberately.
+
+The same rule now covers everything that decides *how* the recording is made.
+Wake lock, capture source, codec and the recording flag used to be fields on
+the settings screen, so every launch silently reset them to their defaults.
+Anything that decides how the recording is made has to outlive the screen that
+sets it.
+
+## What the device shows
+
+Three screens, in the order they are met:
+
+- **Home** is a five-row menu — 話す, 記録, 待受, 設定, Hermes — turned through
+  with the wheel, one row lit at a time. It was a column of small Android
+  buttons first, which on this device means the one interaction it is worst at:
+  hitting a 30 dp target on a 240 dp panel. The app registers as a HOME
+  activity, so the device returns here rather than to the stock launcher.
+- **Standby** takes over after a minute of no input, **and only while
+  charging**. Whatever it shows holds the panel awake, and doing that on
+  battery turns a day of recording into an afternoon. The wheel steps between
+  screens and never dismisses; leaving is the side button's job.
+- **The evening prompt** is styled after the R1 rather than after Android,
+  because it is the screen most likely to be seen by someone who was not
+  looking for it.
+
+All three are driven by Android's focus system rather than by intercepting keys
+at the Activity. A clickable view is focusable, so it takes the D-pad before
+`onKeyDown` ever runs — the first version of every one of these screens
+overrode `onKeyDown` and the wheel did nothing at all.
+
+The side button doing two jobs at once is a trap in its own right. It activates
+the focused row *and* reaches KeyService, which waits 440 ms to decide the
+press was single and then dismisses standby — so picking 待受 from the menu
+opened standby and immediately closed it again. The handler is now told when
+the button went down, and refuses to dismiss anything that appeared after
+that.
+
+## Browsing it
+
+`GET /` serves a single-file web UI: one day at a time, audio and photographs
+interleaved in time, with search across the whole archive. No build step and no
+dependencies — the Worker is the entire backend and this is the entire
+frontend.
+
+It authenticates by trusting Cloudflare Access, because a browser cannot attach
+a bearer token to a navigation. See [Operational notes](#operational-notes) for
+what that assumption rests on.
+
+Silent segments are listed and hidden behind a toggle rather than omitted. The
+page has to be able to agree with the bucket: a recording with no transcript is
+still a recording, and a page that quietly drops them would make the archive
+look smaller than it is.
+
 ## Operational notes
 
-Four things about this device will bite anyone who forgets them.
+Five things about this device will bite anyone who forgets them.
 
 **The side button belongs to the launcher.** CarrotOS takes it from
 `com.r1.launcher/.PowerService`, an AccessibilityService, so it is handled
@@ -279,23 +375,30 @@ before every pass: `onLost` fires when *a* network disappears, not when the
 device goes offline, and taking it at face value once stranded 325 segments on
 a device that could ping the server in 39 ms.
 
-**Nothing starts recording by itself.** A microphone foreground service cannot
-be started from the background on Android 14, so recording has to come through
-the Activity: `am start -n com.r1.audioprobe/.MainActivity --ez autostart true`.
-There is no boot receiver yet, which means a reboot stops the archive until
-someone notices.
+**Recording can only be started from a visible Activity.** A microphone
+foreground service cannot be started from the background on Android 14, so
+everything that wants recording to resume — the boot receiver, the morning
+start, a shell — goes the long way round through the Activity:
+`am start -n com.r1.audioprobe/.MainActivity --ez autostart true`. The `-f
+0x20000000` flag matters when the Activity is already up; without it `am start`
+brings the task forward and throws the extras away, and the command looks like
+it worked.
+
+**Nothing outside Cloudflare Access is checked.** The Worker accepts any
+request carrying a `Cf-Access-Jwt-Assertion` header without verifying the
+signature. That is sound only while Access covers every path of the custom
+domain and there is no `workers.dev` route — both true today, and both a single
+dashboard edit away from not being. The device's bearer token is the second
+factor, and it also opens the admin endpoints, one of which rewrites objects in
+R2. Ingest and administration should not share a credential; they do.
 
 ## What is not built
 
-- **Restart after reboot.** The gap above. An archival device that stops
-  because the battery died and came back is broken, and this one is.
-- **Confirmation that the gate passes real speech.** The silent side is
-  measured; the speech side rests on FINDINGS' 2440–3536 RMS for speech being
-  5× the threshold. The first real conversation settles it, and a wrong
-  threshold costs nothing permanent — the audio is archived and `rejudge`
-  re-queues.
-- **Integrity checking beyond `/v1/admin/reconcile`.** No checksums, no second
-  copy. One bucket, one account, one bad decision away from the whole archive.
+- **A second copy of the archive.** Bytes are now checksummed end to end — the
+  device hashes what it read off its own disk and R2 refuses a write that does
+  not match — so corruption in transit is caught. Loss is not. One bucket, one
+  account, one bad decision away from all of it.
+- **Separate credentials for ingest and administration.** See above.
 - **A context slice that is not 23 MB.** The two minutes handed to a question
   still go up as WAV, which stereo at 48 kHz has now doubled. It is uploaded
   synchronously, before Whisper even starts, so it is the largest part of the

@@ -240,9 +240,38 @@ question.
   premise of the Wi-Fi-only policy and has not been observed.
 - **`VOICE_RECOGNITION` vs `MIC`.** Not yet compared under identical conditions.
 
-## Server side does not exist yet
+## Since Phase 0 (2026-08-15)
 
-Unrelated to the device, but blocking the same feature: Hermes has **no**
-lifelog ingestion path. `kotoba-whisper` appears nowhere in the codebase (local
-STT is faster-whisper), and `/v1/r1/audio` and `/v1/r1/query` are not
-implemented. See `../hermes/PROTOCOL.md` for what does exist.
+Everything above was measured at 16 kHz mono with no camera. The shipping
+configuration is 48 kHz stereo with the timelapse running, and it costs
+considerably more.
+
+### Power, shipping configuration
+
+| Configuration | Mean current | Estimated runtime (1010 mAh) |
+| --- | --- | --- |
+| 48 kHz **mono**, no camera | 61.9 mA | ~16 h |
+| 48 kHz **stereo** + timelapse | 117 mA | ~8.6 h |
+
+The second figure is 48 minutes unplugged, 5% of the gauge. Part of the
+increase is real — stereo doubles the encode, and each timelapse cycle opens
+the sensor and swings the arm twice. Part of it was not: the device had
+misread the network as away-from-home, so it was photographing every 5 minutes
+instead of every 15, and being "away" also disables the quiet-and-dark skip.
+The two contributions have not been separated since; a clean stereo-only
+measurement is still owed.
+
+### Server side
+
+Superseded. The lifelog Worker exists — R2 ingest, Whisper transcription into
+D1, photo captioning, a web UI and an MCP surface — and the Hermes gateway is
+not in that path at all. See [`../DESIGN.md`](../DESIGN.md). The note that used
+to sit here recorded that Hermes had no ingestion path, which remains true and
+is no longer relevant.
+
+### Resolved from "Still open"
+
+- **Long run** — days of continuous recording, no memory growth or `reinit`
+  accumulation observed.
+- **`VOICE_RECOGNITION` vs `MIC`** — still not compared. `MIC` is what runs.
+- **Without the wake lock** — still untested.

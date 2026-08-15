@@ -18,8 +18,13 @@ it:
   percentage absent. Inventing one from an assumed quota would be a number
   that looks authoritative and is guessed.
 
-Read-only. It opens files the tools have already written and never touches
-credentials.
+Read-only on disk, but not credential-free — this used to claim otherwise.
+`claude_oauth_usage` reads the OAuth access token Claude Code wrote to
+`~/.claude/.credentials.json` and presents it to Anthropic's own usage
+endpoint, which is the only way to get a percentage rather than a token count.
+The token goes to `api.anthropic.com` over TLS and nowhere else: it is never
+logged, never included in the pushed body, and never written back to disk.
+Nothing else here opens a credential.
 """
 
 from __future__ import annotations
