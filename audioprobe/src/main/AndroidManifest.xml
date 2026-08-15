@@ -41,6 +41,7 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait">
 
             <intent-filter>
@@ -64,6 +65,16 @@
             </intent-filter>
 
         </activity>
+
+        <!-- Everything the home screen deliberately does not show: the upload
+             target, the codec, the capture source. Reached from 設定 and left
+             by 戻る, since the R1 has no Back key. -->
+        <activity
+            android:name=".SettingsActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- Started from the visible Activity: Android 14 restricts starting a
              microphone FGS from the background. -->

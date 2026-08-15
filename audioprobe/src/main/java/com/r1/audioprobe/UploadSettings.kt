@@ -28,6 +28,9 @@ class UploadSettings(context: Context) {
         private const val KEY_STARTED_AT = "schedule_started_at"
         private const val KEY_RECORDING = "recording"
         private const val KEY_SIGNAGE = "signage_ids"
+        private const val KEY_WAKE_LOCK = "wake_lock"
+        private const val KEY_VOICE_RECOGNITION = "voice_recognition"
+        private const val KEY_OPUS = "opus"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -146,6 +149,27 @@ class UploadSettings(context: Context) {
             ?.filter { it.isNotEmpty() }
             ?: Signage.ALL.map { it.id }
         set(v) = prefs.edit().putString(KEY_SIGNAGE, v.joinToString(",")).apply()
+
+    /**
+     * Capture options, persisted rather than held in an Activity.
+     *
+     * They used to be fields on the screen that starts the service, which
+     * meant every launch silently reverted them to their defaults — the same
+     * shape of bug as the evening stop that expired at midnight. Anything that
+     * decides how the recording is made has to outlive the screen that sets
+     * it.
+     */
+    var wakeLock: Boolean
+        get() = prefs.getBoolean(KEY_WAKE_LOCK, true)
+        set(v) = prefs.edit().putBoolean(KEY_WAKE_LOCK, v).apply()
+
+    var voiceRecognition: Boolean
+        get() = prefs.getBoolean(KEY_VOICE_RECOGNITION, false)
+        set(v) = prefs.edit().putBoolean(KEY_VOICE_RECOGNITION, v).apply()
+
+    var opus: Boolean
+        get() = prefs.getBoolean(KEY_OPUS, true)
+        set(v) = prefs.edit().putBoolean(KEY_OPUS, v).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

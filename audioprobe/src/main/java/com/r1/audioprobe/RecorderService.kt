@@ -67,6 +67,16 @@ class RecorderService : Service() {
         const val ACTION_PROMPT_ANSWER = "com.r1.audioprobe.PROMPT_ANSWER"
         const val EXTRA_STOP_RECORDING = "stop_recording"
 
+        /**
+         * Turn the archive on or off while the service keeps running, carrying
+         * [EXTRA_WRITE_AUDIO].
+         *
+         * Distinct from [ACTION_PROMPT_ANSWER] because that one also answers
+         * the evening question: pausing the recording at noon should not make
+         * the device skip asking at 23:00.
+         */
+        const val ACTION_SET_RECORDING = "com.r1.audioprobe.SET_RECORDING"
+
         /** How often the wall clock is consulted. */
         private const val SCHEDULE_INTERVAL_MS = 30_000L
 
@@ -327,6 +337,14 @@ class RecorderService : Service() {
                 uploadSettings.recording = false
             }
             metrics.write("schedule", mapOf("what" to "answered", "stopped" to stop))
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_SET_RECORDING) {
+            writeAudio = intent.getBooleanExtra(EXTRA_WRITE_AUDIO, true)
+            // Persisted as well, so the choice survives a restart the same way
+            // the evening answer does.
+            uploadSettings.recording = writeAudio
+            metrics.write("recording", mapOf("what" to "set", "on" to writeAudio))
             return START_STICKY
         }
         if (running) return START_STICKY
