@@ -451,9 +451,18 @@ class RecorderService : Service() {
                 .onFailure { Log.e(TAG, "photo upload pass failed", it) }
             // Last, and cheapest: a day of fixes is about 25 KB. Handed off by
             // rename first so nothing is appending to what is being read.
+            //
+            // Both steps behind the same guard, because handing off while the
+            // link is down defeats the batching it exists for: every fix would
+            // become its own one-line file, and a walk would come home with
+            // twenty of them to upload one at a time. Held in the open file
+            // instead, and taken as one batch when there is somewhere to send
+            // it.
             runCatching {
-                positions?.takePending()
-                uploader?.pumpPositions(filesDir)
+                if (uploader?.blockedReason() == null) {
+                    positions?.takePending()
+                    uploader?.pumpPositions(filesDir)
+                }
             }.onFailure { Log.e(TAG, "position upload pass failed", it) }
             runCatching { Thread.sleep(UPLOAD_INTERVAL_MS) }
         }
