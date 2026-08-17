@@ -134,12 +134,19 @@ object Motion {
     /**
      * Sitting in its stand.
      *
-     * Measured, not inferred. The printed stand holds the device at
-     * (0.04, 8.75, 4.03) — **24.7 degrees back**, and steady to a hundredth of
-     * a g across samples. Every other resting position measured on this device
-     * sits between 0 and 4 degrees. A twenty-degree gap is not something a desk
-     * that is not quite level can cross, so the angle alone answers the
-     * question and the band below has eight degrees of margin on either side.
+     * Measured, not inferred. The stand — dylanfonz's "Rabbit r1 Stand",
+     * makerworld.com/en/models/406818-rabbit-r1-stand, printed here — holds the
+     * device at (0.04, 8.75, 4.03): **24.7 degrees back**, steady to a
+     * hundredth of a g across samples. Every other resting position measured on
+     * this device sits between 0 and 4 degrees. A twenty-degree gap is not
+     * something a desk that is not quite level can cross, so the angle alone
+     * answers the question and the band below has eight degrees of margin on
+     * either side.
+     *
+     * The angle belongs to that model, not to stands as a category. Print a
+     * different one, or seat the device in a case, and this is the constant to
+     * re-measure — the symptom will be photographs quietly going back to two a
+     * cycle.
      *
      * This was first written as "upright, still and charging", on the
      * assumption that a few degrees of tilt could never be told from a desk.

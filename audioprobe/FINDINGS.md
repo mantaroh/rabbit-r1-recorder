@@ -285,6 +285,22 @@ not a suggestion. Registering at all costs 50 Hz.
 Resting flat on its base the device reads `(0.08, 9.60, -0.07)` — gravity on
 +Y. Upright is +Y, face up is +Z, face down is −Z, on its side is ±X.
 
+Resting positions measured so far, as tilt back from vertical:
+
+| Position | Reading | Tilt |
+| --- | --- | --- |
+| Upright on a desk | `(0.08, 9.60, -0.07)` | 0° |
+| Upright on a desk | `(0.06, 9.58, 0.61)` | 3.6° |
+| In the printed stand | `(0.04, 8.75, 4.03)` | **24.7°** |
+
+The stand is [Rabbit r1 Stand](https://makerworld.com/en/models/406818-rabbit-r1-stand)
+by dylanfonz. It reads steady to a hundredth of a g, and twenty degrees clear of
+anything else — enough to identify it by angle alone. The figure is a property
+of that model and would have to be re-measured for a different one.
+
+Note the accelerometer's full-scale reading is about **9.60**, not 9.81, so the
+magnitudes above are consistent rather than short.
+
 ### Shake gestures, calibrated
 
 Ten deliberate gestures, counting peaks of linear acceleration above 14 m/s²

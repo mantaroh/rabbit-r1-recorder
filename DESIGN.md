@@ -208,6 +208,12 @@ The stand is recognised by its angle, and the angle is unmistakable:
 | Upright on a desk | (0.06, 9.58, 0.61) | 3.6° |
 | **The printed stand** | **(0.04, 8.75, 4.03)** | **24.7°** |
 
+The stand is [Rabbit r1 Stand](https://makerworld.com/en/models/406818-rabbit-r1-stand)
+by dylanfonz, printed on a 3D printer here. **24.7° is a property of that model,
+not of stands in general** — a different design, or the device seated in a case,
+will read something else, and the band below is the thing to check first if the
+photographs quietly go back to two a cycle.
+
 Twenty degrees of separation, and the stand reads steady to a hundredth of a g
 across samples. A desk that is not quite level cannot cross that, so the band is
 12–45° with about eight degrees of margin on each side. The upper bound is not
