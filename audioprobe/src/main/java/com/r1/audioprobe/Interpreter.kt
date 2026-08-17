@@ -114,6 +114,7 @@ class Interpreter(
     /** Frames handed to the speaker, against which its play head is compared. */
     @Volatile private var framesWritten = 0L
     private var drainedAt = 0L
+    private var writes = 0
     @Volatile private var state = State.IDLE
 
     /** Buffered between the capture thread and the socket; see [feed]. */
@@ -376,10 +377,26 @@ class Interpreter(
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build(),
             )
-            .setBufferSizeInBytes(maxOf(minBuffer, WIRE_RATE * 4))
+            // Eight times the reported minimum, not two seconds.
+            //
+            // The first attempt asked for WIRE_RATE * 4 — 96000 bytes against a
+            // reported minimum of 1552, sixty-two times over. AudioTrack
+            // accepted every write and reported PLAYSTATE_PLAYING, and the
+            // playback head never advanced past zero: nothing was ever audible,
+            // and the half-duplex gate waited forever for a speaker that had
+            // not started. A buffer close to what the device asked for starts
+            // when it is given data.
+            .setBufferSizeInBytes(minBuffer * 8)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
-            .also { it.play() }
+            .also {
+                it.play()
+                Log.i(
+                    TAG,
+                    "interpret track state=" + it.state + " play=" + it.playState +
+                        " min=" + minBuffer + " rate=" + it.sampleRate,
+                )
+            }
     }
 
     /**
@@ -408,10 +425,21 @@ class Interpreter(
         // blocking write there stalls every message behind it — including the
         // transcript for the audio being played.
         player.execute {
+            // Counted before the write, not after. The write blocks until the
+            // speaker has room, so crediting it afterwards leaves the counter
+            // behind the play head — measured at played=50304 against
+            // written=48000 — and the gate reads that as "drained" and reopens
+            // the microphone while the sentence is still coming out. Claiming
+            // the frames first can only err the safe way: the gate stays shut
+            // slightly too long.
+            framesWritten += pcm.size / 2
             val written = runCatching {
                 track?.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) ?: 0
-            }.getOrDefault(0)
-            if (written > 0) framesWritten += written / 2
+            }.getOrDefault(-99)
+            if (writes++ < 3) {
+                Log.i(TAG, "interpret write bytes=" + pcm.size + " ret=" + written +
+                    " play=" + track?.playState)
+            }
         }
 
         armGate()
@@ -445,6 +473,9 @@ class Interpreter(
                     return
                 }
                 if (drainedAt == 0L) {
+                    // Once per reply rather than per poll: enough to show the
+                    // speaker really finished, quiet enough to leave on.
+                    Log.i(TAG, "interpret drained at " + played + " frames")
                     drainedAt = System.currentTimeMillis()
                     gate.postDelayed(this, PLAYBACK_TAIL_MS)
                     return
