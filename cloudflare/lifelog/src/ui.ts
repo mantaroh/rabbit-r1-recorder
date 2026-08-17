@@ -87,6 +87,9 @@ export const UI_HTML = `<!doctype html>
   audio { width: 100%; max-width: 340px; height: 32px; margin-top: 6px; }
   .empty { color: var(--dim); padding: 30px 0; text-align: center; }
   .tab.on { border-color: var(--accent); color: var(--accent); }
+  /* Loud on purpose. This is the control you want to find while flustered. */
+  #lost.armed { border-color: #b4443c; color: #ff6b5e; }
+  #lost.lost { background: #b4443c; border-color: #b4443c; color: #fff; }
   /* Sized in viewport units: a map that has to be scrolled to is a map you
      navigate twice. */
   #map { height: calc(100vh - 150px); min-height: 320px; border-radius: 8px; overflow: hidden; }
@@ -110,6 +113,7 @@ export const UI_HTML = `<!doctype html>
   </label>
   <button class="tab on" id="tabList">記録</button>
   <button class="tab" id="tabMap">地図</button>
+  <button id="lost" title="端末の資格情報を停止／再開">端末</button>
 </header>
 <main>
   <div class="stats" id="stats">読み込み中…</div>
@@ -353,6 +357,41 @@ document.addEventListener('click', (e) => {
   $('viewer').showModal();
 });
 $('viewer').addEventListener('click', () => $('viewer').close());
+
+// ------------------------------------------------------------ lost R1 ---
+// The device carries a token in a pocket. This is the switch that kills it,
+// and it lives on the page rather than in a runbook because the moment it is
+// needed is the moment nobody wants to look one up.
+async function lostState() {
+  const r = await fetch('/v1/device');
+  if (!r.ok) return null;
+  return r.json();
+}
+
+function paintLost(s) {
+  const b = $('lost');
+  if (!s) { b.textContent = '端末 ?'; b.className = ''; return; }
+  const lost = s.state !== 'ok';
+  b.textContent = lost ? '紛失中 — 復帰' : '端末を紛失';
+  b.className = lost ? 'lost' : 'armed';
+  b.title = (s.note || '') + ' ' + (s.changed_at || '');
+}
+
+$('lost').addEventListener('click', async () => {
+  const s = await lostState();
+  const next = s && s.state !== 'ok' ? 'ok' : 'lost';
+  // Asked both ways. Declaring it lost stops the recording; declaring it found
+  // hands the credential back to whatever is holding the device.
+  const ask = next === 'lost'
+    ? '端末の資格情報を停止します。録音とアップロードが止まります。'
+    : '端末の資格情報を再開します。端末が手元にあることを確認しましたか？';
+  if (!confirm(ask)) return;
+  const note = prompt('メモ（任意）') || '';
+  const r = await fetch('/v1/device?state=' + next + '&note=' + encodeURIComponent(note), { method: 'POST' });
+  paintLost(r.ok ? await r.json() : null);
+});
+
+lostState().then(paintLost);
 
 loadDay($('date').value);
 </script>

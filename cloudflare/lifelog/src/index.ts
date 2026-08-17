@@ -91,7 +91,7 @@ export default {
       return json({ ok: true });
     }
 
-    const denied = authorise(request, env, url);
+    const denied = await authorise(request, env, url);
     if (denied) return denied;
 
     if (request.method === "PUT" && url.pathname.startsWith("/v1/segments/")) {
@@ -119,6 +119,9 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/day") {
       return dayView(env, url);
+    }
+    if (url.pathname === "/v1/device") {
+      return request.method === "POST" ? setDeviceState(env, url) : deviceState(env);
     }
     if (request.method === "GET" && url.pathname === "/v1/talk") {
       return talkVolume(env, url);
@@ -250,6 +253,51 @@ export default {
 type Principal = "admin" | "device" | "agent";
 
 /**
+ * Whether the R1 has been reported lost — read fresh, and only when it matters.
+ *
+ * This began as a cached flag on the theory that a database round trip should
+ * not sit in front of a recording. The theory was wrong twice over. The device
+ * makes about two requests a minute, so the read is nothing; and the cache was
+ * per-isolate, so throwing the switch stopped an upload on one isolate while
+ * another happily served a read for another half minute. The test caught it,
+ * which is the only reason this paragraph is not a design note about how
+ * thirty seconds is an acceptable delay.
+ *
+ * Nobody else pays for it: admin and agent requests never ask.
+ */
+async function deviceIsLost(env: Env): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT state FROM device_state WHERE id = 1`)
+    .first<{ state: string }>();
+  // Anything unrecognised counts as lost. A flag that fails open is not a kill
+  // switch, and a missing row means the migration has not run — refusing the
+  // device is the louder of the two failures.
+  return (row?.state ?? "lost") !== "ok";
+}
+
+/** The switch itself. Admin only; see the routes. */
+async function deviceState(env: Env): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT state, note, changed_at FROM device_state WHERE id = 1`,
+  ).first();
+  return json(row ?? { state: "unknown" });
+}
+
+async function setDeviceState(env: Env, url: URL): Promise<Response> {
+  const wanted = url.searchParams.get("state");
+  if (wanted !== "ok" && wanted !== "lost") {
+    return json({ error: "state must be ok or lost" }, 400);
+  }
+  const note = url.searchParams.get("note")?.slice(0, 200) ?? null;
+  await env.DB.prepare(
+    `UPDATE device_state SET state = ?1, note = ?2, changed_at = ?3 WHERE id = 1`,
+  )
+    .bind(wanted, note, new Date().toISOString())
+    .run();
+
+  return json({ state: wanted, note, applied: true });
+}
+
+/**
  * Exactly what the device calls, verified against its source rather than
  * guessed. Anything not on this list gets a 403 even with a valid device
  * token.
@@ -280,27 +328,47 @@ function principalFor(request: Request, env: Env): Principal | null {
     return "agent";
   }
 
-  // A browser cannot attach a bearer to a navigation, so the web UI leans on
-  // the perimeter instead. Access stamps this header onto every request it
-  // lets through, and Access is the only way in: the workers.dev route does
-  // not serve this Worker, so there is no path to it that skips the check.
+  // A browser cannot attach a bearer to a navigation, so a human at the web UI
+  // is admitted on the strength of the assertion alone — but *only* a human.
   //
-  // The assertion is not verified here. Doing so properly means fetching and
-  // caching Cloudflare's signing keys, and it would only defend against
-  // someone who could already reach the origin directly — which is the thing
-  // that is closed off.
+  // The device carries an Access service token too, so for a while dropping
+  // the bearer and keeping the Access headers made a lost R1 indistinguishable
+  // from the browser, which is trusted for reads. The assertion says which is
+  // which, and this was read off a live request rather than taken from
+  // documentation: a service token carries `common_name` (the client id) with
+  // an empty `sub` and no `email`; a person carries `email`.
   //
-  // Note what this does *not* separate: the device also holds an Access
-  // service token, so a lost R1 can present this header with no bearer and be
-  // treated as the browser. That closes the destruction path — admin
-  // endpoints demand the admin bearer specifically — but not the read path.
-  // See BACKLOG.
-  if (request.headers.get("cf-access-jwt-assertion")) return "admin";
+  // So a service-token assertion proves only that the caller got past the
+  // perimeter. What it is allowed to do is then decided entirely by the bearer
+  // above, and no bearer means no access.
+  const assertion = request.headers.get("cf-access-jwt-assertion");
+  if (assertion) {
+    const claims = decodeAssertion(assertion);
+    if (claims && !claims.common_name && claims.email) return "admin";
+  }
 
   return null;
 }
 
-function authorise(request: Request, env: Env, url: URL): Response | null {
+/**
+ * The payload of an assertion Access has already verified at the edge.
+ *
+ * Not verified again here. Doing that properly means fetching and caching
+ * Cloudflare's signing keys, and it would only defend against someone who
+ * could already reach the origin directly — which is the thing the absence of
+ * a workers.dev route closes off.
+ */
+function decodeAssertion(raw: string): { email?: string; common_name?: string } | null {
+  try {
+    const segment = raw.split(".")[1] ?? "";
+    const padded = segment.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(padded + "=".repeat((4 - (padded.length % 4)) % 4)));
+  } catch {
+    return null;
+  }
+}
+
+async function authorise(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (!env.INGEST_TOKEN) return json({ error: "server missing INGEST_TOKEN" }, 500);
 
   const who = principalFor(request, env);
@@ -315,6 +383,17 @@ function authorise(request: Request, env: Env, url: URL): Response | null {
   }
 
   if (who === "device") {
+    // Reported lost: the credential is dead until somebody says otherwise.
+    //
+    // Deliberately refusing uploads as well as reads. A device in a stranger's
+    // hands should stop recording their room into this archive, and nothing is
+    // lost by saying no — the R1 keeps its segments on disk and retries, with
+    // a hundred gigabytes of room to do it in, so a false alarm costs a
+    // backlog rather than a recording.
+    if (await deviceIsLost(env)) {
+      return json({ error: "device reported lost", state: "lost" }, 403);
+    }
+
     const allowed = DEVICE_ROUTES.some(
       (route) => route.method === request.method && route.path.test(url.pathname),
     );
@@ -324,17 +403,10 @@ function authorise(request: Request, env: Env, url: URL): Response | null {
     return json({ error: "forbidden for this credential", path: url.pathname }, 403);
   }
 
-  // A browser cannot attach a bearer to a navigation, so the web UI leans on
-  // the perimeter instead. Access stamps this header onto every request it
-  // lets through, and Access is the only way in: the workers.dev route does
-  // not serve this Worker, so there is no path to it that skips the check.
-  //
-  // The assertion is not verified here. Doing so properly means fetching and
-  // caching Cloudflare's signing keys, and it would only defend against
-  // someone who could already reach the origin directly — which is the thing
-  // that is closed off.
-  if (request.headers.get("cf-access-jwt-assertion")) return null;
-
+  // Everything the assertion is worth has already been weighed in
+  // principalFor. A blanket "has an Access header, therefore allowed" used to
+  // sit here as well, and it silently outranked the new rule above — the
+  // device dropped its bearer and was still let in, and the test said so.
   return json({ error: "unauthorized" }, 401);
 }
 
