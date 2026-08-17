@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * what the model is capable of and the difference is the room, not the model.
  */
 class Interpreter(
+    private val context: android.content.Context,
     private val settings: UploadSettings,
     private val onState: (State) -> Unit,
     private val onTranscript: (Line) -> Unit,
@@ -129,6 +130,12 @@ class Interpreter(
     private var prerollAt = 0
     private var prerollFill = 0
 
+    /** Whether audio is currently flowing, so the end of it can be announced. */
+    private var sending = false
+
+    /** Restored on stop; see claimVolume. */
+    private var previousVolume: Int? = null
+
     val currentState: State get() = state
 
     // ------------------------------------------------------------ session ---
@@ -159,8 +166,10 @@ class Interpreter(
         speechUntil = 0L
         prerollAt = 0
         prerollFill = 0
+        sending = false
         runCatching { track?.pause(); track?.flush(); track?.release() }
         track = null
+        releaseVolume(context)
         move(State.IDLE)
     }
 
@@ -213,6 +222,7 @@ class Interpreter(
                         )
                     }.toString(),
                 )
+                claimVolume(context)
                 openTrack()
                 RecorderService.audioTap = { buffer, count -> feed(buffer, count) }
                 move(State.LISTENING)
@@ -300,6 +310,29 @@ class Interpreter(
         // gate, so the measurement is free and the policy is the same one.
         val wanted = now < speechUntil
 
+        // The end of an utterance has to be announced, not merely stopped.
+        //
+        // Gating on the local VAD means the stream simply ceases when someone
+        // finishes talking, and the server never hears the pause it uses to
+        // decide a turn is over — so it holds the translation until the next
+        // burst of audio arrives and flushes it. That is why the reply only
+        // came out when the next sentence went in.
+        //
+        // Whatever is left in the partial buffer goes first: up to a tenth of
+        // a second of the last word was otherwise sitting here waiting for a
+        // buffer that would not fill until the next time somebody spoke.
+        if (!wanted && sending) {
+            sending = false
+            val tail = pendingCount
+            pendingCount = 0
+            val remainder = if (tail > 0) pending.copyOf(tail) else null
+            worker.execute {
+                if (remainder != null) send(remainder)
+                commit()
+            }
+        }
+        if (wanted) sending = true
+
         var index = 0
         while (index + 3 < count) {
             val mono = (buffer[index] + buffer[index + 1] + buffer[index + 2] + buffer[index + 3]) / 4
@@ -338,6 +371,13 @@ class Interpreter(
         worker.execute { send(ordered) }
     }
 
+    /** Ends the turn so the model answers now rather than at the next sound. */
+    private fun commit() {
+        runCatching {
+            socket?.send(JSONObject().put("type", "session.input_audio_buffer.commit").toString())
+        }
+    }
+
     private fun send(samples: ShortArray) {
         val bytes = ByteArray(samples.size * 2)
         for (i in samples.indices) {
@@ -351,6 +391,34 @@ class Interpreter(
                     put("audio", Base64.encodeToString(bytes, Base64.NO_WRAP))
                 }.toString(),
             )
+        }
+    }
+
+    /**
+     * Turns the media volume up for the session, and puts it back afterwards.
+     *
+     * The device was sitting at 5 of 15 and the interpretation was too quiet to
+     * be the point of the room. Raising the track's own gain does not help —
+     * it is already at maximum — because the stream is what is turned down.
+     *
+     * Restored on stop, because silently leaving someone's volume at maximum is
+     * the kind of thing that is discovered at the next notification.
+     */
+    private fun claimVolume(context: android.content.Context) {
+        val audio = context.getSystemService(AudioManager::class.java) ?: return
+        runCatching {
+            val stream = AudioManager.STREAM_MUSIC
+            previousVolume = audio.getStreamVolume(stream)
+            audio.setStreamVolume(stream, audio.getStreamMaxVolume(stream), 0)
+        }
+    }
+
+    private fun releaseVolume(context: android.content.Context) {
+        val restore = previousVolume ?: return
+        previousVolume = null
+        runCatching {
+            context.getSystemService(AudioManager::class.java)
+                ?.setStreamVolume(AudioManager.STREAM_MUSIC, restore, 0)
         }
     }
 
@@ -389,6 +457,7 @@ class Interpreter(
             .setBufferSizeInBytes(minBuffer * 8)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+            .also { it.setVolume(AudioTrack.getMaxVolume()) }
             .also {
                 it.play()
                 Log.i(

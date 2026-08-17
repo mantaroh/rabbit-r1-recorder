@@ -116,6 +116,7 @@ class InterpretActivity : Activity() {
         settings.interpretTarget = code
 
         interpreter = Interpreter(
+            context = this,
             settings = settings,
             onState = { state -> main.post { render(state) } },
             onTranscript = { line ->
