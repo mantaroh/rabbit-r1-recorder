@@ -71,6 +71,21 @@ class Interpreter(
          * accumulated: latency here is the product.
          */
         private const val SEND_SAMPLES = 2_400
+
+        /** How often the speaker is asked whether it has finished. */
+        private const val GATE_POLL_MS = 120L
+
+        /**
+         * How long audio keeps flowing after the VAD stops hearing speech.
+         *
+         * Long enough not to clip the end of a sentence, which a detector
+         * built for one-second decisions will always call early, and short
+         * enough that a pause between sentences is not billed.
+         */
+        private const val HANGOVER_MS = 700L
+
+        /** About 400 ms of pre-roll at the wire rate. */
+        private const val PREROLL_SAMPLES = 9_600
     }
 
     private val http = OkHttpClient.Builder()
@@ -95,11 +110,23 @@ class Interpreter(
 
     private val running = AtomicBoolean(false)
     @Volatile private var speakingUntil = 0L
+
+    /** Frames handed to the speaker, against which its play head is compared. */
+    @Volatile private var framesWritten = 0L
+    private var drainedAt = 0L
     @Volatile private var state = State.IDLE
 
     /** Buffered between the capture thread and the socket; see [feed]. */
     private val pending = ShortArray(SEND_SAMPLES)
     private var pendingCount = 0
+
+    /** Speech heard recently enough to keep sending; see [feed]. */
+    @Volatile private var speechUntil = 0L
+
+    /** The moments before the detector noticed, kept so they are not lost. */
+    private val preroll = ShortArray(PREROLL_SAMPLES)
+    private var prerollAt = 0
+    private var prerollFill = 0
 
     val currentState: State get() = state
 
@@ -126,6 +153,11 @@ class Interpreter(
         socket = null
         gate.removeCallbacksAndMessages(null)
         speakingUntil = 0L
+        framesWritten = 0L
+        drainedAt = 0L
+        speechUntil = 0L
+        prerollAt = 0
+        prerollFill = 0
         runCatching { track?.pause(); track?.flush(); track?.release() }
         track = null
         move(State.IDLE)
@@ -195,6 +227,7 @@ class Interpreter(
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "interpret socket closed $code $reason")
                 RecorderService.audioTap = null
                 if (running.get()) move(State.IDLE)
             }
@@ -254,11 +287,37 @@ class Interpreter(
         // without it the translator hears its own voice and translates that.
         if (System.currentTimeMillis() < speakingUntil) return
 
+        val now = System.currentTimeMillis()
+        if (RecorderService.speaking) speechUntil = now + HANGOVER_MS
+        // Silence is not sent.
+        //
+        // Handing a quiet room to a speech model is how this system got an
+        // invented 3 a.m. hour out of Whisper, and the translator does the same
+        // thing more expensively: it answers, the answer plays, and the state
+        // flips between listening and speaking with nobody in the room. The
+        // device already measures speech every frame for the archive's own
+        // gate, so the measurement is free and the policy is the same one.
+        val wanted = now < speechUntil
+
         var index = 0
         while (index + 3 < count) {
             val mono = (buffer[index] + buffer[index + 1] + buffer[index + 2] + buffer[index + 3]) / 4
-            pending[pendingCount++] = mono.toShort()
             index += 4
+
+            if (!wanted) {
+                // Kept anyway, in a ring. A voice-activity detector reports the
+                // onset after it has happened, so the syllable that triggered
+                // it is already past — the same reason the query path captures
+                // from before the button was pressed.
+                preroll[prerollAt] = mono.toShort()
+                prerollAt = (prerollAt + 1) % preroll.size
+                if (prerollFill < preroll.size) prerollFill += 1
+                continue
+            }
+
+            if (prerollFill > 0) flushPreroll()
+
+            pending[pendingCount++] = mono.toShort()
             if (pendingCount == SEND_SAMPLES) {
                 val payload = ShortArray(SEND_SAMPLES)
                 System.arraycopy(pending, 0, payload, 0, SEND_SAMPLES)
@@ -267,6 +326,15 @@ class Interpreter(
                 worker.execute { send(payload) }
             }
         }
+    }
+
+    private fun flushPreroll() {
+        val ordered = ShortArray(prerollFill)
+        val start = (prerollAt - prerollFill + preroll.size) % preroll.size
+        for (i in 0 until prerollFill) ordered[i] = preroll[(start + i) % preroll.size]
+        prerollFill = 0
+        prerollAt = 0
+        worker.execute { send(ordered) }
     }
 
     private fun send(samples: ShortArray) {
@@ -330,28 +398,62 @@ class Interpreter(
      */
     private fun play(pcm: ByteArray) {
         if (track == null) return
-        val now = System.currentTimeMillis()
-        val queuedUntil = maxOf(speakingUntil - PLAYBACK_TAIL_MS, now)
-        speakingUntil = queuedUntil + (pcm.size * 1000L / (WIRE_RATE * 2)) + PLAYBACK_TAIL_MS
+        // Shut now, and kept shut by the poll below until the speaker has
+        // actually finished. The microphone is live at this instant; a gate
+        // that closes after the audio is out was open for the first syllable.
+        speakingUntil = Long.MAX_VALUE
         move(State.SPEAKING)
 
         // Written on its own thread. The caller is the WebSocket reader, and a
         // blocking write there stalls every message behind it — including the
         // transcript for the audio being played.
         player.execute {
-            runCatching { track?.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) }
+            val written = runCatching {
+                track?.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) ?: 0
+            }.getOrDefault(0)
+            if (written > 0) framesWritten += written / 2
         }
 
-        // One pending check, rearmed by each chunk. The first version slept for
-        // the tail and then tested against an end time further out, so anything
-        // longer than 350 ms never re-opened the microphone and the session was
-        // deaf from its first reply onwards.
+        armGate()
+    }
+
+    /**
+     * Reopens the microphone when the speaker has genuinely stopped.
+     *
+     * Asked of AudioTrack rather than estimated from chunk lengths. The first
+     * version computed an end time by adding up how long the audio *should*
+     * take, which is wrong in both directions: chunks arrive faster than they
+     * play, so the arithmetic has to model a queue, and the queue drains at the
+     * speaker's pace rather than the estimate's. Getting it wrong the short way
+     * is what makes a translator hear itself — the tail of its own sentence
+     * comes back through the microphone, gets translated, and the device
+     * answers itself in a loop.
+     *
+     * `playbackHeadPosition` is the frame the hardware has actually played, so
+     * this waits for it to catch up with everything handed over, then waits
+     * [PLAYBACK_TAIL_MS] more for the room to stop ringing.
+     */
+    private fun armGate() {
         gate.removeCallbacksAndMessages(null)
-        gate.postDelayed({
-            if (running.get() && System.currentTimeMillis() >= speakingUntil) {
+        gate.postDelayed(object : Runnable {
+            override fun run() {
+                if (!running.get()) return
+                val output = track ?: return
+                val played = output.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                if (played < framesWritten) {
+                    gate.postDelayed(this, GATE_POLL_MS)
+                    return
+                }
+                if (drainedAt == 0L) {
+                    drainedAt = System.currentTimeMillis()
+                    gate.postDelayed(this, PLAYBACK_TAIL_MS)
+                    return
+                }
+                drainedAt = 0L
+                speakingUntil = 0L
                 move(State.LISTENING)
             }
-        }, maxOf(0L, speakingUntil - now))
+        }, GATE_POLL_MS)
     }
 
     private fun move(next: State) {

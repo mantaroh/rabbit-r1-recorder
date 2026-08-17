@@ -77,6 +77,7 @@ class InterpretActivity : Activity() {
     }
 
     override fun onPause() {
+        android.util.Log.i("R1AudioProbe", "interpret onPause finishing=" + isFinishing)
         // Ends on leaving, rather than running on behind whatever comes next.
         // A billed microphone session that outlives the screen showing it is
         // the kind of thing that is discovered on an invoice.
@@ -87,10 +88,12 @@ class InterpretActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        android.util.Log.i("R1AudioProbe", "interpret onResume (had=" + (interpreter != null) + ")")
         if (interpreter == null) begin()
     }
 
     private fun begin() {
+        android.util.Log.i("R1AudioProbe", "interpret begin (had=" + (interpreter != null) + ")")
         val settings = UploadSettings(this)
         val code = PAIR[index].first
         settings.interpretTarget = code
