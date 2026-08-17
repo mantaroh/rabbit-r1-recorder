@@ -67,7 +67,51 @@ export const MAP_ASSETS: Array<{
     url: "https://unpkg.com/pmtiles@4.4.1/dist/pmtiles.js",
     contentType: "text/javascript; charset=utf-8",
   },
+
+  // The icon sheet. Four small files, so they are mirrored outright rather
+  // than pulled through like the fonts. MapLibre appends these suffixes to the
+  // style's `sprite` value itself, which is why the keys look like this.
+  {
+    key: "sprite.json",
+    url: "https://tile.openstreetmap.jp/styles/osm-bright/sprite.json",
+    contentType: "application/json; charset=utf-8",
+  },
+  {
+    key: "sprite.png",
+    url: "https://tile.openstreetmap.jp/styles/osm-bright/sprite.png",
+    contentType: "image/png",
+  },
+  {
+    key: "sprite@2x.json",
+    url: "https://tile.openstreetmap.jp/styles/osm-bright/sprite@2x.json",
+    contentType: "application/json; charset=utf-8",
+  },
+  {
+    key: "sprite@2x.png",
+    url: "https://tile.openstreetmap.jp/styles/osm-bright/sprite@2x.png",
+    contentType: "image/png",
+  },
 ];
+
+/** Where the glyph ranges come from, once each. */
+const FONT_ORIGIN = "https://tile.openstreetmap.jp/fonts";
+
+/**
+ * The fontstacks this style asks for, taken from its own layers.
+ *
+ * An allowlist rather than a passthrough: without it, `/v1/map/fonts/<anything>`
+ * would fetch and store whatever it was given, which is the same
+ * server-side-request-forgery-with-a-bucket that the asset list exists to
+ * avoid.
+ */
+const FONT_STACKS = new Set([
+  "Noto Sans Regular",
+  "Noto Sans Bold",
+  "Noto Sans Italic",
+  "Roboto Regular,Noto Sans Regular",
+  "Roboto Medium,Noto Sans Regular",
+  "Roboto Condensed Italic,Noto Sans Italic",
+]);
 
 /**
  * 32 MiB. R2 wants every part but the last to be the same size and at least
@@ -131,10 +175,12 @@ async function fetchSmall(
   // hotlink the thing we went to the trouble of mirroring.
   if (key.endsWith("style.json")) {
     const text = new TextDecoder().decode(body as ArrayBuffer);
-    body = text.replace(
-      /pmtiles:\/\/[^"']+\.pmtiles/g,
-      "pmtiles:///v1/map/japan-20260806.pmtiles",
-    );
+    body = text
+      .replace(/pmtiles:\/\/[^"']+\.pmtiles/g, "pmtiles:///v1/map/japan-20260806.pmtiles")
+      // Fonts and icons too, or the page would still call a third party on
+      // every open — which is the thing mirroring the archive was for.
+      .replace(/https:\/\/tile\.openstreetmap\.jp\/fonts/g, "/v1/map/fonts")
+      .replace(/https:\/\/tile\.openstreetmap\.jp\/styles\/osm-bright\/sprite/g, "/v1/map/sprite");
   }
 
   await env.BUCKET.put(key, body, { httpMetadata: { contentType } });
@@ -195,6 +241,9 @@ export async function serveMap(
   url: URL,
 ): Promise<Response> {
   const path = url.pathname.slice("/v1/map/".length);
+
+  if (path.startsWith("fonts/")) return serveGlyphs(env, path);
+
   // No traversal, and no browsing: only the keys this module put there.
   if (!MAP_ASSETS.some((a) => a.key === path)) {
     return json({ error: "not a map asset", known: MAP_ASSETS.map((a) => a.key) }, 404);
@@ -222,6 +271,55 @@ export async function serveMap(
 
   headers.set("content-length", String(object.size));
   return new Response(object.body, { headers });
+}
+
+/**
+ * A glyph range, cached on first use.
+ *
+ * Pulled through rather than mirrored in bulk. There are 256 ranges per
+ * fontstack and six stacks in this style — 1536 files, nearly all of them for
+ * scripts this map will never draw — and fetching them all would be a
+ * considerable favour to ask of a volunteer-run server for the sake of a
+ * private log. A viewport asks for maybe a dozen, once, and after that they
+ * are local.
+ *
+ * The browser never reaches the origin either way; only the first request for
+ * a range does, from here.
+ */
+async function serveGlyphs(env: MapEnv, path: string): Promise<Response> {
+  const match = /^fonts\/([^/]+)\/(\d{1,5}-\d{1,5})\.pbf$/.exec(path);
+  if (!match) return json({ error: "bad glyph path" }, 400);
+
+  const stack = decodeURIComponent(match[1]);
+  const range = match[2];
+  if (!FONT_STACKS.has(stack)) {
+    return json({ error: "unknown fontstack", known: [...FONT_STACKS] }, 404);
+  }
+
+  const key = `${PREFIX}fonts/${stack}/${range}.pbf`;
+  const headers = {
+    "content-type": "application/x-protobuf",
+    // A glyph range for a given font never changes.
+    "cache-control": "private, max-age=31536000, immutable",
+  };
+
+  const cached = await env.BUCKET.get(key);
+  if (cached) return new Response(cached.body, { headers });
+
+  const source = `${FONT_ORIGIN}/${encodeURIComponent(stack)}/${range}.pbf`;
+  const response = await fetch(source);
+  if (!response.ok) {
+    return json({ error: "origin refused", status: response.status }, 502);
+  }
+
+  // Buffered rather than teed: a range is tens of kilobytes, and storing a
+  // half-written one because the client went away would poison the cache
+  // permanently — these are never revalidated.
+  const bytes = await response.arrayBuffer();
+  await env.BUCKET.put(key, bytes, {
+    httpMetadata: { contentType: "application/x-protobuf" },
+  });
+  return new Response(bytes, { headers });
 }
 
 function json(body: unknown, status = 200): Response {
