@@ -79,7 +79,15 @@ object Gestures {
         Motion.onPlacementChange = { placement ->
             metrics.write(
                 "placement",
-                mapOf("posture" to placement.posture.name, "moving" to placement.moving),
+                mapOf(
+                    "posture" to placement.posture.name,
+                    "moving" to placement.moving,
+                    // Accumulating, not acted on: whether the dock's tilt ever
+                    // separates from a desk's is a question for a few weeks of
+                    // these, not for a threshold invented today.
+                    "tilt_deg" to placement.tiltDeg,
+                    "docked" to Motion.docked(context),
+                ),
             )
         }
     }

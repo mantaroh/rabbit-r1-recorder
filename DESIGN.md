@@ -164,7 +164,7 @@ One frame in each direction per cycle, 640 px, ~60 KB each.
 
 The lens sits on a motorised arm with a single sensor, so "front and back"
 means physically rotating between two shots, and that arm is audible on a
-device whose purpose is to record audio. Three rules follow.
+device whose purpose is to record audio. Four rules follow.
 
 **The cadence depends on where the device is.**
 
@@ -194,6 +194,25 @@ contained speech or peaked meaningfully above that baseline. A television left
 on raises the baseline along with the peak and stops qualifying. Speech always
 qualifies. The stop rule is conjunctive: quiet *and* dark *and* home, so a dark
 room away from home is still photographed.
+
+**On a stand, only the screen side is photographed.** Upright, stationary and
+on power, the rear camera is looking at a wall that will be the same wall in
+fifteen minutes. Skipping it halves the cycle and saves an arm swing on a
+device whose arm can be heard.
+
+That condition is not really "in the dock", and is not called that in the code.
+The dock on this device leans back about 3.6° — measured at (0.06, 9.58, 0.61)
+against (0.08, 9.60, −0.07) standing upright — which is a real difference and a
+useless one, since it does not survive a desk that is not quite level. Charging
+says "plugged in", not "seated". What every member of the set does share is the
+only part that matters: the device is not going anywhere and the view behind it
+is fixed. The tilt is recorded on every placement change and every cycle
+anyway, so a few weeks of readings can say whether a dock and a desk ever
+actually separate, rather than a threshold being invented now.
+
+The front frame is never the one dropped. It holds the room and the people, and
+it is where the darkness measurement comes from — skipping it would quietly
+disable the asleep rule above.
 
 The per-second level this reads is the same one the VAD envelope already
 computes.

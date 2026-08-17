@@ -319,10 +319,24 @@ class Timelapse(
         val at = stamp.format(Date())
         var taken = 0
 
-        val positions = listOf(
-            Triple("front", R1Motor.MOTOR_FACE, ROTATION_FACE),
-            Triple("rear", R1Motor.MOTOR_BACK, ROTATION_BACK),
-        )
+        // Sitting on power, upright and still: the rear frame is a wall, and
+        // will be the same wall in fifteen minutes. Skipping it saves an arm
+        // swing on a device whose arm is audible, halves the cycle, and loses
+        // nothing that was not already in the last hundred frames.
+        //
+        // The front frame is never the one skipped. It is the one with the room
+        // and the people in it, and it is also where the darkness measurement
+        // comes from — dropping it would quietly disable the asleep rule.
+        val docked = com.r1.core.Motion.docked(context)
+
+        val positions = if (docked) {
+            listOf(Triple("front", R1Motor.MOTOR_FACE, ROTATION_FACE))
+        } else {
+            listOf(
+                Triple("front", R1Motor.MOTOR_FACE, ROTATION_FACE),
+                Triple("rear", R1Motor.MOTOR_BACK, ROTATION_BACK),
+            )
+        }
         for ((label, angle, rotation) in positions) {
             if (!moveAndWait(angle)) {
                 metrics.write("photo_skip", mapOf("why" to "motor", "angle" to angle))
@@ -359,6 +373,11 @@ class Timelapse(
                 "count" to taken,
                 "deferred_ms" to deferredMs,
                 "forced" to spokeThrough,
+                // Both recorded: `docked` says why only one frame came back,
+                // and the tilt is the measurement that might one day let the
+                // dock be told from a desk rather than inferred from power.
+                "docked" to docked,
+                "tilt_deg" to com.r1.core.Motion.placement.tiltDeg,
                 // Why this cycle was judged worth taking, so a run of empty
                 // frames can be traced back to the trigger that caused them.
                 "peak" to peak,

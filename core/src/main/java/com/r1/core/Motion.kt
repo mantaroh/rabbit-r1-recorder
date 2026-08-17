@@ -62,6 +62,17 @@ object Motion {
     data class Placement(
         val posture: Posture,
         val moving: Boolean,
+        /**
+         * Degrees from vertical in the screen's own plane; positive leans back.
+         *
+         * Recorded rather than used. The dock on this device measures about
+         * 3.6 degrees — (0.06, 9.58, 0.61) — and standing the device on a desk
+         * measures about zero, which is a real difference and far too small a
+         * one to separate a dock from a desk that is not quite level. It is
+         * logged so that a few weeks of readings can say whether the two ever
+         * actually separate, instead of a threshold being invented now.
+         */
+        val tiltDeg: Int,
     )
 
     // ---------------------------------------------------------- tuning ---
@@ -114,8 +125,32 @@ object Motion {
     // ----------------------------------------------------------- state ---
 
     @Volatile
-    var placement = Placement(Posture.UNKNOWN, moving = false)
+    var placement = Placement(Posture.UNKNOWN, moving = false, tiltDeg = 0)
         private set
+
+    /**
+     * Standing still, upright, on power — the state in which the rear camera is
+     * pointed at a wall.
+     *
+     * Named for what it is used for rather than for the dock, because it cannot
+     * actually tell a dock from a cable and a desk. The dock's three and a half
+     * degrees of tilt does not survive a desk that is not level, and charging
+     * says "plugged in", not "seated". What all the members of the set have in
+     * common is the thing that matters: the device is not going anywhere, and
+     * the view behind it will be identical in fifteen minutes.
+     *
+     * Being wrong is cheap in one direction and not the other, so it errs
+     * toward taking both frames: a missed rear frame of a wall costs nothing,
+     * a missed rear frame of a room is gone.
+     */
+    fun docked(context: Context): Boolean {
+        val now = placement
+        return now.posture == Posture.UPRIGHT && !now.moving && charging(context)
+    }
+
+    private fun charging(context: Context): Boolean = runCatching {
+        context.getSystemService(android.os.BatteryManager::class.java)?.isCharging == true
+    }.getOrDefault(false)
 
     /**
      * Fired when the **posture** changes and has held for [POSTURE_SETTLE_MS].
@@ -242,12 +277,16 @@ object Motion {
             else -> Posture.UNKNOWN
         }
 
+        // Signed by Z so leaning back reads positive; taken in the screen's own
+        // plane, which is the axis a stand tilts around.
+        val tilt = Math.toDegrees(kotlin.math.atan2(gravityZ, gravityY)).toInt()
+
         // The live value tracks motion continuously; only the posture half is
         // debounced, and only the posture half is announced.
         val settled = posture == candidate && now - candidateSince >= POSTURE_SETTLE_MS
         val shown = if (settled) posture else placement.posture
         val previous = placement
-        placement = Placement(shown, moving)
+        placement = Placement(shown, moving, tilt)
 
         if (posture != candidate) {
             candidate = posture
