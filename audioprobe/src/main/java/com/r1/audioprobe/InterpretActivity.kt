@@ -198,14 +198,15 @@ class InterpretActivity : Activity() {
         status.text = when (state) {
             Interpreter.State.IDLE -> "停止"
             Interpreter.State.CONNECTING -> "接続中…"
-            // Named for what the device is doing, because with one speaker and
-            // half duplex those two states are also the instruction: while it
-            // is talking, the microphone is closed and talking over it is lost.
-            Interpreter.State.LISTENING -> "聞いています"
-            Interpreter.State.SPEAKING -> "話しています（マイクは止まっています）"
+            // One state while it works, because a simultaneous interpreter is
+            // listening and speaking at once. The listening/speaking pair this
+            // replaced was a description of a turn-taking session that this API
+            // does not have, and it is what got stuck.
+            Interpreter.State.RUNNING -> "通訳中"
+            Interpreter.State.CLOSED -> "セッション終了"
             Interpreter.State.FAILED -> "接続できません"
         }
-        status.setTextColor(if (state == Interpreter.State.SPEAKING) ORANGE else DIM)
+        status.setTextColor(if (state == Interpreter.State.RUNNING) ORANGE else DIM)
     }
 
     /**
