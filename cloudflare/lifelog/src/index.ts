@@ -106,6 +106,9 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/day") {
       return dayView(env, url);
     }
+    if (request.method === "GET" && url.pathname === "/v1/talk") {
+      return talkVolume(env, url);
+    }
     if (url.pathname === "/v1/usage") {
       return request.method === "PUT" ? putUsage(request, env) : getUsage(env);
     }
@@ -524,6 +527,95 @@ async function dayView(env: Env, url: URL): Promise<Response> {
       with_text: withText,
       photos: photos.results?.length ?? 0,
     },
+  });
+}
+
+// ------------------------------------------------------------------ talk ---
+
+/**
+ * How many minutes of each recent day contained speech.
+ *
+ * The JPHC cohort found daily conversation frequency, not duration or content,
+ * is what tracks with dementia risk over a decade — and frequency is the one
+ * thing a device that has been listening since August can actually report
+ * about its owner rather than guess.
+ *
+ * Two counts, because they answer different questions and disagree usefully:
+ *
+ *   voiced   the envelope cleared the VAD threshold. Available for every
+ *            segment ever recorded, including the ones never transcribed, so
+ *            this is the honest denominator.
+ *   spoken   Whisper found words, the ratio cleared 0.15, and it was not a
+ *            stock phrase. Fewer minutes, higher confidence.
+ *
+ * **This does not measure conversation.** It measures minutes containing
+ * speech. It cannot separate the owner's voice from a family member's, from
+ * the other side of a video call, or from a television — the microphones are
+ * left/right symmetric and diarisation is not done. For someone working alone
+ * in a quiet room the proxy is decent; on a train it is worthless. Anything
+ * built on this number has to survive being wrong about which human was
+ * talking, which is why the number is shown and never interpreted.
+ */
+async function talkVolume(env: Env, url: URL): Promise<Response> {
+  const days = Math.min(Math.max(intParam(url, "days") ?? 14, 1), 90);
+
+  // Days are local. The device stamps +09:00 and started_epoch is UTC seconds,
+  // so the bucket boundary is shifted rather than the timestamps — the same
+  // trick dayView uses, and it has to stay the same or the two pages disagree
+  // about which minutes belong to yesterday.
+  const JST_OFFSET = 9 * 3600;
+  const now = Math.floor(Date.now() / 1000);
+  const from = Math.floor((now + JST_OFFSET) / 86_400) * 86_400 - JST_OFFSET
+    - (days - 1) * 86_400;
+
+  const rows = await env.DB.prepare(
+    `SELECT
+        CAST((started_epoch + ?2) / 86400 AS INTEGER) AS day_index,
+        COUNT(*) AS segments,
+        SUM(CASE WHEN voiced_ratio >= ?3 THEN 1 ELSE 0 END) AS voiced,
+        SUM(CASE WHEN status = 'transcribed' AND stock_phrase = 0
+                  AND speech_ratio >= ?4 THEN 1 ELSE 0 END) AS spoken
+       FROM segments
+      WHERE kind = 'lifelog' AND started_epoch >= ?1
+      GROUP BY day_index
+      ORDER BY day_index ASC`,
+  )
+    .bind(from, JST_OFFSET, MIN_VOICED_RATIO, MIN_SPEECH_RATIO)
+    .all<{ day_index: number; segments: number; voiced: number; spoken: number }>();
+
+  // A segment is a minute, so counts are minutes. That equivalence is worth
+  // stating rather than assuming: it holds because SEGMENT_SECONDS is 60 on
+  // the device, and it silently stops holding if that ever changes.
+  const byDay = (rows.results ?? []).map((r) => ({
+    date: new Date((r.day_index * 86_400 - JST_OFFSET) * 1000)
+      .toISOString()
+      .slice(0, 10),
+    recorded_minutes: r.segments,
+    voiced_minutes: r.voiced,
+    spoken_minutes: r.spoken,
+  }));
+
+  const today = byDay[byDay.length - 1] ?? null;
+  const withData = byDay.filter((d) => d.recorded_minutes > 0);
+  const median = (values: number[]) => {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+
+  return json({
+    days,
+    from: new Date(from * 1000).toISOString(),
+    by_day: byDay,
+    today,
+    // A median rather than a mean: one long day on a train, where the
+    // microphone hears a carriage rather than a conversation, would drag an
+    // average up and make every other day look quiet by comparison.
+    median_voiced_minutes: median(withData.map((d) => d.voiced_minutes)),
+    median_spoken_minutes: median(withData.map((d) => d.spoken_minutes)),
+    caveat:
+      "minutes containing speech, not conversation: the owner, another person, " +
+      "a call, and a television are not distinguished",
   });
 }
 
