@@ -16,6 +16,52 @@ one line per gap. The detail lives here.
 
 ---
 
+## Unfinished: telling the device's Access token from a person's
+
+**Half done 2026-08-17.** A lost R1 can no longer damage the archive. It can
+still read it.
+
+### What was closed
+
+The device now holds a credential scoped to the seven routes it uses. Verified
+against the deployed Worker: `repair-wav`, `retranscribe`, `reflag`,
+`reconcile`, `media`, `search`, `context`, `stats`, `talk` and `/mcp` all return
+403 to it, while uploads continue untouched. `ADMIN_TOKEN` opens the
+destructive endpoints and is on a laptop; `AGENT_TOKEN` opens `/mcp` and is on
+the Hermes gateway.
+
+### What is still open
+
+The device also carries a Cloudflare Access **service token**, and the Worker
+treats "an Access assertion with no bearer" as the browser — because a browser
+cannot attach a bearer to a navigation. So whoever holds the R1 can drop the
+bearer, keep the Access headers, and read everything: every recording, every
+photograph, every transcript, and the position history.
+
+That is the worst of the three, incidentally. Destruction is recoverable with a
+second copy; disclosure is not.
+
+### The fix
+
+Access has already verified the assertion by the time it reaches the Worker, so
+its payload can be decoded without checking the signature. A person's token
+carries `email`; a service token carries `common_name`. Reading that would let
+the Worker say:
+
+- `email` present → a human at the browser → admin
+- `common_name` = the device's service token → device scope, bearer or not
+- `common_name` = anything else → whatever that token is provisioned for
+
+The claim names above are from documentation and have not been read off a live
+request. The cheap way to settle it is a temporary endpoint that echoes the
+decoded payload, called once from a browser and once from the device's token.
+
+Until then, a second Access service token — one for the device, one for
+everything else — narrows nothing on its own, because the Worker cannot tell
+them apart. It is the parsing that does the work.
+
+---
+
 ## Unverified: the shake threshold
 
 **Narrowed 2026-08-17**, by a 55-minute walk. The position half of this entry

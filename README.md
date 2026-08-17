@@ -153,10 +153,17 @@ Consequences worth naming rather than assuming:
   probe, open the chat and set the Wi-Fi the camera may photograph from, so any
   installed app can trigger those. This is strictly weaker than the root shell
   above, which is the reason it is tolerated rather than the reason it is fine.
-- **The device's bearer token also opens the admin endpoints.** `repair-wav`
-  rewrites objects in R2 and `retranscribe` spends money. A lost R1 is a lost
-  archive-mutation capability, not just a lost upload capability. Splitting
-  ingest from admin is the fix and is not done.
+- **Three credentials, not one.** The device's token opens the seven routes it
+  actually uses — create a segment, a photograph, a position; read the day, the
+  headlines, the usage; mint an interpreter session — and returns 403 on the
+  other twenty-two. `ADMIN_TOKEN` opens the destructive ones and lives on a
+  laptop; `AGENT_TOKEN` opens `/mcp` and lives on the Hermes gateway. A lost R1
+  can no longer rewrite R2, re-queue Whisper, or read the archive.
+- **What a lost R1 still gives away**: it also carries the Cloudflare Access
+  service token, and presenting that with no bearer is indistinguishable here
+  from the browser, which is trusted for reads. Destruction is closed; reading
+  is not. Telling them apart means parsing the Access assertion's claims —
+  `email` for a person, `common_name` for a service token. See BACKLOG.
 - **The Worker trusts `Cf-Access-Jwt-Assertion` without verifying it.** That is
   sound only while Cloudflare Access covers *every* path of the custom domain —
   there is no `workers.dev` route, so Access is the only way in. If an Access

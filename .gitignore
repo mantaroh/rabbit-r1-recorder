@@ -37,3 +37,7 @@ openai_key_for_hermes.txt
 *.wav
 *.opus
 *.m4a
+
+# Opens the destructive endpoints; never on the device, never committed.
+.admin-token
+.agent-token

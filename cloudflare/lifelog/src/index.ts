@@ -25,6 +25,14 @@ interface Env {
   TRANSCRIBE_QUEUE: Queue<TranscribeMessage>;
   AI: Ai;
   INGEST_TOKEN: string;
+  /**
+   * Opens the destructive endpoints, and is deliberately not on the device.
+   * Absent means nobody can reach them at all, which is the safe default for a
+   * deploy that has not been given one yet.
+   */
+  ADMIN_TOKEN?: string;
+  /** Reaches /mcp and nothing else; lives on the Hermes gateway. */
+  AGENT_TOKEN?: string;
   /** The feed reader Worker; see the note on /v1/feeds below. */
   READER: Fetcher;
   /** Held so the device never has to; see interpret.ts. */
@@ -83,7 +91,7 @@ export default {
       return json({ ok: true });
     }
 
-    const denied = authorise(request, env);
+    const denied = authorise(request, env, url);
     if (denied) return denied;
 
     if (request.method === "PUT" && url.pathname.startsWith("/v1/segments/")) {
@@ -231,18 +239,90 @@ export default {
 // ------------------------------------------------------------------ auth ---
 
 /**
- * A shared bearer token. Cloudflare Access sits in front of this Worker in
- * production and is the real perimeter, but Access cannot be exercised in
- * local dev, and a second factor at the origin means a misconfigured Access
- * policy does not immediately expose the ingest path.
+ * Who is asking, and what that lets them do.
+ *
+ * The device carries a token in a pocket, on hardware where any installed app
+ * can open a root shell. It should therefore be able to do the seven things it
+ * actually does and nothing else — and for a long time it could do all
+ * twenty-nine, including rewriting objects in R2 and spending money on Whisper.
+ * Losing the R1 meant losing the archive, not just losing a recorder.
  */
-function authorise(request: Request, env: Env): Response | null {
-  const expected = env.INGEST_TOKEN;
-  if (!expected) return json({ error: "server missing INGEST_TOKEN" }, 500);
+type Principal = "admin" | "device" | "agent";
 
+/**
+ * Exactly what the device calls, verified against its source rather than
+ * guessed. Anything not on this list gets a 403 even with a valid device
+ * token.
+ */
+const DEVICE_ROUTES: Array<{ method: string; path: RegExp }> = [
+  { method: "PUT", path: /^\/v1\/segments\/[A-Za-z0-9_-]{8,64}$/ },
+  { method: "PUT", path: /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}$/ },
+  { method: "POST", path: /^\/v1\/positions$/ },
+  { method: "GET", path: /^\/v1\/day$/ },
+  { method: "GET", path: /^\/v1\/feeds\/latest$/ },
+  { method: "GET", path: /^\/v1\/usage$/ },
+  { method: "PUT", path: /^\/v1\/usage$/ },
+  { method: "POST", path: /^\/v1\/interpret\/session$/ },
+];
+
+function principalFor(request: Request, env: Env): Principal | null {
   const header = request.headers.get("authorization") ?? "";
   const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (presented && timingSafeEqual(presented, expected)) return null;
+
+  // Checked first, so that a laptop sending both tokens is an administrator.
+  if (env.ADMIN_TOKEN && presented && timingSafeEqual(presented, env.ADMIN_TOKEN)) {
+    return "admin";
+  }
+  if (env.INGEST_TOKEN && presented && timingSafeEqual(presented, env.INGEST_TOKEN)) {
+    return "device";
+  }
+  if (env.AGENT_TOKEN && presented && timingSafeEqual(presented, env.AGENT_TOKEN)) {
+    return "agent";
+  }
+
+  // A browser cannot attach a bearer to a navigation, so the web UI leans on
+  // the perimeter instead. Access stamps this header onto every request it
+  // lets through, and Access is the only way in: the workers.dev route does
+  // not serve this Worker, so there is no path to it that skips the check.
+  //
+  // The assertion is not verified here. Doing so properly means fetching and
+  // caching Cloudflare's signing keys, and it would only defend against
+  // someone who could already reach the origin directly — which is the thing
+  // that is closed off.
+  //
+  // Note what this does *not* separate: the device also holds an Access
+  // service token, so a lost R1 can present this header with no bearer and be
+  // treated as the browser. That closes the destruction path — admin
+  // endpoints demand the admin bearer specifically — but not the read path.
+  // See BACKLOG.
+  if (request.headers.get("cf-access-jwt-assertion")) return "admin";
+
+  return null;
+}
+
+function authorise(request: Request, env: Env, url: URL): Response | null {
+  if (!env.INGEST_TOKEN) return json({ error: "server missing INGEST_TOKEN" }, 500);
+
+  const who = principalFor(request, env);
+  if (who === "admin") return null;
+
+  // The agent reads the archive through its tools and writes nothing. It runs
+  // on a server rather than in a pocket, so losing it is a different kind of
+  // problem from losing the R1 — but it still has no business rewriting R2.
+  if (who === "agent") {
+    if (url.pathname === "/mcp") return null;
+    return json({ error: "forbidden for this credential", path: url.pathname }, 403);
+  }
+
+  if (who === "device") {
+    const allowed = DEVICE_ROUTES.some(
+      (route) => route.method === request.method && route.path.test(url.pathname),
+    );
+    if (allowed) return null;
+    // 403 rather than 404: the caller is authenticated and the route exists.
+    // Saying so is not a leak — whoever holds this token can read the source.
+    return json({ error: "forbidden for this credential", path: url.pathname }, 403);
+  }
 
   // A browser cannot attach a bearer to a navigation, so the web UI leans on
   // the perimeter instead. Access stamps this header onto every request it

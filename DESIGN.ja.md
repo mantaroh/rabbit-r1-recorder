@@ -537,6 +537,15 @@ commit も `response.create` も、ターンの開始・終了イベントもな
 Activity が既に起動しているときは `-f 0x20000000` が要る。付けないと `am start` は
 タスクを前面に出して extras を捨て、**コマンドは成功したように見える。**
 
+**資格情報は3つあり、端末は一番狭いものを持つ。** R1 が実際に呼ぶ7ルートだけが
+通り、残る22は403になる。紛失した端末はもはや R2 のオブジェクトを書き換えられず、
+Whisper を再投入できず、アーカイブを読めない。`ADMIN_TOKEN` は破壊的な
+エンドポイントを開き、ラップトップにある。`AGENT_TOKEN` は `/mcp` を開き、Hermes
+ゲートウェイにある。**閉じていないもの**: 端末は Access のサービストークンも
+持っており、「ベアラなしの Access アサーション」はここではブラウザと区別できない。
+[`BACKLOG.md`](BACKLOG.md#unfinished-telling-the-devices-access-token-from-a-persons)
+を参照。
+
 **Cloudflare Access の外側では何も検証していない。** Worker は
 `Cf-Access-Jwt-Assertion` ヘッダを持つリクエストを、署名を検証せずに通す。これが
 成り立つのは、Access が独自ドメインの**全パス**を覆っていて `workers.dev`

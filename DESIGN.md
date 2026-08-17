@@ -602,6 +602,15 @@ start, a shell — goes the long way round through the Activity:
 brings the task forward and throws the extras away, and the command looks like
 it worked.
 
+**Three credentials, and the device holds the narrow one.** It opens the
+seven routes the R1 actually calls and returns 403 on the other twenty-two, so
+a lost device can no longer rewrite objects in R2, re-queue Whisper, or read
+the archive. `ADMIN_TOKEN` opens the destructive endpoints from a laptop;
+`AGENT_TOKEN` opens `/mcp` from the Hermes gateway. What it does *not* close:
+the device also carries an Access service token, and an Access assertion with
+no bearer is indistinguishable here from the browser — see
+[`BACKLOG.md`](BACKLOG.md#unfinished-telling-the-devices-access-token-from-a-persons).
+
 **Nothing outside Cloudflare Access is checked.** The Worker accepts any
 request carrying a `Cf-Access-Jwt-Assertion` header without verifying the
 signature. That is sound only while Access covers every path of the custom
