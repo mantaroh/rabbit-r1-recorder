@@ -210,9 +210,20 @@ private class HeadlinesScreen : SignageScreen {
     private var showing: String? = null
 
     private companion object {
-        /** Long enough to read a Japanese headline without hurrying. */
-        const val DWELL_MS = 6_000L
-        const val FADE_MS = 220L
+        /**
+         * Fifteen seconds. Six was tried and was too quick, and the reason is
+         * that this is a glanced-at screen rather than a read one: the clock
+         * that matters is not how long a headline takes to read, it is how
+         * long after looking up you start. A headline that changes while you
+         * are halfway through it is worse than one you have already finished.
+         *
+         * Ten items makes the loop two and a half minutes, which is about how
+         * often the list is refetched anyway.
+         */
+        const val DWELL_MS = 15_000L
+
+        /** Slow enough not to snap, short enough not to be a thing happening. */
+        const val FADE_MS = 400L
     }
 
     override fun createView(context: Context): View {
