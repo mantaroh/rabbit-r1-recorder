@@ -184,55 +184,65 @@ private class RecentSpeechScreen : SignageScreen {
 }
 
 /**
- * What has appeared in the feeds, newest first.
+ * Headlines, one at a time.
  *
- * Titles and sources only. There is no room on a 240 dp panel for a summary
- * that would be truncated into nonsense, and this screen is glanced at from
- * across a desk rather than read — the question it answers is "is there
- * anything", and the answer to "what exactly" is on a real screen.
+ * This was a list first, four titles cut to two lines each, and it did not
+ * work: at the size that fits four Japanese headlines on a 240 dp panel none of
+ * them can be read from across a desk, and every one is truncated mid-sentence.
+ * A list of four things you cannot read is worse than one thing you can.
  *
- * Five, because that is what fits at a size legible from arm's length. The
- * fetch asks for twelve so the count can change without another round trip.
+ * So one headline, large, held for six seconds and then faded to the next. The
+ * standby display deliberately never rotates between *screens* on its own —
+ * a display you have to wait for is one that is in your way when you want a
+ * particular thing — but rotating within a screen is the opposite case: there
+ * is nothing to wait for here, because every item is the same kind of thing and
+ * you did not come to this screen for a specific one.
  */
 private class HeadlinesScreen : SignageScreen {
     override val id = "headlines"
     override val title = "新着"
 
-    private lateinit var heading: TextView
+    private lateinit var meta: TextView
     private lateinit var body: TextView
 
-    private companion object {
-        /**
-         * Four, and the titles are cut to fit two lines each.
-         *
-         * Five was tried first and the fifth fell off the bottom of the panel
-         * with its source line clipped in half, because Japanese headlines wrap
-         * to three lines at this size far more often than the sample used to
-         * pick the number did.
-         */
-        const val SHOWN = 4
+    private var index = 0
+    private var advancedAt = 0L
+    private var showing: String? = null
 
-        /** About two lines of Japanese at 12sp on a 240 dp panel. */
-        const val TITLE_CHARS = 26
+    private companion object {
+        /** Long enough to read a Japanese headline without hurrying. */
+        const val DWELL_MS = 6_000L
+        const val FADE_MS = 220L
     }
 
     override fun createView(context: Context): View {
         val column = SignageStyle.column(context).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
-        heading = SignageStyle.text(context, 13f, SignageStyle.ORANGE, bold = true).apply {
-            text = "新着"
-        }
-        body = SignageStyle.text(context, 12f).apply {
-            setLineSpacing(5f, 1f)
-            // Belt as well as braces. The character cap keeps the usual case
-            // on the panel; this keeps an unusual one from being clipped
-            // mid-glyph if it gets past it.
-            maxLines = 17
+        meta = SignageStyle.text(context, 12f, SignageStyle.ORANGE, bold = true).apply {
+            // One line, and the position comes first so it is the part that
+            // survives. Feed titles run to "ITmedia PC・AV・スマートフォン 最新
+            // 記事一覧", which wrapped onto a second line and pushed the
+            // counter down with it.
+            maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
-        column.addView(heading, SignageStyle.wide())
+        body = SignageStyle.text(context, 17f).apply {
+            setLineSpacing(7f, 1f)
+            setPadding(0, (8 * context.resources.displayMetrics.density).toInt(), 0, 0)
+            // One headline has room to be shown whole. Nothing is truncated at
+            // this size until a title runs past eight lines, which is a press
+            // release rather than a headline.
+            maxLines = 8
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        column.addView(meta, SignageStyle.wide())
         column.addView(body, SignageStyle.wide())
+
+        // The view is rebuilt every time the wheel lands here, while this
+        // object and its position survive. Forgetting what is on screen makes
+        // the first frame after arriving get painted rather than faded into.
+        showing = null
         return column
     }
 
@@ -245,24 +255,51 @@ private class HeadlinesScreen : SignageScreen {
     override fun refresh(data: LifelogSummary.Snapshot?) {
         val items = Headlines.items
         if (items.isEmpty()) {
-            // Three states, not two. "Nothing new" and "cannot reach the
-            // reader" look identical on a screen that only prints a dash, and
-            // one of them is a fault.
+            // Never "nothing new". The endpoint returns the latest ten whether
+            // they arrived a minute ago or on Tuesday, so an empty list here
+            // means the crawler has not run or cannot be reached — and those
+            // two are worth telling apart.
+            meta.text = ""
             body.text = when (Headlines.reachable) {
                 null -> "読み込み中…"
                 false -> "取得できません"
-                true -> "新着なし"
+                true -> "記事がありません"
             }
             return
         }
 
-        heading.text = "新着 ${items.size}"
-        body.text = items.take(SHOWN).joinToString("\n\n") { item ->
-            val source = item.source.take(14)
-            val title =
-                if (item.title.length > TITLE_CHARS) item.title.take(TITLE_CHARS - 1) + "…"
-                else item.title
-            if (source.isEmpty()) title else "$title\n  $source"
+        val now = System.currentTimeMillis()
+        if (advancedAt == 0L) {
+            advancedAt = now
+        } else if (now - advancedAt >= DWELL_MS) {
+            advancedAt = now
+            index += 1
+        }
+        // Modulo at use rather than at increment: the list is replaced under
+        // this screen every couple of minutes and can come back shorter.
+        val item = items[index % items.size]
+
+        if (item.title == showing) return
+        val first = showing == null
+        showing = item.title
+
+        val paint = {
+            meta.text = buildString {
+                append(index % items.size + 1).append(" / ").append(items.size)
+                append("   ")
+                append(item.source.ifEmpty { "新着" })
+            }
+            body.text = item.title
+        }
+
+        if (first) {
+            paint()
+            body.alpha = 1f
+        } else {
+            body.animate().alpha(0f).setDuration(FADE_MS).withEndAction {
+                paint()
+                body.animate().alpha(1f).setDuration(FADE_MS).start()
+            }.start()
         }
     }
 }

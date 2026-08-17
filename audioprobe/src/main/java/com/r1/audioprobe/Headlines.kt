@@ -23,8 +23,15 @@ object Headlines {
     private const val TAG = "R1AudioProbe"
     private const val TIMEOUT_MS = 8_000
 
-    /** More than a 240 dp panel can show, so the screen can choose. */
-    private const val WANT = 12
+    /**
+     * Ten, always — not "whatever is new since last time".
+     *
+     * A reader that shows nothing when nothing has been published is a screen
+     * that is blank most of the day, and blank reads as broken. The endpoint
+     * returns the most recent ten whether they arrived a minute ago or on
+     * Tuesday, and the screen rotates through them.
+     */
+    private const val WANT = 10
 
     data class Item(val title: String, val source: String)
 
