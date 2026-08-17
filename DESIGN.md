@@ -465,7 +465,7 @@ sets it.
 
 Three screens, in the order they are met:
 
-- **Home** is a five-row menu — 話す, 記録, 待受, 設定, Hermes — turned through
+- **Home** is a six-row menu — 話す, 記録, 通訳, 待受, 設定, Hermes — turned through
   with the wheel, one row lit at a time. It was a column of small Android
   buttons first, which on this device means the one interaction it is worst at:
   hitting a 30 dp target on a 240 dp panel. The app registers as a HOME
@@ -489,6 +489,63 @@ press was single and then dismisses standby — so picking 待受 from the menu
 opened standby and immediately closed it again. The handler is now told when
 the button went down, and refuses to dismiss anything that appeared after
 that.
+
+## Interpreting
+
+`gpt-realtime-translate`, billed by the minute of audio — $0.034, about two
+dollars an hour — rather than by tokens. The device streams the room to OpenAI
+and plays the translation out loud.
+
+**The API is simultaneous, and finding that out took the whole feature apart
+once.** Its entire event surface is three messages out and four in:
+
+| | |
+| --- | --- |
+| out | `session.update`, `session.input_audio_buffer.append`, `session.close` |
+| in | `session.output_audio.delta`, `session.output_transcript.delta`, `session.input_transcript.delta`, `session.closed` |
+
+There is no commit, no `response.create`, no turn-started and no turn-done.
+Audio goes in continuously, translated audio comes out continuously, and the
+model decides where sentences are by hearing the pauses.
+
+Everything built on top of that assumption broke it. A voice-activity gate on
+the input — borrowed from the lesson about Whisper and silence — removed the
+pauses, so each translation was held until the next sound arrived to flush it.
+A mute while the speaker was busy, and playback-head tracking to decide when to
+lift it, could wedge the input shut for good. The listening/speaking state
+machine driven by all that was describing turns the session does not take. None
+of it survives; the room simply streams.
+
+**Audio goes device-to-OpenAI directly**, because interpretation is only usable
+if the reply lands while the sentence is still in the room, and a hop through
+the Worker spends exactly that budget. The Worker's job is to hold the API key
+and hand out an `ek_…` that expires — a key stored on a device where every app
+can open a root shell is not a key. Targets are an allowlist there too, because
+that parameter arrives from the device and ends up on this account's bill.
+
+**One session translates one way.** The model detects the source and takes the
+target as configuration, so the wheel swaps direction by reconnecting. The
+screen shows the instruction rather than the setting — "→ English / 日本語で話
+してください" — because the target is what comes *out*, and a screen reading
+"→ 日本語" while somebody speaks Japanese at it gets Japanese back, which is the
+model doing as it was told.
+
+Two things that were measured rather than reasoned about, both after the
+feature appeared to work and did not:
+
+- **The output buffer is eight times the device minimum.** At sixty times,
+  AudioTrack accepted every write, reported `PLAYSTATE_PLAYING`, and never
+  advanced its play head off zero. Nothing was ever audible, and the half-duplex
+  gate then waited correctly for a speaker that had not started.
+- **The media volume is claimed for the session and restored after.** The device
+  sits at 5 of 15; raising the track's own gain does nothing about a stream that
+  is turned down.
+
+Not solved: the translation comes out of the speaker so that both people hear
+it, and the microphone hears it too. The session asks for far-field noise
+reduction, and past that this rests on the model not finding its own output
+worth translating. An earphone removes the problem and the second listener with
+it, which is the point of the feature.
 
 ## Browsing it
 

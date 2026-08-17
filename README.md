@@ -19,6 +19,7 @@ not assumed.
 | `hermes/` | Chat client for a Hermes gateway: streaming replies, tool activity, approvals, push-to-talk, photo attachments. Now compiled *into* `audioprobe` as a source set; still builds standalone |
 | `audioprobe/` | **R1 Audio Probe** — the app that actually runs on the device: continuous stereo recording, timelapse photography, the chat, the home screen and the standby display |
 | `cloudflare/lifelog/` | Worker that ingests audio and photographs into R2, transcribes and captions them into D1, serves a web UI, and exposes the archive to the agent over MCP |
+| `cloudflare/reader/` | Feed crawler: reads an OPML subscription list, polls 57 feeds hourly, and serves headlines to the device and to Hermes. A separate Worker with no reach into the archive |
 | `relay/` | Reports Codex and Claude Code usage from the machine those tools run on, so the standby display can show real figures |
 
 Reference docs:
@@ -89,6 +90,10 @@ to go and look.
   away from it, skipped entirely when the room is quiet, dark and unchanged. A
   position fix on the same cadence and for the same reason, since at home it is
   both already known and mostly unobtainable.
+- **On demand** — 通訳 opens a live interpreter: the room streams to
+  `gpt-realtime-translate` and the translation plays out loud, about two
+  dollars an hour and only while the screen is up. 新着 on the standby display
+  rotates through the latest headlines.
 - **Whenever** — shaking the device twice opens the camera, three times opens
   the chat. The accelerometer also reports how the device is sitting: upright,
   flat, face down, on its side, and whether it is moving.
@@ -100,8 +105,8 @@ to go and look.
   today's recording, the last thing said, Codex and Claude Code usage, Hermes
   tasks. The wheel steps between screens; the side button leaves.
 
-The home screen is a five-row menu turned through with the wheel — 話す, 記録,
-待受, 設定, Hermes. The app also registers as a HOME activity, so the device
+The home screen is a six-row menu turned through with the wheel — 話す, 記録,
+通訳, 待受, 設定, Hermes. The app also registers as a HOME activity, so the device
 comes back to it rather than to the stock launcher.
 
 ## Building
