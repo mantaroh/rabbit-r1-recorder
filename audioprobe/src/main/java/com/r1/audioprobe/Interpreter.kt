@@ -130,9 +130,6 @@ class Interpreter(
     private var prerollAt = 0
     private var prerollFill = 0
 
-    /** Whether audio is currently flowing, so the end of it can be announced. */
-    private var sending = false
-
     /** Restored on stop; see claimVolume. */
     private var previousVolume: Int? = null
 
@@ -166,7 +163,6 @@ class Interpreter(
         speechUntil = 0L
         prerollAt = 0
         prerollFill = 0
-        sending = false
         runCatching { track?.pause(); track?.flush(); track?.release() }
         track = null
         releaseVolume(context)
@@ -310,28 +306,22 @@ class Interpreter(
         // gate, so the measurement is free and the policy is the same one.
         val wanted = now < speechUntil
 
-        // The end of an utterance has to be announced, not merely stopped.
+        // The stream is never cut, only emptied.
         //
-        // Gating on the local VAD means the stream simply ceases when someone
-        // finishes talking, and the server never hears the pause it uses to
-        // decide a turn is over — so it holds the translation until the next
-        // burst of audio arrives and flushes it. That is why the reply only
-        // came out when the next sentence went in.
+        // This endpoint accepts three events — session.update, the audio
+        // append, and session.close — and no commit: it decides where a turn
+        // ends by hearing the pause, the way a person does. Gating the upstream
+        // on the local VAD took that pause away, so the model held each
+        // translation until the next burst of audio arrived and pushed it out,
+        // which is exactly the "only speaks when the next sound comes in" that
+        // was reported. Two guesses at a commit event were refused, and the
+        // second refusal listed what the session actually takes.
         //
-        // Whatever is left in the partial buffer goes first: up to a tenth of
-        // a second of the last word was otherwise sitting here waiting for a
-        // buffer that would not fill until the next time somebody spoke.
-        if (!wanted && sending) {
-            sending = false
-            val tail = pendingCount
-            pendingCount = 0
-            val remainder = if (tail > 0) pending.copyOf(tail) else null
-            worker.execute {
-                if (remainder != null) send(remainder)
-                commit()
-            }
-        }
-        if (wanted) sending = true
+        // So silence is sent as silence. The server keeps its clock and can
+        // find the end of a sentence; the model is still never handed a room
+        // full of ambient noise to invent speech out of. Streaming throughout
+        // costs no more than streaming in bursts, because this model is billed
+        // by the minute of audio either way.
 
         var index = 0
         while (index + 3 < count) {
@@ -339,19 +329,18 @@ class Interpreter(
             index += 4
 
             if (!wanted) {
-                // Kept anyway, in a ring. A voice-activity detector reports the
-                // onset after it has happened, so the syllable that triggered
-                // it is already past — the same reason the query path captures
-                // from before the button was pressed.
+                // Kept in a ring as well as sent as silence. A voice-activity
+                // detector reports an onset after it has happened, so the
+                // syllable that triggered it is already past — the same reason
+                // the query path captures from before the button was pressed.
                 preroll[prerollAt] = mono.toShort()
                 prerollAt = (prerollAt + 1) % preroll.size
                 if (prerollFill < preroll.size) prerollFill += 1
-                continue
+            } else if (prerollFill > 0) {
+                flushPreroll()
             }
 
-            if (prerollFill > 0) flushPreroll()
-
-            pending[pendingCount++] = mono.toShort()
+            pending[pendingCount++] = if (wanted) mono.toShort() else 0
             if (pendingCount == SEND_SAMPLES) {
                 val payload = ShortArray(SEND_SAMPLES)
                 System.arraycopy(pending, 0, payload, 0, SEND_SAMPLES)
@@ -369,13 +358,6 @@ class Interpreter(
         prerollFill = 0
         prerollAt = 0
         worker.execute { send(ordered) }
-    }
-
-    /** Ends the turn so the model answers now rather than at the next sound. */
-    private fun commit() {
-        runCatching {
-            socket?.send(JSONObject().put("type", "session.input_audio_buffer.commit").toString())
-        }
     }
 
     private fun send(samples: ShortArray) {
