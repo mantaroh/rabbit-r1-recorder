@@ -408,6 +408,11 @@ R2. Ingest and administration should not share a credential; they do.
   has to be re-enabled by hand, so the question feature stays dead until
   someone notices. The root shell on 127.0.0.1:1337 could rewrite it.
 - **TTS.** Answers are read, not spoken.
+- **A conversation mode**, designed and shelved rather than merely absent. The
+  measurement half is built — `GET /v1/talk` reports how many minutes of each
+  day contained speech — because a mode that declines to run on days you
+  already talked needs a threshold taken from real days. See
+  [`BACKLOG.md`](BACKLOG.md).
 
 ## Measured hardware
 

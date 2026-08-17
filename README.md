@@ -29,6 +29,8 @@ Reference docs:
   reverse-engineered from the agent source and verified against a live server
 - [`hermes/UI-SPEC.md`](hermes/UI-SPEC.md) — UI design for a 240×320 dp panel
 - [`audioprobe/FINDINGS.md`](audioprobe/FINDINGS.md) — measured device behaviour
+- [`BACKLOG.md`](BACKLOG.md) — features designed, costed, and deliberately not
+  built, with enough detail to restart without re-deciding
 
 ## The device, measured
 
