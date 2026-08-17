@@ -30,20 +30,37 @@ import android.widget.TextView
  */
 class InterpretActivity : Activity() {
 
+    /** One way to translate: what comes out, and what to say to get it. */
+    private data class Direction(val code: String, val name: String, val speak: String)
+
     private companion object {
         const val ORANGE = 0xFFFE5000.toInt()
         const val INK = 0xFFF2F2F2.toInt()
         const val DIM = 0xFF7A7A7A.toInt()
 
         /**
-         * The pair the wheel swaps between. Everything the Worker allows is in
-         * `/v1/interpret/targets`, but a conversation has two sides and picking
-         * from seven mid-sentence is not a thing anyone will do.
+         * The pair the wheel swaps between, each with the instruction that
+         * makes it usable.
+         *
+         * The target is what comes *out*, so the thing a person needs to know
+         * is which language to speak *in* — and that is the opposite one. The
+         * first version showed only the target, so "→ 日本語" was on screen
+         * while somebody spoke Japanese at it, and the model did exactly what
+         * it was asked: it translated Japanese into Japanese and said it back.
+         *
+         * English first, because the owner of this device speaks Japanese and
+         * the common case is wanting to be understood rather than to
+         * understand. Defaulting to 日本語 made the opening state the useless
+         * one.
          */
-        val PAIR = listOf("ja" to "日本語", "en" to "English")
+        val PAIR = listOf(
+            Direction("en", "English", "日本語で話してください"),
+            Direction("ja", "日本語", "英語で話してください"),
+        )
     }
 
     private lateinit var target: TextView
+    private lateinit var instruction: TextView
     private lateinit var status: TextView
     private lateinit var heard: TextView
     private lateinit var translated: TextView
@@ -70,7 +87,7 @@ class InterpretActivity : Activity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContentView(buildUi())
-        index = PAIR.indexOfFirst { it.first == UploadSettings(this).interpretTarget }
+        index = PAIR.indexOfFirst { it.code == UploadSettings(this).interpretTarget }
             .coerceAtLeast(0)
         render(Interpreter.State.IDLE)
         begin()
@@ -95,7 +112,7 @@ class InterpretActivity : Activity() {
     private fun begin() {
         android.util.Log.i("R1AudioProbe", "interpret begin (had=" + (interpreter != null) + ")")
         val settings = UploadSettings(this)
-        val code = PAIR[index].first
+        val code = PAIR[index].code
         settings.interpretTarget = code
 
         interpreter = Interpreter(
@@ -132,6 +149,11 @@ class InterpretActivity : Activity() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             setTypeface(null, Typeface.BOLD)
         }
+        instruction = TextView(this).apply {
+            setTextColor(INK)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(0, dp(2), 0, 0)
+        }
         status = TextView(this).apply {
             setTextColor(DIM)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -155,6 +177,7 @@ class InterpretActivity : Activity() {
         }
 
         column.addView(target, wide())
+        column.addView(instruction, wide())
         column.addView(status, wide())
         column.addView(heard, wide())
         column.addView(translated, wide())
@@ -169,7 +192,8 @@ class InterpretActivity : Activity() {
     }
 
     private fun render(state: Interpreter.State) {
-        target.text = "→ " + PAIR[index].second
+        target.text = "→ " + PAIR[index].name
+        instruction.text = PAIR[index].speak
         status.text = when (state) {
             Interpreter.State.IDLE -> "停止"
             Interpreter.State.CONNECTING -> "接続中…"

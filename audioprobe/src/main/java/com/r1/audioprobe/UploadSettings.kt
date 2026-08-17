@@ -180,7 +180,7 @@ class UploadSettings(context: Context) {
      * choice, and an unrecognised one is refused there rather than here.
      */
     var interpretTarget: String
-        get() = prefs.getString(KEY_INTERPRET_TARGET, "ja").orEmpty()
+        get() = prefs.getString(KEY_INTERPRET_TARGET, "en").orEmpty()
         set(v) = prefs.edit().putString(KEY_INTERPRET_TARGET, v.trim()).apply()
 
     val isConfigured: Boolean
