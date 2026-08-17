@@ -1,15 +1,85 @@
 # Backlog
 
-Things that were designed and deliberately not built.
+Work that is designed, or built, but not finished — kept here rather than in a
+chat log, so that picking it up again means reading rather than re-deciding.
 
-Distinct from DESIGN.md's [What is not built](DESIGN.md#what-is-not-built),
-which lists gaps in what exists. This file holds whole features that were
-worked out far enough to cost and to find the hard parts, then shelved — with
-enough detail that restarting means reading rather than re-deciding.
+Two kinds, and they are not the same kind:
+
+- **Unverified** — shipped, but a claim the documentation makes rests on
+  something nobody has observed. Cheap to close and dangerous to forget,
+  because built-and-unproven reads exactly like built-and-working.
+- **Shelved** — whole features worked out far enough to cost and to find the
+  hard parts, then put down deliberately.
+
+DESIGN.md's [What is not built](DESIGN.md#what-is-not-built) stays what it is:
+one line per gap. The detail lives here.
 
 ---
 
-## 会話モード — a conversation mode
+## Unverified: the position log, and shake while walking
+
+**Open since 2026-08-17.** Both were built, installed and exercised on a desk
+the same day. Neither can be finished indoors.
+
+### What is actually unproven
+
+**No GPS fix has ever been obtained.** Every part of the path has run except
+the part that needs sky: the request goes out on the fused provider, the
+provider answers, and the null comes back as
+`{"event":"position","outcome":"no_fix","provider":"fused"}`. That is the
+correct behaviour indoors — this device has no network location, see
+[FINDINGS](audioprobe/FINDINGS.md) — but it means the upload path, the D1 rows,
+the range checks and the map layer are all written against data that has never
+existed. Anything from a coordinate-order transposition to a wrong timestamp
+format would look exactly like today's logs.
+
+**The shake threshold has only been quiet on a desk.** 14 m/s² with no false
+detections in forty-seven minutes of a device being picked up, set down and
+turned over. Walking is where a shake threshold usually fails, and a false
+trigger here swings the camera arm.
+
+### The test
+
+Go outside for a while, carrying it normally, and come back. That is the whole
+procedure; there is nothing to set up, because both features run continuously.
+
+Note that uploads pause off Wi-Fi (`Unmetered only: ON`), so audio, photographs
+and positions all queue on the device and go up on return. A `/v1/positions`
+that is empty *during* the walk is not a fault.
+
+### What to read afterwards
+
+```bash
+adb shell "run-as com.r1.audioprobe grep -E 'position|shake|photo_network' files/probe.jsonl | tail -60"
+```
+
+| Look for | Meaning |
+| --- | --- |
+| `"outcome":"fix"` with an `accuracy_m` | The thing that has never happened. Everything below depends on it |
+| `"event":"photo_network","home":false` | The away verdict switched, so the 5-minute cadences engaged |
+| `position_upload_ok` after returning | The queue drained; check `count` against the number of fixes |
+| `"event":"shake"` at all | A false trigger. `peaks` and `posture` say what the walk looked like to the detector |
+
+Then open the map tab for that date and see whether the track is a route or a
+scatter — which is the only check that catches a coordinate transposition,
+because the numbers are all plausible either way.
+
+### If it fails
+
+- **Fixes but no upload**: the batch POST or the rename hand-off. The fixes are
+  still on the device in `files/positions.jsonl`, so nothing is lost yet.
+- **Fixes in the wrong place**: latitude and longitude, in `Positions.record`
+  and in the map's `[p.lon, p.lat]`. Both orders are internally consistent, so
+  only the map shows it.
+- **Shake false positives**: raise `SHAKE_HIGH` from 14, and use the logged
+  `peaks` to check the two-versus-three boundary still separates afterwards.
+- **No fix even outdoors**: the provider choice in `Positions.provider()`, and
+  whether `FUSED_PROVIDER` on a device with no Play Services is really doing
+  anything that `GPS_PROVIDER` would not.
+
+---
+
+## Shelved: 会話モード — a conversation mode
 
 **Shelved 2026-08-17.** Design agreed, technical route established, not started.
 
