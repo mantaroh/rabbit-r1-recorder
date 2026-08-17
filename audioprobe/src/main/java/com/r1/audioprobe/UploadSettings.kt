@@ -31,6 +31,7 @@ class UploadSettings(context: Context) {
         private const val KEY_WAKE_LOCK = "wake_lock"
         private const val KEY_VOICE_RECOGNITION = "voice_recognition"
         private const val KEY_OPUS = "opus"
+        private const val KEY_INTERPRET_TARGET = "interpret_target"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -170,6 +171,17 @@ class UploadSettings(context: Context) {
     var opus: Boolean
         get() = prefs.getBoolean(KEY_OPUS, true)
         set(v) = prefs.edit().putBoolean(KEY_OPUS, v).apply()
+
+    /**
+     * Which language the interpreter translates into, as an ISO 639-1 code.
+     *
+     * Persisted so the device comes back pointing the way it was last left.
+     * The Worker owns the list of what is allowed; this only remembers a
+     * choice, and an unrecognised one is refused there rather than here.
+     */
+    var interpretTarget: String
+        get() = prefs.getString(KEY_INTERPRET_TARGET, "ja").orEmpty()
+        set(v) = prefs.edit().putString(KEY_INTERPRET_TARGET, v.trim()).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

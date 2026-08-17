@@ -74,6 +74,16 @@
 
         </activity>
 
+        <!-- Live interpretation. Not exported and not in recents: it bills by
+             the minute and listens with intent, so it exists only while it is
+             the thing on screen. -->
+        <activity
+            android:name=".InterpretActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <!-- Everything the home screen deliberately does not show: the upload
              target, the codec, the capture source. Reached from 設定 and left
              by 戻る, since the R1 has no Back key. -->

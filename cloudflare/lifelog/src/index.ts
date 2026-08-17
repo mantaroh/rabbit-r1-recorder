@@ -16,6 +16,7 @@
 
 import { handleMcp } from "./mcp";
 import { fetchMapAssets, serveMap } from "./map";
+import { interpretTargets, mintInterpretSession } from "./interpret";
 import { UI_HTML } from "./ui";
 
 interface Env {
@@ -26,6 +27,8 @@ interface Env {
   INGEST_TOKEN: string;
   /** The feed reader Worker; see the note on /v1/feeds below. */
   READER: Fetcher;
+  /** Held so the device never has to; see interpret.ts. */
+  OPENAI_API_KEY?: string;
   /** Spoken language to assume. "auto" lets Whisper guess. See LANGUAGE below. */
   TRANSCRIBE_LANGUAGE?: string;
 }
@@ -120,6 +123,12 @@ export default {
       const inner = new URL(request.url);
       inner.pathname = url.pathname.replace("/v1/feeds/", "/feeds/");
       return env.READER.fetch(new Request(inner, request));
+    }
+    if (request.method === "POST" && url.pathname === "/v1/interpret/session") {
+      return mintInterpretSession(env, url);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/interpret/targets") {
+      return interpretTargets();
     }
     if (request.method === "GET" && url.pathname.startsWith("/v1/map/")) {
       return serveMap(request, env, url);

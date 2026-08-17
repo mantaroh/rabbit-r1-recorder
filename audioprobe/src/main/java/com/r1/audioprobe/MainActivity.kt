@@ -202,7 +202,7 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Five, deliberately. The wheel is a slow way to travel and this is the
+     * Six, deliberately. The wheel is a slow way to travel and this is the
      * screen you land on every time the standby display is dismissed; anything
      * that is not used most days belongs behind 設定.
      */
@@ -212,6 +212,9 @@ class MainActivity : Activity() {
         },
         Entry({ if (RecorderService.recordingAudio) "記録を止める" else "記録を始める" }) {
             toggleRecording()
+        },
+        Entry({ "通訳" }) {
+            startActivity(Intent(this, InterpretActivity::class.java))
         },
         Entry({ "待受" }) {
             startActivity(Intent(this, SignageActivity::class.java))

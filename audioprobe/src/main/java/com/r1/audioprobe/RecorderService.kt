@@ -147,6 +147,19 @@ class RecorderService : Service() {
 
         /** Whether audio is being archived, for the standby display to show. */
         @Volatile var recordingAudio = false; private set
+
+        /**
+         * A share of the live capture, for a screen that needs to hear.
+         *
+         * Interleaved PCM16 at whatever [snapshot] reports — 48 kHz stereo in
+         * practice — in the ~100 ms chunks the loop reads.
+         *
+         * **Called on the capture thread, which must never be made to wait.**
+         * That thread reads AudioRecord and is the one thing in this service
+         * that cannot be late; a tap that blocks on a socket writes a gap into
+         * the archive. Copy what is wanted and hand it to another thread.
+         */
+        @Volatile var audioTap: ((ShortArray, Int) -> Unit)? = null
     }
 
     private lateinit var metrics: Metrics
@@ -644,6 +657,16 @@ class RecorderService : Service() {
             // The ring buffer exists for the query path: a question can begin
             // before the button that asks for it.
             ring?.append(buffer, read, now)
+
+            // Live tap for whatever is in front, currently the interpreter.
+            // Deliberately a share of this stream rather than a second
+            // AudioRecord: Android will not reliably give one out while this
+            // one is open, and the archive must not be interrupted so that
+            // something on screen can hear.
+            audioTap?.let { tap ->
+                runCatching { tap(buffer, read) }
+                    .onFailure { Log.w(TAG, "audio tap failed", it) }
+            }
             val ended = vad.accept(buffer, read, now)
             query.tick(now, vad.isSpeaking, ended, vad.utteranceStart)
 
