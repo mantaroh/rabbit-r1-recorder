@@ -82,11 +82,12 @@ object Gestures {
                 mapOf(
                     "posture" to placement.posture.name,
                     "moving" to placement.moving,
-                    // Accumulating, not acted on: whether the dock's tilt ever
-                    // separates from a desk's is a question for a few weeks of
-                    // these, not for a threshold invented today.
+                    // The angle the stand is recognised by; kept in the log so
+                    // a stand that warps, or a second one printed differently,
+                    // shows up as a number rather than as photographs quietly
+                    // going back to two a cycle.
                     "tilt_deg" to placement.tiltDeg,
-                    "docked" to Motion.docked(context),
+                    "docked" to Motion.inStand(),
                 ),
             )
         }

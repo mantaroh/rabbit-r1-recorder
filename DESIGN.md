@@ -195,27 +195,34 @@ on raises the baseline along with the peak and stops qualifying. Speech always
 qualifies. The stop rule is conjunctive: quiet *and* dark *and* home, so a dark
 room away from home is still photographed.
 
-**On a stand, only the screen side is photographed.** Upright, stationary and
-on power, the rear camera is looking at a wall that will be the same wall in
-fifteen minutes. Skipping it halves the cycle and saves an arm swing on a
-device whose arm can be heard.
+**In the stand, only the screen side is photographed.** Sitting in its stand the
+rear camera is looking at a wall that will be the same wall in fifteen minutes.
+Skipping it halves the cycle and saves an arm swing on a device whose arm can be
+heard.
 
-That condition is not really "in the stand", and is not called that in the code.
-**The stand is still being 3D-printed and has never been measured.** Two resting
-positions have: (0.08, 9.60, −0.07), effectively vertical, and (0.06, 9.58,
-0.61), about 3.6° back. That is enough to show the axis reads what it should
-and nowhere near enough to name a threshold — a few degrees does not survive a
-desk that is not quite level, and charging says "plugged in", not "seated".
+The stand is recognised by its angle, and the angle is unmistakable:
 
-What every member of the set does share is the only part the rule depends on:
-the device is not going anywhere and the view behind it is fixed. That holds for
-a stand, for a cable on a desk, and for anything else that leaves it upright and
-still, which is why the rule does not need to tell them apart.
+| Resting position | Reading | Tilt |
+| --- | --- | --- |
+| Upright on a desk | (0.08, 9.60, −0.07) | 0° |
+| Upright on a desk | (0.06, 9.58, 0.61) | 3.6° |
+| **The printed stand** | **(0.04, 8.75, 4.03)** | **24.7°** |
 
-The tilt is recorded on every placement change and every cycle regardless, so
-once the stand exists and a few weeks of ordinary days have gone by, the
-readings can say whether a stand and a desk separate at all — rather than a
-number being invented now and defended afterwards.
+Twenty degrees of separation, and the stand reads steady to a hundredth of a g
+across samples. A desk that is not quite level cannot cross that, so the band is
+12–45° with about eight degrees of margin on each side. The upper bound is not
+arbitrary either: past roughly 47° gravity lands more on Z than on Y and the
+device stops classifying as upright at all.
+
+This was first written as "upright, still and charging", on the assumption that
+a stand's tilt could never be told from a desk's. The stand had not been printed
+yet. Now that it has, **the direct measurement beats the proxy in both
+directions**: a cable does not turn a desk into a stand, and a full battery —
+which stops reporting as charging — does not take the device out of one.
+
+A device standing vertically on a desk therefore still photographs both ways.
+That is the safe direction to be wrong in: a redundant frame of a wall costs one
+shutter, a missed frame of a room is gone.
 
 The front frame is never the one dropped. It holds the room and the people, and
 it is where the darkness measurement comes from — skipping it would quietly

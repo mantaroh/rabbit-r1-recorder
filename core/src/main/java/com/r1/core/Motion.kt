@@ -65,14 +65,15 @@ object Motion {
         /**
          * Degrees from vertical in the screen's own plane; positive leans back.
          *
-         * Recorded rather than used. Two resting positions have been measured
-         * so far — (0.08, 9.60, -0.07), about zero, and (0.06, 9.58, 0.61),
-         * about 3.6 degrees back — which is enough to show the axis works and
-         * nowhere near enough to name a threshold. The stand this device is
-         * meant to sit in is still being printed and has never been measured.
-         * Logged so that when it exists, and after a few weeks of ordinary
-         * days, the readings can say whether a stand and a desk separate at
-         * all — rather than a number being invented now and defended later.
+         * Measured resting positions on this device:
+         *
+         *   (0.08, 9.60, -0.07)   0 deg    upright on a desk
+         *   (0.06, 9.58,  0.61)   3.6 deg  upright on a desk
+         *   (0.04, 8.75,  4.03)   24.7 deg the printed stand
+         *
+         * The stand separates from everything else by twenty degrees, which is
+         * why [inStand] can read it directly instead of guessing from whether
+         * the device is charging.
          */
         val tiltDeg: Int,
     )
@@ -131,28 +132,44 @@ object Motion {
         private set
 
     /**
-     * Standing still, upright, on power — the state in which the rear camera is
-     * pointed at a wall.
+     * Sitting in its stand.
      *
-     * Named for what it is used for rather than for the dock, because it cannot
-     * actually tell a dock from a cable and a desk. The dock's three and a half
-     * degrees of tilt does not survive a desk that is not level, and charging
-     * says "plugged in", not "seated". What all the members of the set have in
-     * common is the thing that matters: the device is not going anywhere, and
-     * the view behind it will be identical in fifteen minutes.
+     * Measured, not inferred. The printed stand holds the device at
+     * (0.04, 8.75, 4.03) — **24.7 degrees back**, and steady to a hundredth of
+     * a g across samples. Every other resting position measured on this device
+     * sits between 0 and 4 degrees. A twenty-degree gap is not something a desk
+     * that is not quite level can cross, so the angle alone answers the
+     * question and the band below has eight degrees of margin on either side.
      *
-     * Being wrong is cheap in one direction and not the other, so it errs
-     * toward taking both frames: a missed rear frame of a wall costs nothing,
-     * a missed rear frame of a room is gone.
+     * This was first written as "upright, still and charging", on the
+     * assumption that a few degrees of tilt could never be told from a desk.
+     * The stand had not been printed yet. Now that it has, the direct
+     * measurement is better than the proxy in both directions: a cable does not
+     * make a desk into a stand, and a full battery — which stops reporting as
+     * charging — does not take the device out of one.
+     *
+     * A device standing vertically on a desk therefore still photographs both
+     * ways. That is the safe direction to be wrong in: a redundant frame of a
+     * wall costs one shutter, a missed frame of a room is gone.
      */
-    fun docked(context: Context): Boolean {
+    fun inStand(): Boolean {
         val now = placement
-        return now.posture == Posture.UPRIGHT && !now.moving && charging(context)
+        return now.posture == Posture.UPRIGHT &&
+            !now.moving &&
+            now.tiltDeg in STAND_TILT_MIN..STAND_TILT_MAX
     }
 
-    private fun charging(context: Context): Boolean = runCatching {
-        context.getSystemService(android.os.BatteryManager::class.java)?.isCharging == true
-    }.getOrDefault(false)
+    /**
+     * Measured 24.7; the band is generous about print tolerance and about the
+     * device not being seated identically every time.
+     *
+     * The upper bound is not arbitrary either: past about 47 degrees gravity
+     * lands more on Z than on Y and [classify] stops calling the device upright
+     * at all, so a band reaching further would describe a state this object
+     * cannot report.
+     */
+    private const val STAND_TILT_MIN = 12
+    private const val STAND_TILT_MAX = 45
 
     /**
      * Fired when the **posture** changes and has held for [POSTURE_SETTLE_MS].
