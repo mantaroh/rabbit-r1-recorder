@@ -59,6 +59,9 @@ class Uploader(
 
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 120_000
+
+        /** Comfortably under the Worker's cap of 500; see uploadPositions. */
+        private const val POSITIONS_PER_REQUEST = 200
     }
 
     @Volatile var uploaded = 0; private set
@@ -402,6 +405,20 @@ class Uploader(
         }
     }
 
+    /**
+     * Sent in slices, because a day out is now longer than one batch.
+     *
+     * The Worker rejects more than 500 positions in a request. At the old
+     * five-minute cadence that was forty-one hours away from Wi-Fi and could be
+     * ignored; at one minute it is eight hours, which is an ordinary day out —
+     * and the failure mode is not a lost batch but a stuck one, because the
+     * file would be refused, kept, and grow.
+     *
+     * The file is deleted only once every slice has been accepted. A failure
+     * part way through re-sends the whole thing, and the duplicates are
+     * absorbed: the server keys on (device_id, recorded_epoch), so a position
+     * that arrives twice is the same position arriving twice.
+     */
     private fun uploadPositions(file: File): Boolean {
         val lines = runCatching { file.readLines() }.getOrNull()
             ?.filter { it.isNotBlank() }
@@ -412,6 +429,15 @@ class Uploader(
             return true
         }
 
+        for (slice in lines.chunked(POSITIONS_PER_REQUEST)) {
+            if (!postPositions(slice)) return false
+        }
+        file.delete()
+        metrics.write("position_upload_ok", mapOf("count" to lines.size))
+        return true
+    }
+
+    private fun postPositions(lines: List<String>): Boolean {
         val body = lines.joinToString(",", prefix = "[", postfix = "]")
         var connection: HttpURLConnection? = null
         return try {
@@ -432,8 +458,6 @@ class Uploader(
 
             val code = connection.responseCode
             if (code in 200..299) {
-                file.delete()
-                metrics.write("position_upload_ok", mapOf("count" to lines.size))
                 true
             } else {
                 // Kept, not dropped. The row is the whole artefact here — there

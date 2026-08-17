@@ -250,8 +250,20 @@ were right.
 
 ## Position
 
-A fix every fifteen minutes at home and every five minutes away, which is the
-timelapse's rule for a different reason.
+A fix every fifteen minutes at home and **every minute away** — the timelapse's
+split, for a different reason and now at a different rate.
+
+Five minutes away was the first guess and it drew badly. At walking pace that
+is four hundred metres between points, and a line through those cuts every
+corner it meets. A minute is about eighty metres, close enough to the fixes'
+own 8–14 m accuracy that the line stops being a guess about the route.
+
+What made that affordable is that the cost was measured rather than assumed.
+Across ten fixes on 2026-08-17 a warm receiver answered in **2.2 to 6.0
+seconds**, mean 3.5 — so a minute apart it is powered about 6 % of the time,
+against a measured 75 mA baseline. **The expensive case is failure, not
+success**: an attempt with no sky runs a flat 30 seconds before the platform
+gives up, which is why the home interval is not the one that was shortened.
 
 **There is no network location on this device.** `dumpsys location` lists
 passive, fused and gps and nothing else: CarrotOS ships no Play Services, so

@@ -44,8 +44,23 @@ class Positions(
         /** At home the answer is known, and the radio would mostly fail anyway. */
         private const val HOME_INTERVAL_MS = 15 * 60_000L
 
-        /** Out, five minutes is a street corner. */
-        private const val AWAY_INTERVAL_MS = 5 * 60_000L
+        /**
+         * A minute out, because five made a bad drawing.
+         *
+         * At walking pace five minutes is four hundred metres between points,
+         * and a track drawn through those is a set of straight lines that cut
+         * every corner it meets. A minute is about eighty metres, which is
+         * close enough to the fixes' own 8–14 m accuracy that the line stops
+         * being a guess about the route.
+         *
+         * The cost is small and, unusually, measured. A warm fix took 2.2 to
+         * 6.0 seconds across ten attempts on 2026-08-17, mean 3.5 — so a minute
+         * apart the receiver is on about 6% of the time against a measured
+         * 75 mA baseline. It is the *failed* attempt that is expensive, at a
+         * flat 30 seconds before the platform gives up, and those happen
+         * indoors where this interval does not apply.
+         */
+        private const val AWAY_INTERVAL_MS = 60_000L
 
         /**
          * How long to leave the receiver running for one fix.
