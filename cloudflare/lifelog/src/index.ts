@@ -15,6 +15,7 @@
  */
 
 import { handleMcp } from "./mcp";
+import { fetchMapAssets, serveMap } from "./map";
 import { UI_HTML } from "./ui";
 
 interface Env {
@@ -108,6 +109,12 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/talk") {
       return talkVolume(env, url);
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/v1/map/")) {
+      return serveMap(request, env, url);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/map-fetch") {
+      return fetchMapAssets(env, url);
     }
     if (url.pathname === "/v1/positions") {
       return request.method === "POST"

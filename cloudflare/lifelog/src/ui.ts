@@ -86,6 +86,11 @@ export const UI_HTML = `<!doctype html>
   .facing { font-size: 11px; color: var(--warn); }
   audio { width: 100%; max-width: 340px; height: 32px; margin-top: 6px; }
   .empty { color: var(--dim); padding: 30px 0; text-align: center; }
+  .tab.on { border-color: var(--accent); color: var(--accent); }
+  /* Sized in viewport units: a map that has to be scrolled to is a map you
+     navigate twice. */
+  #map { height: calc(100vh - 150px); min-height: 320px; border-radius: 8px; overflow: hidden; }
+  #map .maplibregl-ctrl-attrib { font-size: 11px; }
   dialog {
     border: none; background: transparent; max-width: 96vw; max-height: 96vh; padding: 0;
   }
@@ -103,10 +108,13 @@ export const UI_HTML = `<!doctype html>
   <label style="color:var(--dim);font-size:13px">
     <input type="checkbox" id="showQuiet"> 無音も表示
   </label>
+  <button class="tab on" id="tabList">記録</button>
+  <button class="tab" id="tabMap">地図</button>
 </header>
 <main>
   <div class="stats" id="stats">読み込み中…</div>
   <div id="list"></div>
+  <div id="map" hidden></div>
 </main>
 <dialog id="viewer"><img id="viewerImg" alt=""></dialog>
 
@@ -189,7 +197,10 @@ async function runSearch(q) {
 }
 
 $('date').value = todayJst();
-$('date').addEventListener('change', () => loadDay($('date').value));
+// Whichever view is showing follows the date; changing the day should not also
+// change what you were looking at.
+const reload = () => showTab($('map').hidden ? 'list' : 'map');
+$('date').addEventListener('change', reload);
 $('prev').addEventListener('click', () => shiftDay(-1));
 $('next').addEventListener('click', () => shiftDay(1));
 $('showQuiet').addEventListener('change', (e) => {
@@ -206,8 +217,134 @@ function shiftDay(delta) {
   const d = new Date($('date').value + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + delta);
   $('date').value = d.toISOString().slice(0, 10);
-  loadDay($('date').value);
+  reload();
 }
+
+// ------------------------------------------------------------------ map ---
+// Everything the map needs is served from this origin: the PMTiles archive,
+// the style, MapLibre and pmtiles.js all live in R2. The distributor of the
+// archive asks that its URLs not be referenced from an application, and a
+// private log has no business announcing itself to a CDN either.
+//
+// Loaded on first use, not on page load. The renderer is about a megabyte and
+// most visits to this page are to read what was said, not to see where.
+
+let mapPromise = null;
+let mapView = null;
+
+function loadOnce(tag, attrs) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement(tag);
+    Object.assign(el, attrs);
+    el.onload = resolve;
+    el.onerror = () => reject(new Error('could not load ' + (attrs.src || attrs.href)));
+    document.head.appendChild(el);
+  });
+}
+
+function ensureMap() {
+  if (mapPromise) return mapPromise;
+  mapPromise = (async () => {
+    await loadOnce('link', { rel: 'stylesheet', href: '/v1/map/lib/maplibre-gl.css' });
+    await loadOnce('script', { src: '/v1/map/lib/maplibre-gl.js' });
+    await loadOnce('script', { src: '/v1/map/lib/pmtiles.js' });
+
+    // PMTiles is one file read by byte offset; this teaches MapLibre to ask
+    // for ranges of it instead of for tile URLs that do not exist.
+    maplibregl.addProtocol('pmtiles', new pmtiles.Protocol().tile);
+
+    mapView = new maplibregl.Map({
+      container: 'map',
+      style: '/v1/map/style.json',
+      center: [139.767, 35.681],
+      zoom: 9,
+    });
+    mapView.addControl(new maplibregl.NavigationControl({ showCompass: false }));
+    await new Promise((done) => mapView.on('load', done));
+
+    mapView.addSource('track', { type: 'geojson', data: emptyTrack() });
+    // The line first so the points sit on top of it.
+    mapView.addLayer({
+      id: 'track-line', type: 'line', source: 'track',
+      filter: ['==', '$type', 'LineString'],
+      paint: { 'line-color': '#7fd1a0', 'line-width': 3, 'line-opacity': 0.85 },
+    });
+    mapView.addLayer({
+      id: 'track-points', type: 'circle', source: 'track',
+      filter: ['==', '$type', 'Point'],
+      paint: {
+        // Radius from reported accuracy, not a constant. A 2 km fix and a 5 m
+        // fix drawn the same size turn a walk down a street into a walk
+        // through the buildings beside it.
+        'circle-radius': ['interpolate', ['linear'], ['get', 'accuracy'], 5, 4, 100, 8, 2000, 16],
+        'circle-color': ['case', ['>', ['get', 'accuracy'], 200], '#d2a24c', '#7fd1a0'],
+        'circle-opacity': 0.5,
+        'circle-stroke-color': '#14161a',
+        'circle-stroke-width': 1,
+      },
+    });
+    return mapView;
+  })();
+  return mapPromise;
+}
+
+const emptyTrack = () => ({ type: 'FeatureCollection', features: [] });
+
+async function loadTrack(date) {
+  const map = await ensureMap();
+  const r = await fetch('/v1/positions?date=' + encodeURIComponent(date));
+  if (!r.ok) { $('stats').textContent = '位置の読み込み失敗 (' + r.status + ')'; return; }
+  const d = await r.json();
+
+  const fixes = d.positions || [];
+  const features = fixes.map((p) => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+    properties: { accuracy: p.accuracy_m == null ? 50 : p.accuracy_m, at: p.recorded_at },
+  }));
+
+  // One line through the fixes, in time order. Straight segments between
+  // points five minutes apart are a lie about the route taken, so this is
+  // drawn as what it is — a sequence of sightings, with the points visible.
+  if (fixes.length > 1) {
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: fixes.map((p) => [p.lon, p.lat]) },
+      properties: {},
+    });
+  }
+
+  map.getSource('track').setData({ type: 'FeatureCollection', features });
+  $('stats').textContent = fixes.length
+    ? d.date + ' の測位 ' + fixes.length + ' 件'
+    : d.date + ' の測位はありません（屋内では GPS が入りません）';
+
+  if (fixes.length) {
+    const bounds = fixes.reduce(
+      (b, p) => b.extend([p.lon, p.lat]),
+      new maplibregl.LngLatBounds([fixes[0].lon, fixes[0].lat], [fixes[0].lon, fixes[0].lat]),
+    );
+    map.fitBounds(bounds, { padding: 40, maxZoom: 16, duration: 0 });
+  }
+}
+
+function showTab(which) {
+  const map = which === 'map';
+  $('tabMap').classList.toggle('on', map);
+  $('tabList').classList.toggle('on', !map);
+  $('list').hidden = map;
+  $('map').hidden = !map;
+  if (map) {
+    loadTrack($('date').value).catch((e) => {
+      $('stats').textContent = '地図を読み込めません: ' + e.message;
+    });
+  } else {
+    loadDay($('date').value);
+  }
+}
+
+$('tabMap').addEventListener('click', () => showTab('map'));
+$('tabList').addEventListener('click', () => showTab('list'));
 
 document.addEventListener('click', (e) => {
   const img = e.target.closest('.shot img');
