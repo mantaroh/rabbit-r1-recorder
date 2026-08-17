@@ -37,8 +37,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 class Interpreter(
     private val settings: UploadSettings,
     private val onState: (State) -> Unit,
-    private val onTranscript: (String) -> Unit,
+    private val onTranscript: (Line) -> Unit,
 ) {
+
+    /**
+     * A line of text from the session. Which side it came from matters on
+     * screen: one is a check that the room was heard correctly, the other is
+     * the thing the other person is listening to.
+     */
+    sealed interface Line { val text: String }
+    @JvmInline value class Heard(override val text: String) : Line
+    @JvmInline value class Translated(override val text: String) : Line
 
     enum class State { IDLE, CONNECTING, LISTENING, SPEAKING, FAILED }
 
@@ -72,6 +81,14 @@ class Interpreter(
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "interpret").apply { isDaemon = true }
     }
+
+    /** Separate from [worker] so a blocking speaker write cannot delay a send. */
+    private val player = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "interpret-play").apply { isDaemon = true }
+    }
+
+    /** Rearmed on every chunk; see play(). */
+    private val gate = android.os.Handler(android.os.Looper.getMainLooper())
 
     private var socket: WebSocket? = null
     private var track: AudioTrack? = null
@@ -107,6 +124,8 @@ class Interpreter(
         RecorderService.audioTap = null
         runCatching { socket?.close(1000, "done") }
         socket = null
+        gate.removeCallbacksAndMessages(null)
+        speakingUntil = 0L
         runCatching { track?.pause(); track?.flush(); track?.release() }
         track = null
         move(State.IDLE)
@@ -182,22 +201,41 @@ class Interpreter(
         })
     }
 
+    /**
+     * Matched on shape rather than on exact names.
+     *
+     * The names in the documentation did not survive contact with a running
+     * session — the transcript arrives as `session.input_transcript.delta`,
+     * not the `output_transcript` the guide describes, and the audio event has
+     * been spelled three different ways across this API's versions. Keying on
+     * "does it contain audio", "is it an input transcript", "is it an output
+     * transcript" costs nothing and does not break the next time a prefix
+     * changes. Anything unrecognised still gets logged once.
+     */
     private fun handle(text: String) {
         val message = runCatching { JSONObject(text) }.getOrNull() ?: return
-        when (message.optString("type")) {
-            "session.output_audio.delta" -> {
-                val chunk = message.optString("delta")
-                if (chunk.isNotEmpty()) play(Base64.decode(chunk, Base64.NO_WRAP))
-            }
-            "session.output_transcript.delta" -> {
-                val piece = message.optString("delta")
-                if (piece.isNotEmpty()) onTranscript(piece)
-            }
-            "error" -> {
-                Log.w(TAG, "interpret error: " + message.optJSONObject("error"))
-            }
+        val type = message.optString("type")
+        val delta = message.optString("delta")
+
+        when {
+            type.endsWith("audio.delta") && delta.isNotEmpty() ->
+                play(Base64.decode(delta, Base64.NO_WRAP))
+
+            type.contains("input_transcript") && delta.isNotEmpty() ->
+                onTranscript(Heard(delta))
+
+            type.contains("output_transcript") && delta.isNotEmpty() ->
+                onTranscript(Translated(delta))
+
+            type == "error" -> Log.w(TAG, "interpret error: " + message.optJSONObject("error"))
+            // Once each, so a name that drifts says so instead of being
+            // dropped in silence. That is how the transcript event above was
+            // found to be spelled differently from the documentation.
+            else -> if (seen.add(type)) Log.i(TAG, "interpret event: $type")
         }
     }
+
+    private val seen = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     // -------------------------------------------------------------- audio ---
 
@@ -270,25 +308,50 @@ class Interpreter(
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build(),
             )
-            .setBufferSizeInBytes(maxOf(minBuffer, WIRE_RATE))
+            .setBufferSizeInBytes(maxOf(minBuffer, WIRE_RATE * 4))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
             .also { it.play() }
     }
 
+    /**
+     * Queues a chunk for the speaker and holds the microphone shut until it has
+     * finished playing.
+     *
+     * The gate is extended *before* the write, because the microphone is live
+     * right now and a gate that closes once the audio is already out was open
+     * for the first syllable.
+     *
+     * The end time accumulates rather than being recomputed from the clock.
+     * Chunks arrive faster than they play — the model is not speaking in real
+     * time, it is sending as fast as the socket allows — so "now plus this
+     * chunk" would put the gate in the past while a second of speech was still
+     * queued ahead of it.
+     */
     private fun play(pcm: ByteArray) {
-        val output = track ?: return
-        // Extended before writing, not after: the microphone is live now, and
-        // a gate that closes once the audio is already out is a gate that was
-        // open for the first syllable.
-        speakingUntil = System.currentTimeMillis() +
-            (pcm.size * 1000L / (WIRE_RATE * 2)) + PLAYBACK_TAIL_MS
+        if (track == null) return
+        val now = System.currentTimeMillis()
+        val queuedUntil = maxOf(speakingUntil - PLAYBACK_TAIL_MS, now)
+        speakingUntil = queuedUntil + (pcm.size * 1000L / (WIRE_RATE * 2)) + PLAYBACK_TAIL_MS
         move(State.SPEAKING)
-        runCatching { output.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) }
-        worker.execute {
-            Thread.sleep(PLAYBACK_TAIL_MS)
-            if (running.get() && System.currentTimeMillis() >= speakingUntil) move(State.LISTENING)
+
+        // Written on its own thread. The caller is the WebSocket reader, and a
+        // blocking write there stalls every message behind it — including the
+        // transcript for the audio being played.
+        player.execute {
+            runCatching { track?.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) }
         }
+
+        // One pending check, rearmed by each chunk. The first version slept for
+        // the tail and then tested against an end time further out, so anything
+        // longer than 350 ms never re-opened the microphone and the session was
+        // deaf from its first reply onwards.
+        gate.removeCallbacksAndMessages(null)
+        gate.postDelayed({
+            if (running.get() && System.currentTimeMillis() >= speakingUntil) {
+                move(State.LISTENING)
+            }
+        }, maxOf(0L, speakingUntil - now))
     }
 
     private fun move(next: State) {

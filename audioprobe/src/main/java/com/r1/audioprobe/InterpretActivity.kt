@@ -45,15 +45,30 @@ class InterpretActivity : Activity() {
 
     private lateinit var target: TextView
     private lateinit var status: TextView
-    private lateinit var transcript: TextView
+    private lateinit var heard: TextView
+    private lateinit var translated: TextView
 
     private var interpreter: Interpreter? = null
     private var index = 0
-    private var line = StringBuilder()
+    private val heardText = StringBuilder()
+    private val translatedText = StringBuilder()
     private val main = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Held for the whole session, on battery as well as on mains.
+        //
+        // Everything else on this device keeps the screen awake only while
+        // charging, because everything else runs for hours. This runs while two
+        // people are talking to each other and nobody is touching it, so the
+        // system timeout fires, the screen sleeps, onPause runs and the
+        // conversation's interpreter quietly hangs up — which is what happened
+        // the first time this was tried. The session is short, deliberate and
+        // billed by the minute; the panel staying lit for it is not the
+        // expensive part.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         setContentView(buildUi())
         index = PAIR.indexOfFirst { it.first == UploadSettings(this).interpretTarget }
             .coerceAtLeast(0)
@@ -83,14 +98,19 @@ class InterpretActivity : Activity() {
         interpreter = Interpreter(
             settings = settings,
             onState = { state -> main.post { render(state) } },
-            onTranscript = { piece ->
+            onTranscript = { line ->
                 main.post {
-                    line.append(piece)
-                    // Kept short on purpose: this is a confirmation that the
-                    // right thing was heard, not a transcript to read. The
-                    // audio is the output.
-                    if (line.length > 220) line.delete(0, line.length - 220)
-                    transcript.text = line.toString()
+                    // Both kept short on purpose. Neither is a transcript to
+                    // read: the top line is a check that the room was heard
+                    // correctly, and the bottom is what the other person is
+                    // already listening to.
+                    val (buffer, view) = when (line) {
+                        is Interpreter.Heard -> heardText to heard
+                        is Interpreter.Translated -> translatedText to translated
+                    }
+                    buffer.append(line.text)
+                    if (buffer.length > 160) buffer.delete(0, buffer.length - 160)
+                    view.text = buffer.toString()
                 }
             },
         ).also { it.start(code) }
@@ -114,17 +134,27 @@ class InterpretActivity : Activity() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setPadding(0, dp(2), 0, dp(10))
         }
-        transcript = TextView(this).apply {
+        // Dim, because it is a check rather than the point.
+        heard = TextView(this).apply {
+            setTextColor(DIM)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setLineSpacing(4f, 1f)
+            maxLines = 4
+            ellipsize = android.text.TextUtils.TruncateAt.START
+        }
+        translated = TextView(this).apply {
             setTextColor(INK)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setLineSpacing(5f, 1f)
-            maxLines = 9
+            setPadding(0, dp(8), 0, 0)
+            maxLines = 6
             ellipsize = android.text.TextUtils.TruncateAt.START
         }
 
         column.addView(target, wide())
         column.addView(status, wide())
-        column.addView(transcript, wide())
+        column.addView(heard, wide())
+        column.addView(translated, wide())
         column.addView(TextView(this).apply {
             text = "ホイールで訳す言語を切替\n中央キーで終了"
             setTextColor(DIM)
@@ -158,8 +188,8 @@ class InterpretActivity : Activity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
             index = (index + 1) % PAIR.size
-            line.setLength(0)
-            transcript.text = ""
+            heardText.setLength(0); translatedText.setLength(0)
+            heard.text = ""; translated.text = ""
             interpreter?.stop()
             interpreter = null
             render(Interpreter.State.CONNECTING)

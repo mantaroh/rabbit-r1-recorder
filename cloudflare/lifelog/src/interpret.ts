@@ -69,9 +69,19 @@ export async function mintInterpretSession(
       },
       body: JSON.stringify({
         session: {
-          type: "realtime.translation",
           model: MODEL,
-          audio: { output: { language: target } },
+          audio: {
+            input: {
+              // far_field, because of where this device sits. The choice is
+              // between a headset microphone and a room one, and the whole
+              // point of this feature is a device on a table between two
+              // people — near_field would be tuned for the case that cannot
+              // happen here.
+              noise_reduction: { type: "far_field" },
+              transcription: { model: "gpt-realtime-whisper" },
+            },
+            output: { language: target },
+          },
         },
       }),
     });
