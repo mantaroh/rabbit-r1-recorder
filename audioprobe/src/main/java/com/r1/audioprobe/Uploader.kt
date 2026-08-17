@@ -378,6 +378,77 @@ class Uploader(
     fun photoQueueDepth(dir: File): Int =
         dir.listFiles { f -> f.isFile && f.name.endsWith(".jpg", true) }.orEmpty().size
 
+    /**
+     * Ships handed-off position batches.
+     *
+     * A whole file per request rather than a fix per request. Each fix is about
+     * eighty bytes and the ones worth having are taken away from home, which is
+     * exactly where there is no upload — so the backlog is the normal case, and
+     * three hundred requests to clear a day out would be absurd.
+     *
+     * Files arrive here already renamed out of the way by [Positions.takePending],
+     * so nothing is appending to what is being read.
+     */
+    fun pumpPositions(dir: File, limit: Int = 4) {
+        if (blockedReason() != null) return
+
+        val pending = dir.listFiles { f ->
+            f.isFile && f.name.startsWith("positions-") && f.name.endsWith(".jsonl")
+        }.orEmpty().sortedBy { it.name }.take(limit)
+
+        for (file in pending) {
+            if (blockedReason() != null) return
+            if (!uploadPositions(file)) return
+        }
+    }
+
+    private fun uploadPositions(file: File): Boolean {
+        val lines = runCatching { file.readLines() }.getOrNull()
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+
+        if (lines.isEmpty()) {
+            file.delete()
+            return true
+        }
+
+        val body = lines.joinToString(",", prefix = "[", postfix = "]")
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL(settings.baseUrl + "/v1/positions").openConnection()
+                as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer " + settings.bearer)
+                if (settings.accessClientId.isNotEmpty()) {
+                    setRequestProperty("CF-Access-Client-Id", settings.accessClientId)
+                    setRequestProperty("CF-Access-Client-Secret", settings.accessClientSecret)
+                }
+            }
+            connection.outputStream.use { it.write(body.toByteArray()) }
+
+            val code = connection.responseCode
+            if (code in 200..299) {
+                file.delete()
+                metrics.write("position_upload_ok", mapOf("count" to lines.size))
+                true
+            } else {
+                // Kept, not dropped. The row is the whole artefact here — there
+                // is no object in R2 to recover it from later.
+                metrics.write("position_upload_fail", mapOf("code" to code, "count" to lines.size))
+                false
+            }
+        } catch (t: Throwable) {
+            metrics.write("position_upload_fail", mapOf("error" to (t.message ?: "?").take(120)))
+            false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     /**

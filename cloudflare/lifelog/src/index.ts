@@ -109,6 +109,11 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/talk") {
       return talkVolume(env, url);
     }
+    if (url.pathname === "/v1/positions") {
+      return request.method === "POST"
+        ? putPositions(request, env)
+        : listPositions(env, url);
+    }
     if (url.pathname === "/v1/usage") {
       return request.method === "PUT" ? putUsage(request, env) : getUsage(env);
     }
@@ -528,6 +533,132 @@ async function dayView(env: Env, url: URL): Promise<Response> {
       photos: photos.results?.length ?? 0,
     },
   });
+}
+
+// ------------------------------------------------------------- positions ---
+
+/** One batch is a few hours of five-minute fixes; far more is a bug. */
+const MAX_POSITIONS_PER_BATCH = 500;
+
+/**
+ * A batch of fixes.
+ *
+ * Posted as an array rather than one at a time because a fix is about eighty
+ * bytes and the device is often offline when it takes one — the interesting
+ * positions are the ones away from home, which is exactly where the upload
+ * cannot go out. Batching means the backlog costs one request, not three
+ * hundred.
+ *
+ * Idempotent by primary key: the device may resend a batch it is unsure about
+ * and the repeats are absorbed. That matters more here than for audio, because
+ * there is no object in R2 to compare against — the row is the whole artefact,
+ * so a lost batch is lost, and the device is meant to retry freely.
+ */
+async function putPositions(request: Request, env: Env): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+
+  const items = Array.isArray(body) ? body : (body as any)?.positions;
+  if (!Array.isArray(items)) {
+    return json({ error: "expected an array of positions" }, 400);
+  }
+  if (items.length > MAX_POSITIONS_PER_BATCH) {
+    return json({ error: `at most ${MAX_POSITIONS_PER_BATCH} positions per batch` }, 413);
+  }
+
+  const receivedAt = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+  const rejected: unknown[] = [];
+
+  const insert = env.DB.prepare(
+    `INSERT OR IGNORE INTO positions
+       (device_id, recorded_at, recorded_epoch, lat, lon,
+        accuracy_m, altitude_m, speed_mps, bearing_deg, provider, received_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)`,
+  );
+
+  for (const raw of items) {
+    const p = raw as any;
+    const at = String(p?.recorded_at ?? "");
+    const epoch = Date.parse(at);
+    const lat = Number(p?.lat);
+    const lon = Number(p?.lon);
+
+    // Range-checked rather than merely parsed. A transposed pair still lands
+    // inside the ranges, but a corrupted one usually does not, and a row that
+    // cannot be a place on Earth is worse than a missing row: it is a hole in
+    // the map that looks like a journey.
+    const usable =
+      Number.isFinite(epoch) &&
+      Number.isFinite(lat) && lat >= -90 && lat <= 90 &&
+      Number.isFinite(lon) && lon >= -180 && lon <= 180;
+
+    if (!usable) {
+      rejected.push({ recorded_at: p?.recorded_at, lat: p?.lat, lon: p?.lon });
+      continue;
+    }
+
+    statements.push(
+      insert.bind(
+        String(p?.device_id ?? "unknown"),
+        at,
+        Math.floor(epoch / 1000),
+        lat,
+        lon,
+        numberOrNull(p?.accuracy_m),
+        numberOrNull(p?.altitude_m),
+        numberOrNull(p?.speed_mps),
+        numberOrNull(p?.bearing_deg),
+        p?.provider ? String(p.provider).slice(0, 32) : null,
+        receivedAt,
+      ),
+    );
+  }
+
+  if (statements.length) await env.DB.batch(statements);
+
+  // The count is what the device needs to decide whether to delete its copy,
+  // and the rejects are echoed back so a systematic fault shows up in one
+  // response rather than as a slow thinning of the track.
+  return json({ accepted: statements.length, rejected: rejected.length, rejects: rejected.slice(0, 5) });
+}
+
+function numberOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The track for one local day, oldest first.
+ *
+ * Wildly inaccurate fixes are returned rather than filtered — with their
+ * accuracy, so whatever draws them can decide. A viewer can grey out a 2 km
+ * fix; it cannot invent one that was dropped here.
+ */
+async function listPositions(env: Env, url: URL): Promise<Response> {
+  const date = url.searchParams.get("date") ?? new Date(Date.now() + 9 * 3600e3)
+    .toISOString()
+    .slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "date must be YYYY-MM-DD" }, 400);
+
+  const from = Math.floor(Date.parse(`${date}T00:00:00+09:00`) / 1000);
+  const to = from + 86_400;
+
+  const rows = await env.DB.prepare(
+    `SELECT recorded_at, recorded_epoch, lat, lon, accuracy_m, speed_mps, provider
+       FROM positions
+      WHERE recorded_epoch >= ?1 AND recorded_epoch < ?2
+      ORDER BY recorded_epoch ASC
+      LIMIT 2000`,
+  )
+    .bind(from, to)
+    .all();
+
+  return json({ date, count: rows.results?.length ?? 0, positions: rows.results ?? [] });
 }
 
 // ------------------------------------------------------------------ talk ---

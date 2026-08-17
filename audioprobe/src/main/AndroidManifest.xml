@@ -18,6 +18,14 @@
          even though nothing here wants a position. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Android 12 onward refuses a fine-location request that does not also
+         ask for coarse, even when only fine is wanted. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Position fixes continue while the app is not in front; the recorder is
+         already a foreground service, so this adds a type rather than a
+         service. There is no network location on this device — see
+         Positions.kt — so this is the GPS receiver and nothing else. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -81,7 +89,7 @@
         <service
             android:name=".RecorderService"
             android:exported="false"
-            android:foregroundServiceType="microphone|camera" />
+            android:foregroundServiceType="microphone|camera|location" />
 
         <!-- The chat client, compiled from :hermes's sources (see
              build.gradle.kts). Not exported: the recorder now hands a spoken

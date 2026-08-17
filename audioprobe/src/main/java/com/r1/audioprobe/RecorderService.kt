@@ -202,6 +202,7 @@ class RecorderService : Service() {
         Thread(runnable, "probe-alerts").apply { isDaemon = true }
     }
     private var timelapse: Timelapse? = null
+    private var positions: Positions? = null
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
     @Volatile private var diskFull = false
@@ -372,6 +373,9 @@ class RecorderService : Service() {
         }
         useOpus = intent?.getBooleanExtra(EXTRA_OPUS, false) ?: false
         photosEnabled = intent?.getBooleanExtra(EXTRA_PHOTOS, true) ?: true
+        // Not gated on photosEnabled: a position is not a photograph, and the
+        // reasons for turning the camera off do not apply to it.
+        positions = Positions(this, metrics, uploadSettings, filesDir)
         if (photosEnabled) {
             timelapse = Timelapse(this, metrics, uploadSettings, photoDir())
             // The arm's real position is unknown until carroot is asked, and
@@ -445,6 +449,12 @@ class RecorderService : Service() {
             // loss if the link dies mid-pass.
             runCatching { uploader?.pumpPhotos(photoDir()) }
                 .onFailure { Log.e(TAG, "photo upload pass failed", it) }
+            // Last, and cheapest: a day of fixes is about 25 KB. Handed off by
+            // rename first so nothing is appending to what is being read.
+            runCatching {
+                positions?.takePending()
+                uploader?.pumpPositions(filesDir)
+            }.onFailure { Log.e(TAG, "position upload pass failed", it) }
             runCatching { Thread.sleep(UPLOAD_INTERVAL_MS) }
         }
     }
@@ -635,6 +645,10 @@ class RecorderService : Service() {
                 if (vad.isSpeaking) timelapse?.noteSpeech()
                 timelapse?.tick(now, vad.isSpeaking)
             }
+
+            // Independent of the camera: a position costs no motor movement and
+            // no shutter, so there is nothing to defer around a conversation.
+            positions?.tick(now)
 
             // Continuous capture to disk. Amplitude statistics prove the stream
             // is alive; only the audio itself proves it is usable, and only

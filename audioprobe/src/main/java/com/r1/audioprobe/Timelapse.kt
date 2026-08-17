@@ -38,6 +38,38 @@ class Timelapse(
     companion object {
         private const val TAG = "R1AudioProbe"
 
+        /**
+         * The Wi-Fi name, or empty when there is none or the platform is
+         * withholding it.
+         *
+         * Reading the SSID needs location permission on Android 10 and above;
+         * without it the platform returns the literal `<unknown ssid>` rather
+         * than failing. Treating that as "not home" means an un-granted install
+         * quietly behaves as though it were out, which is the safer way round
+         * for the timelapse and the honest one for the position log.
+         */
+        fun currentSsid(context: Context): String {
+            val wifi = runCatching {
+                context.applicationContext.getSystemService(WifiManager::class.java)?.connectionInfo
+            }.getOrNull()
+            // The platform wraps the name in quotes.
+            val ssid = wifi?.ssid.orEmpty().trim('"')
+            return if (ssid == "<unknown ssid>") "" else ssid
+        }
+
+        /**
+         * Whether [ssid] is the network named in settings. An empty setting
+         * means everywhere counts as home.
+         *
+         * Shared with [Positions], which needs the same verdict for a different
+         * reason: the timelapse photographs less often at home because the room
+         * does not change, and the position log fixes less often at home
+         * because there is no sky. The logging of changes stays with the
+         * timelapse so the verdict is recorded once, not twice.
+         */
+        fun isHome(ssid: String, wanted: String): Boolean =
+            wanted.isEmpty() || (ssid.isNotEmpty() && ssid.equals(wanted, ignoreCase = true))
+
         /** Long edge of the stored JPEG. Enough to see a room, not a face across it. */
         private const val MAX_EDGE = 640
 
@@ -171,19 +203,8 @@ class Timelapse(
      * quietly taking them everywhere. That is the right way round.
      */
     private fun onHomeNetwork(): Boolean {
-        val wanted = settings.photoSsid
-        if (wanted.isEmpty()) return true
-
-        val info = runCatching {
-            wifiManager?.connectionInfo
-        }.getOrNull()
-
-        // The platform wraps it in quotes, and reports this literal when it is
-        // withholding the name rather than when there is no network.
-        val ssid = info?.ssid.orEmpty().trim('"')
-        val home = ssid.isNotEmpty() &&
-            ssid != "<unknown ssid>" &&
-            ssid.equals(wanted, ignoreCase = true)
+        val ssid = currentSsid(context)
+        val home = isHome(ssid, settings.photoSsid)
 
         // Logged because this decision is invisible in its effects: getting it
         // wrong does not fail, it quietly triples the shutter rate and turns
