@@ -23,23 +23,28 @@ self-hosted Hermes agent answers it with the preceding two minutes as context.
 ```
   side button ──▶ KeyService (accessibility)
                        │ double press
+  accelerometer ─▶ Motion ─┬─ posture      │
+                           └─ shake ──▶ camera / chat
                        ▼
   microphone ──▶ RecorderService ──▶ RingBuffer (150 s, memory)
    48 kHz stereo      │  │                │
                       │  ├─ 60 s Opus segments ─┐
                       │  │  + RMS envelope      │ on question: utterance + 2 min
-                      │  └─ Timelapse ──▶ jpeg ─┤
+                      │  ├─ Timelapse ──▶ jpeg ─┤
+                      │  └─ Positions ──▶ fixes │
                       ▼                         ▼
                 QueryController ──▶ PUT /v1/segments/{id}, /v1/photos/{id}
+                                    POST /v1/positions
                                              │
                                     Cloudflare Access
                                              ▼
                                      Worker ──▶ R2 (audio + photos, kept)
                                              ├─▶ Whisper ──▶ D1 (transcripts)
-                                             └─▶ vision  ──▶ D1 (captions)
+                                             ├─▶ vision  ──▶ D1 (captions)
+                                             └─────────────▶ D1 (fixes)
                                                               │
-  ChatActivity ◀── transcript              browser ──▶ GET / ─┤
-       │                                                      │
+  ChatActivity ◀── transcript   browser ──▶ GET / , /v1/map/* ┤
+       │                                    timeline · map    │
        └──▶ Hermes gateway ──▶ agent ──MCP: lifelog_recent────┘
 ```
 
@@ -106,6 +111,7 @@ Cost, at R2's $0.015/GB-month, growing monotonically:
 | --- | --- | --- | --- |
 | Opus 48 kHz stereo, ~280 GB/yr | ~$4/mo | ~$19/mo | ~$570 |
 | Photographs, a few GB/yr | negligible | | |
+| Map archive, 1.48 GB once | ~$0.27/yr, flat | | |
 | Whisper, gated to ~11 % of the day | ~$3/mo | | |
 | Captioning, ~$0.00026 an image | under $1/mo | | |
 
@@ -202,6 +208,108 @@ Orientation is per-camera and was calibrated against the stock camera app:
 front 180°, rear 0°. Both were overridden to 0° once, on the reasoning that a
 sensor is a sensor, which turned every selfie upside down. The original values
 were right.
+
+## Position
+
+A fix every fifteen minutes at home and every five minutes away, which is the
+timelapse's rule for a different reason.
+
+**There is no network location on this device.** `dumpsys location` lists
+passive, fused and gps and nothing else: CarrotOS ships no Play Services, so
+the AOSP fused provider is a thin wrapper over GPS and passive only repeats
+what something else asked for. Indoors that means no fix at all, however long
+you wait, and waiting costs the receiver. At home the position is therefore
+both already known and mostly unobtainable, and spending radio to fail every
+five minutes buys nothing.
+
+**A failed fix is written down.** A gap in a track otherwise reads as "the
+device was off", which is a different fact from "the device was indoors", and
+only one of the two is a fault worth chasing.
+
+Positions are unlike segments and photographs in a way that changes the
+durability contract. There is no object in R2 behind them — the row *is* the
+artefact — so a lost batch is simply lost. Hence a batch POST, idempotent on
+`(device_id, recorded_epoch)` so the device can resend anything it is unsure
+about, and a local queue handed off by rename rather than truncate so a fix
+taken mid-upload cannot fall down the gap between read and write.
+
+Latitude and longitude are range-checked rather than merely parsed. A row that
+cannot be a place on Earth is worse than a missing row: it is a hole in the map
+that looks like a journey.
+
+**Accuracy is stored and never filtered on.** A 2 km fix and a 5 m fix drawn
+the same way turn a walk down a street into a walk through the buildings beside
+it, so the viewer is given the number and decides. It can grey out a bad fix;
+it cannot invent one that was discarded on the way in.
+
+## Placement, and shaking
+
+One accelerometer listener, two derived signals: the low frequencies say which
+way is down, the high frequencies say how hard the device is moving. The same
+arrangement as the per-second RMS, which already feeds both the speech gate and
+the timelapse — there is no reason to run a sensor twice to answer two
+questions about one motion.
+
+The raw accelerometer, not the platform's `GRAVITY` and `LINEAR_ACCELERATION`.
+Those look like the obvious choice and are AOSP fusion sensors here, so asking
+for them can pull the gyroscope into the fusion to produce what a two-line
+filter already gives. The accelerometer also reports `minRate=50Hz`, so there
+is no slower setting to ask for: registering at all means 50 Hz.
+
+Posture is debounced three seconds and motion is not announced at all. Picking
+the device up sweeps through two or three postures on the way, and `moving`
+flips every couple of seconds in a pocket, which would turn the metrics log
+into a pedometer.
+
+**Shakes are counted in peaks, and the mapping was measured.** How many peaks a
+wrist produces when its owner shakes it twice is a fact about the wrist:
+
+| Intent | Peaks measured |
+| --- | --- |
+| "twice" | 2, 2, 2, 2, 2 |
+| "three times" | 3, 4, 4, 5, 4 |
+
+The distributions do not overlap, so the boundary has one place to sit: two
+peaks opens the camera, three or more opens the chat. The guess this replaced
+assumed the count tracks the word, and it does not — three shakes of a wrist
+reverse direction four times — which put the first gesture of the session on
+the wrong side.
+
+The threshold is 14 m/s². Forty-seven minutes passed between the deliberate
+gestures and the next one with no false detections, on a device that was picked
+up, set down and turned over in between. That is evidence and not a verdict:
+the device was on a desk, and walking is where a shake threshold usually fails.
+
+## The map
+
+Self-hosted, entirely. The archive, the style, the renderer, the fonts and the
+icons all come out of R2 through the Worker, and the page makes no third-party
+request at all.
+
+The immediate reason is that the PMTiles distributor asks for exactly this —
+「本サイトのPMTiles URLをアプリから直接参照する利用はご遠慮ください」 — and
+offers the archive for download instead. The other reasons were already true: no
+API key, no per-request billing, no third party in the path of a private log,
+and R2 charges nothing for egress. 1.48 GB costs about twenty-five cents a year.
+
+**PMTiles is one file addressed by byte offset**, so serving it means answering
+range requests — which this Worker already did, for dragging the scrub bar on a
+minute of audio. Same mechanism, different bytes. The style's one reference back
+to the original host is rewritten on the way into the bucket, or every map view
+would hotlink the thing that was mirrored to avoid exactly that.
+
+Fonts are the one asymmetry. There are 256 glyph ranges per fontstack and six
+stacks in this style: mirroring them all is 1536 files, nearly all for scripts
+this map will never draw, fetched in one burst from a volunteer-run server for
+the sake of a personal archive. They are pulled through on first use instead —
+a viewport asks for about a dozen, once, and after that they are local. 812 ms
+for the first request to a CJK range including the store, 282 ms for the same
+range afterwards.
+
+Fixes are drawn as points sized by their accuracy, joined by a line. The line
+gives the points an order and nothing more: a straight segment between two
+sightings five minutes apart is not a claim about the route between them, and
+the points stay visible so it cannot be read as one.
 
 ## Direction, and why there is none
 
@@ -334,9 +442,11 @@ that.
 ## Browsing it
 
 `GET /` serves a single-file web UI: one day at a time, audio and photographs
-interleaved in time, with search across the whole archive. No build step and no
-dependencies — the Worker is the entire backend and this is the entire
-frontend.
+interleaved in time, with search across the whole archive, and a second tab
+holding the same day's track. No build step and no dependencies — the Worker is
+the entire backend and this is the entire frontend. The map is the one thing
+that needs a library, and it loads on first use rather than on every open; see
+[The map](#the-map).
 
 It authenticates by trusting Cloudflare Access, because a browser cannot attach
 a bearer token to a navigation. See [Operational notes](#operational-notes) for
@@ -408,6 +518,12 @@ R2. Ingest and administration should not share a credential; they do.
   has to be re-enabled by hand, so the question feature stays dead until
   someone notices. The root shell on 127.0.0.1:1337 could rewrite it.
 - **TTS.** Answers are read, not spoken.
+- **Any proof that the position log works outdoors.** Every part of it has been
+  exercised except the one that needs sky: the request goes out, the provider
+  answers, the failure is recorded. No fix has ever been obtained, so the upload
+  path and the map are built against data that does not yet exist.
+- **Any proof that the shake threshold survives walking.** See above; it has
+  only been quiet on a desk.
 - **A conversation mode**, designed and shelved rather than merely absent. The
   measurement half is built — `GET /v1/talk` reports how many minutes of each
   day contained speech — because a mode that declines to run on days you

@@ -45,6 +45,8 @@ actually does:
 | Back key | **Does not exist.** Every screen needs an on-screen exit |
 | Camera | Single 3264×2448 sensor on a motorised arm; 0° selfie, 90° parked, 180° outward |
 | Microphone | Two capsules, left/right symmetric. Advertises up to 48 kHz; 16 kHz mono is merely the default |
+| Motion | Accelerometer (50–200 Hz, 4500-event FIFO) and gyroscope. **No magnetometer**, so no compass |
+| Location | **GPS only.** No Play Services, and `dumpsys location` lists passive, fused and gps — there is no network provider, so indoors there is usually no fix at all |
 | Battery | ~1010 mAh. **52 mA** recording mono with no camera; **117 mA** for the shipping configuration — stereo plus timelapse — measured over 48 minutes unplugged |
 
 ## Keeping the audio
@@ -58,9 +60,11 @@ R1 ──PUT /v1/segments/{id}──▶ Worker ──▶ R2 (audio, kept)
  48 kHz stereo, Opus 32 kbps   │  │
    + 1 byte/s loudness         │  └─▶ Whisper ──▶ D1 (transcripts)
                                │       (only if the envelope says speech)
-   ──PUT /v1/photos/{id}────▶  └────▶ R2 (jpeg) ──▶ vision model ──▶ D1 (captions)
-                                                       │
-                     browser ──▶ GET / (day timeline) ─┤
+   ──PUT /v1/photos/{id}────▶  ├────▶ R2 (jpeg) ──▶ vision model ──▶ D1 (captions)
+   ──POST /v1/positions─────▶  └────▶ D1 (fixes)
+                                        │
+              browser ──▶ GET / ────────┤  timeline · map
+                          GET /v1/map/* ┘  PMTiles + MapLibre, also from R2
                 Hermes agent ◀── MCP: lifelog_recent / _search
 ```
 
@@ -82,7 +86,12 @@ to go and look.
   microphone service.
 - **All day** — 60-second Opus segments upload over unmetered Wi-Fi. A front
   and rear photograph every 15 minutes on the home network and every 5 minutes
-  away from it, skipped entirely when the room is quiet, dark and unchanged.
+  away from it, skipped entirely when the room is quiet, dark and unchanged. A
+  position fix on the same cadence and for the same reason, since at home it is
+  both already known and mostly unobtainable.
+- **Whenever** — shaking the device twice opens the camera, three times opens
+  the chat. The accelerometer also reports how the device is sitting: upright,
+  flat, face down, on its side, and whether it is moving.
 - **23:00** — a full-screen question asks whether to stop for the night, and
   asks again every 10 minutes until answered. Not answering leaves the
   recording running. The answer lasts until the next morning rather than until
@@ -147,7 +156,18 @@ Consequences worth naming rather than assuming:
   sound only while Cloudflare Access covers *every* path of the custom domain —
   there is no `workers.dev` route, so Access is the only way in. If an Access
   policy is ever narrowed to a path prefix, everything outside it becomes
-  reachable by anyone willing to send that header themselves.
+  reachable by anyone willing to send that header themselves. Confirmed to hold
+  today: `/health` returns the Access sign-in page rather than the Worker's own
+  reply — which also makes it useless as an unauthenticated liveness check.
+- **Position history is the most sensitive thing here.** A transcript says what
+  was said; a track says where its owner sleeps, works, and goes on Tuesdays.
+  It is the one class of data in this system that is dangerous in aggregate
+  rather than individually, and it is kept forever like everything else.
+- **The map mirror fetches from a fixed list, never a supplied URL.** An
+  endpoint that retrieves whatever it is told and writes it to a bucket is a
+  server-side request forgery with storage attached, and this one opens with
+  the device's token. The glyph pull-through is bounded the same way, against
+  the six fontstacks the style actually names.
 
 No credentials are committed here, and none appear in the history. The apps read
 theirs from on-device settings; the Worker reads its bearer from a Wrangler

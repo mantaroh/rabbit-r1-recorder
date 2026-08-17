@@ -261,6 +261,61 @@ instead of every 15, and being "away" also disables the quiet-and-dark skip.
 The two contributions have not been separated since; a clean stereo-only
 measurement is still owed.
 
+### Sensors
+
+`dumpsys sensorservice`, four physical sensors:
+
+| Sensor | Vendor | Rate |
+| --- | --- | --- |
+| `ACCELEROMETER` | MTK | **minRate 50 Hz**, max 200 Hz, FIFO 4500 events |
+| `ORIENTATION` | MTK | 50–200 Hz (deprecated API) |
+| `GYROSCOPE` | MTK | 1–200 Hz |
+| `DEVICE_ORIENTATION` | MTK | on-change |
+
+`GRAVITY`, `LINEAR_ACCELERATION` and `GAME_ROTATION_VECTOR` are listed as AOSP,
+meaning they are fusion sensors computed from the above rather than hardware.
+
+**There is no magnetometer.** The fusion states confirm it — "game fusion(no
+mag)" and "geomag fusion (no gyro)" — so there is no compass and no absolute
+heading. Bearing is available only from GPS, i.e. only while moving.
+
+The accelerometer cannot be sampled slower than 50 Hz: `minRate` is a floor,
+not a suggestion. Registering at all costs 50 Hz.
+
+Resting flat on its base the device reads `(0.08, 9.60, -0.07)` — gravity on
++Y. Upright is +Y, face up is +Z, face down is −Z, on its side is ±X.
+
+### Shake gestures, calibrated
+
+Ten deliberate gestures, counting peaks of linear acceleration above 14 m/s²
+with hysteresis at 4 m/s²:
+
+| Intent | Peaks |
+| --- | --- |
+| "twice" | 2, 2, 2, 2, 2 |
+| "three times" | 3, 4, 4, 5, 4 |
+
+No overlap. Note that peaks are not shakes: three shakes of a wrist reverse
+direction four times. Forty-seven minutes between the deliberate gestures and
+the next produced no false detections, on a desk — **walking is untested**, and
+that is where such a threshold usually fails.
+
+### No network location
+
+`dumpsys location` lists exactly three providers: `passive`, `fused`, `gps`.
+There is no `network` provider, and the only Google packages present are
+networkstack overlays — no Play Services.
+
+The consequence is not "less accurate indoors", it is **no fix at all
+indoors**. `fused` here is a thin wrapper over GPS rather than the Play
+Services fusion, and `passive` only repeats what something else requested. A
+45-second request from a desk returns null; the platform gave up at about 30.
+
+`ACCESS_FINE_LOCATION` was already granted before any of this was built —
+reading the Wi-Fi SSID for the timelapse needs it. `ACCESS_COARSE_LOCATION`
+was *not* granted, which is a state Android 12 does not normally produce and
+which the manifest now asks for explicitly.
+
 ### Server side
 
 Superseded. The lifelog Worker exists — R2 ingest, Whisper transcription into
