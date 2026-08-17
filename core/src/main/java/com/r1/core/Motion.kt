@@ -196,9 +196,15 @@ object Motion {
      * wrist, not about the code. Whoever maps counts to actions can see what
      * the hand actually did; see the mapping in the app, and the `shake` events
      * in the metrics log for calibrating it.
+     *
+     * The second argument is the hardest peak in the run, m/s². Counts cannot
+     * separate a deliberate gesture from a jolt — a walk produced one run of
+     * exactly two peaks, which is what "shake it twice" produces — so the
+     * threshold has to be set from magnitudes, and magnitudes have to be
+     * recorded before they can be.
      */
     @Volatile
-    var onShake: ((Int) -> Unit)? = null
+    var onShake: ((Int, Float) -> Unit)? = null
 
     private var manager: SensorManager? = null
     private var gravityX = 0.0
@@ -212,6 +218,7 @@ object Motion {
 
     private var armed = true
     private var peaks = 0
+    private var peakMax = 0f
     private var lastPeakAt = 0L
 
     private val listener = object : SensorEventListener {
@@ -274,17 +281,22 @@ object Motion {
         } else if (!armed && linear < SHAKE_LOW) {
             armed = true
         }
+        // Tracked across the whole run rather than at the moment of crossing:
+        // the sample that trips the threshold is rarely the hardest one.
+        if (peaks > 0 && linear > peakMax) peakMax = linear
 
         // Reported once the hand has stopped, not on the way — otherwise a
         // three-shake fires the two-shake action first and lands somewhere
         // nobody asked for.
         if (peaks > 0 && now - lastPeakAt > SHAKE_SETTLE_MS) {
             val count = peaks
+            val hardest = peakMax
             peaks = 0
+            peakMax = 0f
             // A single peak is a knock, a set-down, or a pocket. Two is the
             // smallest thing a person can mean.
             if (count >= 2) {
-                runCatching { onShake?.invoke(count) }
+                runCatching { onShake?.invoke(count, hardest) }
                     .onFailure { Log.e(TAG, "shake handler failed", it) }
             }
         }

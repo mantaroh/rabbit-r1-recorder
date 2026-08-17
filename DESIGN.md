@@ -557,12 +557,12 @@ R2. Ingest and administration should not share a credential; they do.
   has to be re-enabled by hand, so the question feature stays dead until
   someone notices. The root shell on 127.0.0.1:1337 could rewrite it.
 - **TTS.** Answers are read, not spoken.
-- **Any proof that the position log works outdoors, or that the shake threshold
-  survives walking.** No GPS fix has ever been obtained, so the upload path, the
-  rows and the map are all written against data that does not yet exist; the
-  shake threshold has only been quiet on a desk. Both close with one walk, and
-  the procedure and the failure modes are written down in
-  [`BACKLOG.md`](BACKLOG.md#unverified-the-position-log-and-shake-while-walking).
+- **A shake threshold set from measurements.** 14 m/s² was reasoned about, not
+  measured, and a walk tripped it once in 55 minutes — which is why the gesture
+  now requires the screen to be on. That removes the symptom without answering
+  the question; peak magnitudes are being logged so the number can be set the
+  way the two-versus-three boundary was. See
+  [`BACKLOG.md`](BACKLOG.md#unverified-the-shake-threshold).
 - **A conversation mode**, designed and shelved rather than merely absent. The
   measurement half is built — `GET /v1/talk` reports how many minutes of each
   day contained speech — because a mode that declines to run on days you

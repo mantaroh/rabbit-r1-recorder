@@ -9,8 +9,11 @@ import com.r1.core.Motion
  *
  * The R1 has one wheel and one button, and both are spoken for — the wheel
  * moves a selection, the button belongs to the launcher. Shaking is the only
- * input left that needs no hand position and works with the screen dark, which
- * is why it is worth the false-positive risk at all.
+ * input left that needs no hand position, which is why it is worth a
+ * false-positive risk at all.
+ *
+ * Only while the screen is on; see the gate below and what a walk did to the
+ * version without it.
  *
  * Counts, not names. How many peaks a wrist produces when its owner "shakes it
  * twice" is a fact about the wrist, so the mapping is a range rather than an
@@ -44,25 +47,47 @@ object Gestures {
      * whole day. [Motion] must already be started.
      */
     fun install(context: Context, metrics: Metrics) {
-        Motion.onShake = { peaks ->
+        Motion.onShake = { peaks, hardest ->
             val placement = Motion.placement
-            val target = when (peaks) {
-                in CAMERA -> "camera"
-                in CHAT -> "chat"
+
+            // The screen has to be on.
+            //
+            // Fifty-five minutes of walking produced one run of exactly two
+            // peaks, in a pocket, with the posture reading UNKNOWN — and it
+            // opened the camera and swung the arm. Peak counts cannot separate
+            // that from a deliberate gesture, because "shake it twice" is also
+            // two peaks.
+            //
+            // What separates them is that this gesture only means anything when
+            // there is a screen to switch. Nobody shakes a device in a bag to
+            // change what it is showing. The cost is the case this was first
+            // justified by — reaching the camera without waking the device —
+            // and one false launch an hour is too much to pay for it.
+            val awake = runCatching {
+                context.getSystemService(android.os.PowerManager::class.java)?.isInteractive == true
+            }.getOrDefault(true)
+
+            val target = when {
+                !awake -> "asleep"
+                peaks in CAMERA -> "camera"
+                peaks in CHAT -> "chat"
                 else -> "none"
             }
 
             // Logged before acting, and logged whatever happens — a mapping
             // that has to be calibrated needs the rejected gestures too, and
             // the ones that fired while the device was face down in a bag are
-            // the interesting ones.
+            // the interesting ones. `peak_ms2` is what the next threshold will
+            // be set from: counts have already been shown not to separate.
             metrics.write(
                 "shake",
                 mapOf(
                     "peaks" to peaks,
+                    "peak_ms2" to hardest.toInt(),
                     "target" to target,
                     "posture" to placement.posture.name,
                     "moving" to placement.moving,
+                    "awake" to awake,
                 ),
             )
 

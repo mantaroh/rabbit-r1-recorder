@@ -16,66 +16,56 @@ one line per gap. The detail lives here.
 
 ---
 
-## Unverified: the position log, and shake while walking
+## Unverified: the shake threshold
 
-**Open since 2026-08-17.** Both were built, installed and exercised on a desk
-the same day. Neither can be finished indoors.
+**Narrowed 2026-08-17**, by a 55-minute walk. The position half of this entry
+is closed; see below for what it found.
 
-### What is actually unproven
+### What is still unproven
 
-**No GPS fix has ever been obtained.** Every part of the path has run except
-the part that needs sky: the request goes out on the fused provider, the
-provider answers, and the null comes back as
-`{"event":"position","outcome":"no_fix","provider":"fused"}`. That is the
-correct behaviour indoors — this device has no network location, see
-[FINDINGS](audioprobe/FINDINGS.md) — but it means the upload path, the D1 rows,
-the range checks and the map layer are all written against data that has never
-existed. Anything from a coordinate-order transposition to a wrong timestamp
-format would look exactly like today's logs.
+The gesture no longer fires with the screen off, which removes the failure the
+walk produced, but **the 14 m/s² threshold itself has still never been set from
+data.** It was picked by reasoning about walking and running, and the one real
+false positive was not measured — peak magnitude was not being recorded at the
+time.
 
-**The shake threshold has only been quiet on a desk.** 14 m/s² with no false
-detections in forty-seven minutes of a device being picked up, set down and
-turned over. Walking is where a shake threshold usually fails, and a false
-trigger here swings the camera arm.
-
-### The test
-
-Go outside for a while, carrying it normally, and come back. That is the whole
-procedure; there is nothing to set up, because both features run continuously.
-
-Note that uploads pause off Wi-Fi (`Unmetered only: ON`), so audio, photographs
-and positions all queue on the device and go up on return. A `/v1/positions`
-that is empty *during* the walk is not a fault.
-
-### What to read afterwards
+It is now. Every accepted run logs `peak_ms2` alongside `peaks`. Once a few
+weeks of ordinary use have gone by:
 
 ```bash
-adb shell "run-as com.r1.audioprobe grep -E 'position|shake|photo_network' files/probe.jsonl | tail -60"
+adb shell "run-as com.r1.audioprobe grep shake files/probe.jsonl"
 ```
 
-| Look for | Meaning |
+Deliberate gestures and accidents should separate on `peak_ms2` the way two
+shakes and three separated on `peaks`. If they do, the threshold moves to the
+gap between them and the screen-on gate can be reconsidered — being able to
+reach the camera without waking the device was the point of the gesture, and it
+was given up to stop one false launch an hour rather than because it was a bad
+idea.
+
+If they do not separate, the gate is the answer and this entry closes.
+
+### Closed: the position log
+
+Verified end to end on the same walk.
+
+| | |
 | --- | --- |
-| `"outcome":"fix"` with an `accuracy_m` | The thing that has never happened. Everything below depends on it |
-| `"event":"photo_network","home":false` | The away verdict switched, so the 5-minute cadences engaged |
-| `position_upload_ok` after returning | The queue drained; check `count` against the number of fixes |
-| `"event":"shake"` at all | A false trigger. `peaks` and `posture` say what the walk looked like to the detector |
+| Fixes | 10, one every 5 minutes exactly |
+| Accuracy | 294 m on the first, cold; **8–14 m** on every one after |
+| Home/away | Switched to `home:false` on leaving Wi-Fi, so the away cadence engaged |
+| Upload | One batch of 10 on return, `position_upload_ok` |
+| Coordinates | 31.574 → 31.593 → 31.576, a route out and back rather than a scatter |
 
-Then open the map tab for that date and see whether the track is a route or a
-scatter — which is the only check that catches a coordinate transposition,
-because the numbers are all plausible either way.
+The coordinate order is unambiguous in the data rather than merely plausible:
+longitude reads 130.55, which cannot be a latitude, so a transposition would
+have been rejected by the range check rather than drawn as a journey.
 
-### If it fails
-
-- **Fixes but no upload**: the batch POST or the rename hand-off. The fixes are
-  still on the device in `files/positions.jsonl`, so nothing is lost yet.
-- **Fixes in the wrong place**: latitude and longitude, in `Positions.record`
-  and in the map's `[p.lon, p.lat]`. Both orders are internally consistent, so
-  only the map shows it.
-- **Shake false positives**: raise `SHAKE_HIGH` from 14, and use the logged
-  `peaks` to check the two-versus-three boundary still separates afterwards.
-- **No fix even outdoors**: the provider choice in `Positions.provider()`, and
-  whether `FUSED_PROVIDER` on a device with no Play Services is really doing
-  anything that `GPS_PROVIDER` would not.
+Two things this measured that were not the point of the test: `speed_mps` and
+`bearing_deg` come back as zero from this provider even when moving, so neither
+is worth storing except as evidence they are useless; and the first fix after
+going outside costs about five minutes and 294 m of error, which is the price
+of having no network location to warm the receiver with.
 
 ---
 
