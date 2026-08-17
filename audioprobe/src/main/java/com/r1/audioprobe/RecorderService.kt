@@ -317,6 +317,13 @@ class RecorderService : Service() {
                 )
             }
         }
+
+        // Posture and shake come off one accelerometer listener. Started here
+        // rather than with capture because it costs nothing when nothing is
+        // recording and the gesture should work either way.
+        com.r1.core.Motion.start(this)
+        Gestures.install(this, metrics)
+
         createChannel()
     }
 
@@ -477,6 +484,7 @@ class RecorderService : Service() {
                 .unregisterNetworkCallback(networkCallback)
         }
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        com.r1.core.Motion.stop()
         metrics.write("stop", mapOf("frames" to frames, "reinits" to reinits))
         snapshot = "stopped"
         super.onDestroy()
