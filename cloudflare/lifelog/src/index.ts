@@ -24,6 +24,8 @@ interface Env {
   TRANSCRIBE_QUEUE: Queue<TranscribeMessage>;
   AI: Ai;
   INGEST_TOKEN: string;
+  /** The feed reader Worker; see the note on /v1/feeds below. */
+  READER: Fetcher;
   /** Spoken language to assume. "auto" lets Whisper guess. See LANGUAGE below. */
   TRANSCRIBE_LANGUAGE?: string;
 }
@@ -110,6 +112,15 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/talk") {
       return talkVolume(env, url);
     }
+    // The feed reader, which is a different Worker with a different database
+    // and no handle on this one's. It is unroutable from outside — no domain,
+    // no workers.dev — so this is its only door, and it inherits the perimeter
+    // that already guards everything above rather than needing its own.
+    if (url.pathname.startsWith("/v1/feeds/")) {
+      const inner = new URL(request.url);
+      inner.pathname = url.pathname.replace("/v1/feeds/", "/feeds/");
+      return env.READER.fetch(new Request(inner, request));
+    }
     if (request.method === "GET" && url.pathname.startsWith("/v1/map/")) {
       return serveMap(request, env, url);
     }
@@ -167,6 +178,14 @@ export default {
         context: (at, beforeSec) => contextData(env, at, beforeSec),
         search: (q, limit) => searchData(env, q, limit),
         stats: () => statsData(env),
+        // Forwarded to the reader Worker. The agent sees one MCP server; that
+        // the headlines live in a different database with no reach into the
+        // archive is this side's business, not the agent's.
+        feedsLatest: (limit, category) =>
+          reader(env, `/feeds/latest?limit=${limit}` +
+            (category ? `&category=${encodeURIComponent(category)}` : "")),
+        feedsSearch: (q, limit) =>
+          reader(env, `/feeds/search?q=${encodeURIComponent(q)}&limit=${limit}`),
       });
     }
 
@@ -228,6 +247,18 @@ function authorise(request: Request, env: Env): Response | null {
   if (request.headers.get("cf-access-jwt-assertion")) return null;
 
   return json({ error: "unauthorized" }, 401);
+}
+
+/**
+ * Calls the reader Worker over the service binding.
+ *
+ * The hostname is a formality — a service binding does not resolve DNS or
+ * leave the account — but a URL has to have one.
+ */
+async function reader(env: Env, path: string): Promise<unknown> {
+  const response = await env.READER.fetch(new Request(`https://reader.internal${path}`));
+  if (!response.ok) throw new Error(`reader returned ${response.status}`);
+  return response.json();
 }
 
 function timingSafeEqual(a: string, b: string): boolean {

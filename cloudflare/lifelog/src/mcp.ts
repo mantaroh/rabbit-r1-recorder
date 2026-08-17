@@ -14,6 +14,9 @@ export interface McpDeps {
   context(atIso: string, beforeSec: number): Promise<unknown>;
   search(query: string, limit: number): Promise<unknown>;
   stats(): Promise<unknown>;
+  /** The feed reader, which is a separate Worker; see /v1/feeds in index.ts. */
+  feedsLatest(limit: number, category: string | null): Promise<unknown>;
+  feedsSearch(query: string, limit: number): Promise<unknown>;
 }
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -52,6 +55,41 @@ const TOOLS = [
       properties: {
         query: { type: "string", description: "Search terms." },
         limit: { type: "number", description: "Max results. Default 20." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "feeds_latest",
+    description:
+      "The newest articles from the sites the user subscribes to, newest " +
+      "first. Use for 'what's new', 'any news about X today', or to catch up. " +
+      "Returns titles, links and which publication each came from. Ordered by " +
+      "when the crawler first saw an item rather than by the date the " +
+      "publisher claims, so it stays reliable when a feed's own dates are not.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Max items. Default 20." },
+        category: {
+          type: "string",
+          description:
+            "Restrict to one subscription folder, e.g. 'AI', 'Tech', " +
+            "'GeneralNews', 'Browser', 'OSS'. Omit for everything.",
+        },
+      },
+    },
+  },
+  {
+    name: "feeds_search",
+    description:
+      "Search article titles across every subscribed feed, past and present. " +
+      "Use to find whether something was covered, and by whom.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Words to look for in titles." },
+        limit: { type: "number", description: "Max results. Default 30." },
       },
       required: ["query"],
     },
@@ -148,6 +186,19 @@ async function callTool(name: string, args: any, deps: McpDeps): Promise<unknown
       );
     case "lifelog_stats":
       return deps.stats();
+    case "feeds_latest":
+      return deps.feedsLatest(
+        Number.isFinite(args.limit) ? Math.trunc(args.limit) : 20,
+        typeof args.category === "string" && args.category.trim() ? args.category : null,
+      );
+    case "feeds_search":
+      if (typeof args.query !== "string" || !args.query.trim()) {
+        throw new Error("query is required");
+      }
+      return deps.feedsSearch(
+        args.query,
+        Number.isFinite(args.limit) ? Math.trunc(args.limit) : 30,
+      );
     default:
       throw new Error(`unknown tool: ${name}`);
   }

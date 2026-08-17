@@ -83,6 +83,7 @@ class SignageActivity : Activity() {
                 lastFetch = now
                 LifelogSummary.refresh(settings)
                 HermesStatus.refresh(this@SignageActivity)
+                Headlines.refresh(settings)
             }
             // The screen only changes when the wheel is turned. A display that
             // rotates on its own is one you have to wait for when you want a
@@ -116,6 +117,7 @@ class SignageActivity : Activity() {
 
         LifelogSummary.refresh(settings)
         HermesStatus.refresh(this)
+        Headlines.refresh(settings)
         lastFetch = System.currentTimeMillis()
 
         // The side button is the way out, and it does not reach a focused

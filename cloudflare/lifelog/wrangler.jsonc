@@ -61,7 +61,16 @@
   },
 
   // Workers AI always runs against the real service, including in dev.
-  "ai": { "binding": "AI" }
+  "ai": { "binding": "AI" },
+
+  // The feed reader, which is a separate Worker with a separate database and
+  // no reach into this one's. Bound rather than routed so it needs no hostname
+  // of its own, no second Cloudflare Access application, and no extra
+  // credential on the device — /v1/feeds/* arrives here, past Access and past
+  // the bearer, and is handed straight over.
+  "services": [
+    { "binding": "READER", "service": "r1-reader" }
+  ]
 
   // No cron, and no R2 lifecycle rule on `audio/`. The recordings are the
   // point of the system; see the note above RETENTION in src/index.ts before

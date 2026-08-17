@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<opml version="1.0">
+    <head>
+        <title>mantaroh subscriptions in feedly Cloud</title>
+    </head>
+    <body>
+        <outline text="person-blog" title="person-blog">
+            <outline type="rss" text="Y.A.M の 雑記帳" title="Y.A.M の 雑記帳" xmlUrl="http://y-anz-m.blogspot.com/feeds/posts/default" htmlUrl="http://y-anz-m.blogspot.com/"/>
+        </outline>
+        <outline text="firefox" title="firefox">
+            <outline type="rss" text="Asa Dotzler's Blog" title="Asa Dotzler's Blog" xmlUrl="http://weblogs.mozillazine.org/asa/index.rdf" htmlUrl="https://asadotzler.com"/>
+            <outline type="rss" text="Planet Mozilla" title="Planet Mozilla" xmlUrl="http://planet.mozilla.org/rss20.xml" htmlUrl="https://planet.mozilla.org/"/>
+            <outline type="rss" text="Mozilla Hacks" title="Mozilla Hacks" xmlUrl="http://hacks.mozilla.org/feed/" htmlUrl="https://hacks.mozilla.org/"/>
+            <outline type="rss" text="mozilla-central Changelog" title="mozilla-central Changelog" xmlUrl="http://hg.mozilla.org/mozilla-central/atom-log" htmlUrl="https://hg.mozilla.org/mozilla-central/"/>
+            <outline type="rss" text="Firefox Nightly News" title="Firefox Nightly News" xmlUrl="https://blog.nightly.mozilla.org/feed/" htmlUrl="https://blog.nightly.mozilla.org"/>
+            <outline type="rss" text="Future Releases" title="Future Releases" xmlUrl="http://blog.mozilla.com/futurereleases/feed/" htmlUrl="https://blog.mozilla.org/futurereleases/"/>
+            <outline type="rss" text="The Mozilla Blog" title="The Mozilla Blog" xmlUrl="http://blog.mozilla.com/feed/" htmlUrl="https://blog.mozilla.org/en/"/>
+            <outline type="rss" text="Mozilla Gfx Team Blog" title="Mozilla Gfx Team Blog" xmlUrl="http://mozillagfx.wordpress.com/feed/" htmlUrl="https://mozillagfx.wordpress.com"/>
+        </outline>
+        <outline text="ネタ" title="ネタ">
+            <outline type="rss" text="Corobuzz" title="Corobuzz" xmlUrl="http://corobuzz.com/feed" htmlUrl="https://corobuzz.com"/>
+        </outline>
+        <outline text="AI" title="AI">
+            <outline type="rss" text="AICU Japan 株式会社" title="AICU Japan 株式会社" xmlUrl="https://www.aicu.jp/blog-feed.xml" htmlUrl="https://www.aicu.jp/blog"/>
+        </outline>
+        <outline text="Must Read" title="Must Read"/>
+        <outline text="ConnecedDevice" title="ConnecedDevice"/>
+        <outline text="android" title="android">
+            <outline type="rss" text="Google Online Security Blog" title="Google Online Security Blog" xmlUrl="http://googleonlinesecurity.blogspot.com/feeds/posts/default" htmlUrl="http://security.googleblog.com/"/>
+            <outline type="rss" text="Android Developers Blog" title="Android Developers Blog" xmlUrl="http://android-developers.blogspot.com/feeds/posts/default" htmlUrl="http://android-developers.googleblog.com/"/>
+            <outline type="rss" text="XDA" title="XDA" xmlUrl="http://www.xda-developers.com/feed/" htmlUrl="https://www.xda-developers.com"/>
+            <outline type="rss" text="Android Police - Android News, Apps..." title="Android Police - Android News, Apps..." xmlUrl="http://www.androidpolice.com/feed/" htmlUrl="https://www.androidpolice.com"/>
+        </outline>
+        <outline text="html5" title="html5">
+            <outline type="rss" text="SORACOM公式ブログ" title="SORACOM公式ブログ" xmlUrl="https://blog.soracom.jp/atom.xml" htmlUrl="https://blog.soracom.com/ja-jp/"/>
+            <outline type="rss" text="Publickey" title="Publickey" xmlUrl="http://www.publickey1.jp/atom.xml" htmlUrl="https://www.publickey1.jp/"/>
+            <outline type="rss" text="Chromium Blog" title="Chromium Blog" xmlUrl="http://blog.chromium.org/feeds/posts/default" htmlUrl="http://blog.chromium.org/"/>
+            <outline type="rss" text="JSer.info" title="JSer.info" xmlUrl="http://jser.info/rss" htmlUrl="https://jser.info/"/>
+            <outline type="rss" text="Amazon Web Services ブログ" title="Amazon Web Services ブログ" xmlUrl="http://feeds.feedburner.com/aws/jp-blog-news" htmlUrl="https://aws.amazon.com/jp/blogs/news/"/>
+        </outline>
+        <outline text="GeneralNews" title="GeneralNews">
+            <outline type="rss" text="はてなブックマーク - 人気エントリー - 総合" title="はてなブックマーク - 人気エントリー - 総合" xmlUrl="http://b.hatena.ne.jp/hotentry.rss" htmlUrl="https://b.hatena.ne.jp/hotentry/all"/>
+        </outline>
+        <outline text="Tech" title="Tech">
+            <outline type="rss" text="TechCrunch" title="TechCrunch" xmlUrl="http://feeds.feedburner.com/Techcrunch" htmlUrl="https://techcrunch.com/"/>
+            <outline type="rss" text="Engadget" title="Engadget" xmlUrl="http://www.engadget.com/rss-full.xml" htmlUrl="http://www.engadget.com"/>
+            <outline type="rss" text="gihyo.jp" title="gihyo.jp" xmlUrl="http://www.gihyo.co.jp/rss.php" htmlUrl="https://gihyo.jp"/>
+            <outline type="rss" text="マイナビニュース 企業IT" title="マイナビニュース 企業IT" xmlUrl="http://feeds.journal.mycom.co.jp/rss/mycom/enterprise" htmlUrl="https://news.mynavi.jp/top/techplus/enterprise/"/>
+            <outline type="rss" text="Standard C++" title="Standard C++" xmlUrl="http://isocpp.org/blog/rss" htmlUrl="http://isocpp.org/blog"/>
+            <outline type="rss" text="ReadWrite" title="ReadWrite" xmlUrl="http://www.readwriteweb.com/rss.xml" htmlUrl="https://readwrite.com/"/>
+            <outline type="rss" text="LWN.net" title="LWN.net" xmlUrl="http://lwn.net/headlines/newrss" htmlUrl="https://lwn.net"/>
+            <outline type="rss" text="Android Developers Blog" title="Android Developers Blog" xmlUrl="http://feeds.feedburner.com/blogspot/hsDu" htmlUrl="http://android-developers.googleblog.com/"/>
+            <outline type="rss" text="The Official Google Blog" title="The Official Google Blog" xmlUrl="http://googleblog.blogspot.com/atom.xml" htmlUrl="https://blog.google/"/>
+            <outline type="rss" text="Gizmodo" title="Gizmodo" xmlUrl="http://feeds.gawker.com/gizmodo/full" htmlUrl="https://gizmodo.com/"/>
+            <outline type="rss" text="GIGAZINE" title="GIGAZINE" xmlUrl="http://gigazine.net/index.php?/news/rss_2.0/" htmlUrl="https://gigazine.net/"/>
+            <outline type="rss" text="The Register" title="The Register" xmlUrl="http://www.theregister.co.uk/excerpts.rss" htmlUrl="https://www.theregister.com/"/>
+            <outline type="rss" text="ギズモード・ジャパン" title="ギズモード・ジャパン" xmlUrl="http://www.gizmodo.jp/index.xml" htmlUrl="https://www.gizmodo.jp"/>
+            <outline type="rss" text="ITmedia NEWS 最新記事一覧" title="ITmedia NEWS 最新記事一覧" xmlUrl="http://rss.rssad.jp/rss/itmnews/2.0/news_bursts.xml" htmlUrl="https://www.itmedia.co.jp/news/"/>
+            <outline type="rss" text="Latest from TechRadar" title="Latest from TechRadar" xmlUrl="http://www.techradar.com/rss" htmlUrl="https://www.techradar.com/feeds.xml"/>
+            <outline type="rss" text="Lifehacker" title="Lifehacker" xmlUrl="http://feeds.gawker.com/lifehacker/vip" htmlUrl="https://lifehacker.com/feed/rss"/>
+            <outline type="rss" text="O'Reilly Japan - New &amp; Upcomming" title="O'Reilly Japan - New &amp; Upcomming" xmlUrl="http://www.oreilly.co.jp/catalog/soon.xml" htmlUrl="http://www.oreilly.co.jp/catalog/soon.html"/>
+            <outline type="rss" text="Crisp's Blog" title="Crisp's Blog" xmlUrl="http://blog.crisp.se/feed" htmlUrl="https://blog.crisp.se"/>
+            <outline type="rss" text="Digital Trends" title="Digital Trends" xmlUrl="http://www.digitaltrends.com/feed/?key=f00edf6a58d2a8740e624dda919cab37" htmlUrl="https://www.digitaltrends.com/"/>
+            <outline type="rss" text="C++ Team Blog" title="C++ Team Blog" xmlUrl="http://blogs.msdn.com/vcblog/rss.xml" htmlUrl="https://devblogs.microsoft.com/cppblog/"/>
+            <outline type="rss" text="GSMArena.com - Latest articles" title="GSMArena.com - Latest articles" xmlUrl="http://www.gsmarena.com/rss-news-reviews.php3" htmlUrl="https://www.gsmarena.com/"/>
+            <outline type="rss" text="Hacker News" title="Hacker News" xmlUrl="http://news.ycombinator.com/rss" htmlUrl="https://news.ycombinator.com/"/>
+            <outline type="rss" text="Wired" title="Wired" xmlUrl="http://feeds.wired.com/wired/index" htmlUrl="https://www.wired.com"/>
+            <outline type="rss" text="Mashable" title="Mashable" xmlUrl="http://feeds.mashable.com/Mashable" htmlUrl="https://mashable.com"/>
+            <outline type="rss" text="The Verge" title="The Verge" xmlUrl="http://www.theverge.com/rss/full.xml" htmlUrl="https://www.theverge.com"/>
+            <outline type="rss" text="ITmedia PC・AV・スマートフォン 最新記事一覧" title="ITmedia PC・AV・スマートフォン 最新記事一覧" xmlUrl="http://rss.itmedia.co.jp/rss/1.0/plusd.xml" htmlUrl="https://www.itmedia.co.jp/"/>
+        </outline>
+        <outline text="Monetize" title="Monetize">
+            <outline type="rss" text="VentureBeat" title="VentureBeat" xmlUrl="http://venturebeat.com/feed/" htmlUrl="https://venturebeat.com/feed/"/>
+            <outline type="rss" text="Guy Kawasaki" title="Guy Kawasaki" xmlUrl="http://guykawasaki.com/feed/" htmlUrl="https://guykawasaki.com/"/>
+        </outline>
+        <outline text="OSS" title="OSS"/>
+        <outline text="Browser" title="Browser">
+            <outline type="rss" text="W3C - News" title="W3C - News" xmlUrl="http://www.w3.org/2000/08/w3c-synd/home.rss" htmlUrl="https://www.w3.org/news/"/>
+            <outline type="rss" text="Blog – WebKit" title="Blog – WebKit" xmlUrl="http://webkit.org/blog/feed/" htmlUrl="https://webkit.org"/>
+            <outline type="rss" text="Planet WebKit" title="Planet WebKit" xmlUrl="http://planet.webkit.org/atom.xml" htmlUrl="https://planet.webkit.org/"/>
+            <outline type="rss" text="CSS WG Blog" title="CSS WG Blog" xmlUrl="http://www.w3.org/blog/CSS?tempskin=_atom" htmlUrl="https://www.w3.org/blog/CSS"/>
+            <outline type="rss" text="Windows Blog" title="Windows Blog" xmlUrl="http://blogs.windows.com/feed/" htmlUrl="https://blogs.windows.com/"/>
+            <outline type="rss" text="W3C - Blog" title="W3C - Blog" xmlUrl="http://www.w3.org/QA/atom.xml" htmlUrl="https://www.w3.org/blog/"/>
+            <outline type="rss" text="Google Chrome Releases" title="Google Chrome Releases" xmlUrl="http://googlechromereleases.blogspot.com/feeds/posts/default?alt=rss" htmlUrl="http://chromereleases.googleblog.com/"/>
+            <outline type="rss" text="Google Chrome" title="Google Chrome" xmlUrl="http://chrome.blogspot.com/atom.xml" htmlUrl="https://blog.google/products-and-platforms/products/chrome/"/>
+        </outline>
+    </body>
+</opml>

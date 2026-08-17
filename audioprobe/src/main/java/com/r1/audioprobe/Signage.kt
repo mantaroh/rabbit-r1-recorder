@@ -79,6 +79,7 @@ object Signage {
             ClockScreen(),
             TodayScreen(),
             RecentSpeechScreen(),
+            HeadlinesScreen(),
             AgentUsageScreen(),
             TasksScreen(),
         )
@@ -179,6 +180,90 @@ private class RecentSpeechScreen : SignageScreen {
     override fun refresh(data: LifelogSummary.Snapshot?) {
         stamp.text = data?.latestAt ?: "直近の発話"
         body.text = data?.latestText?.takeIf { it.isNotBlank() } ?: "—"
+    }
+}
+
+/**
+ * What has appeared in the feeds, newest first.
+ *
+ * Titles and sources only. There is no room on a 240 dp panel for a summary
+ * that would be truncated into nonsense, and this screen is glanced at from
+ * across a desk rather than read — the question it answers is "is there
+ * anything", and the answer to "what exactly" is on a real screen.
+ *
+ * Five, because that is what fits at a size legible from arm's length. The
+ * fetch asks for twelve so the count can change without another round trip.
+ */
+private class HeadlinesScreen : SignageScreen {
+    override val id = "headlines"
+    override val title = "新着"
+
+    private lateinit var heading: TextView
+    private lateinit var body: TextView
+
+    private companion object {
+        /**
+         * Four, and the titles are cut to fit two lines each.
+         *
+         * Five was tried first and the fifth fell off the bottom of the panel
+         * with its source line clipped in half, because Japanese headlines wrap
+         * to three lines at this size far more often than the sample used to
+         * pick the number did.
+         */
+        const val SHOWN = 4
+
+        /** About two lines of Japanese at 12sp on a 240 dp panel. */
+        const val TITLE_CHARS = 26
+    }
+
+    override fun createView(context: Context): View {
+        val column = SignageStyle.column(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        heading = SignageStyle.text(context, 13f, SignageStyle.ORANGE, bold = true).apply {
+            text = "新着"
+        }
+        body = SignageStyle.text(context, 12f).apply {
+            setLineSpacing(5f, 1f)
+            // Belt as well as braces. The character cap keeps the usual case
+            // on the panel; this keeps an unusual one from being clipped
+            // mid-glyph if it gets past it.
+            maxLines = 17
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        column.addView(heading, SignageStyle.wide())
+        column.addView(body, SignageStyle.wide())
+        return column
+    }
+
+    /**
+     * [data] is the lifelog snapshot and has nothing to do with feeds; the
+     * headlines arrive on their own schedule from [Headlines]. The parameter is
+     * the interface's, and ignoring it is the honest thing to do rather than
+     * inventing a use.
+     */
+    override fun refresh(data: LifelogSummary.Snapshot?) {
+        val items = Headlines.items
+        if (items.isEmpty()) {
+            // Three states, not two. "Nothing new" and "cannot reach the
+            // reader" look identical on a screen that only prints a dash, and
+            // one of them is a fault.
+            body.text = when (Headlines.reachable) {
+                null -> "読み込み中…"
+                false -> "取得できません"
+                true -> "新着なし"
+            }
+            return
+        }
+
+        heading.text = "新着 ${items.size}"
+        body.text = items.take(SHOWN).joinToString("\n\n") { item ->
+            val source = item.source.take(14)
+            val title =
+                if (item.title.length > TITLE_CHARS) item.title.take(TITLE_CHARS - 1) + "…"
+                else item.title
+            if (source.isEmpty()) title else "$title\n  $source"
+        }
     }
 }
 

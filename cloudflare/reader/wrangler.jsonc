@@ -1,0 +1,36 @@
+{
+  "$schema": "../lifelog/node_modules/wrangler/config-schema.json",
+  "name": "r1-reader",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  "observability": { "enabled": true },
+
+  // No route and no custom domain. This Worker is reached only through the
+  // lifelog Worker's service binding and by its own cron, which means there is
+  // no hostname to put behind Cloudflare Access and no second credential for
+  // the device to carry.
+  "workers_dev": false,
+
+  // Deliberately the only binding. This Worker has no R2 bucket and no handle
+  // on the lifelog database, so a bug in a feed parser cannot reach the audio
+  // archive however badly it goes wrong. That separation is the reason this is
+  // a second Worker rather than another route on the first one — the lifelog
+  // Worker's own cron once deleted 327 recordings, and the cheapest guarantee
+  // that it cannot happen again is to not hand the binding over.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "r1-reader",
+      "database_id": "5f717644-9965-4b65-b05c-ec6b6de378ea",
+      "migrations_dir": "./migrations"
+    }
+  ],
+
+  // Hourly. Feeds are not a real-time medium, most of these publish a few
+  // times a day, and every fetch is conditional — a run where nothing has
+  // changed is 57 requests that all return 304.
+  "triggers": {
+    "crons": ["17 * * * *"]
+  }
+}
