@@ -65,12 +65,14 @@ object Motion {
         /**
          * Degrees from vertical in the screen's own plane; positive leans back.
          *
-         * Recorded rather than used. The dock on this device measures about
-         * 3.6 degrees — (0.06, 9.58, 0.61) — and standing the device on a desk
-         * measures about zero, which is a real difference and far too small a
-         * one to separate a dock from a desk that is not quite level. It is
-         * logged so that a few weeks of readings can say whether the two ever
-         * actually separate, instead of a threshold being invented now.
+         * Recorded rather than used. Two resting positions have been measured
+         * so far — (0.08, 9.60, -0.07), about zero, and (0.06, 9.58, 0.61),
+         * about 3.6 degrees back — which is enough to show the axis works and
+         * nowhere near enough to name a threshold. The stand this device is
+         * meant to sit in is still being printed and has never been measured.
+         * Logged so that when it exists, and after a few weeks of ordinary
+         * days, the readings can say whether a stand and a desk separate at
+         * all — rather than a number being invented now and defended later.
          */
         val tiltDeg: Int,
     )

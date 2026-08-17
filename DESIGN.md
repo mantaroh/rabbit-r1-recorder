@@ -200,15 +200,22 @@ on power, the rear camera is looking at a wall that will be the same wall in
 fifteen minutes. Skipping it halves the cycle and saves an arm swing on a
 device whose arm can be heard.
 
-That condition is not really "in the dock", and is not called that in the code.
-The dock on this device leans back about 3.6° — measured at (0.06, 9.58, 0.61)
-against (0.08, 9.60, −0.07) standing upright — which is a real difference and a
-useless one, since it does not survive a desk that is not quite level. Charging
-says "plugged in", not "seated". What every member of the set does share is the
-only part that matters: the device is not going anywhere and the view behind it
-is fixed. The tilt is recorded on every placement change and every cycle
-anyway, so a few weeks of readings can say whether a dock and a desk ever
-actually separate, rather than a threshold being invented now.
+That condition is not really "in the stand", and is not called that in the code.
+**The stand is still being 3D-printed and has never been measured.** Two resting
+positions have: (0.08, 9.60, −0.07), effectively vertical, and (0.06, 9.58,
+0.61), about 3.6° back. That is enough to show the axis reads what it should
+and nowhere near enough to name a threshold — a few degrees does not survive a
+desk that is not quite level, and charging says "plugged in", not "seated".
+
+What every member of the set does share is the only part the rule depends on:
+the device is not going anywhere and the view behind it is fixed. That holds for
+a stand, for a cable on a desk, and for anything else that leaves it upright and
+still, which is why the rule does not need to tell them apart.
+
+The tilt is recorded on every placement change and every cycle regardless, so
+once the stand exists and a few weeks of ordinary days have gone by, the
+readings can say whether a stand and a desk separate at all — rather than a
+number being invented now and defended afterwards.
 
 The front frame is never the one dropped. It holds the room and the people, and
 it is where the darkness measurement comes from — skipping it would quietly
