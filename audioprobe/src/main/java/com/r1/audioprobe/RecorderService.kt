@@ -161,15 +161,6 @@ class RecorderService : Service() {
          */
         @Volatile var audioTap: ((ShortArray, Int) -> Unit)? = null
 
-        /**
-         * Whether the VAD currently hears speech.
-         *
-         * Exposed for the interpreter, which pays by the audio-minute and must
-         * not hand a silent room to a speech model — this system already knows
-         * what that produces, having watched Whisper invent an entire 3 a.m.
-         * hour out of one.
-         */
-        @Volatile var speaking = false; private set
     }
 
     private lateinit var metrics: Metrics
@@ -678,7 +669,6 @@ class RecorderService : Service() {
                     .onFailure { Log.w(TAG, "audio tap failed", it) }
             }
             val ended = vad.accept(buffer, read, now)
-            speaking = vad.isSpeaking
             query.tick(now, vad.isSpeaking, ended, vad.utteranceStart)
 
             // Returns immediately; the cycle itself runs on its own thread.

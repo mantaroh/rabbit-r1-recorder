@@ -76,17 +76,6 @@ class Interpreter(
         /** How often the speaker is asked whether it has finished. */
         private const val GATE_POLL_MS = 120L
 
-        /**
-         * How long audio keeps flowing after the VAD stops hearing speech.
-         *
-         * Long enough not to clip the end of a sentence, which a detector
-         * built for one-second decisions will always call early, and short
-         * enough that a pause between sentences is not billed.
-         */
-        private const val HANGOVER_MS = 700L
-
-        /** About 400 ms of pre-roll at the wire rate. */
-        private const val PREROLL_SAMPLES = 9_600
     }
 
     private val http = OkHttpClient.Builder()
@@ -122,14 +111,6 @@ class Interpreter(
     private val pending = ShortArray(SEND_SAMPLES)
     private var pendingCount = 0
 
-    /** Speech heard recently enough to keep sending; see [feed]. */
-    @Volatile private var speechUntil = 0L
-
-    /** The moments before the detector noticed, kept so they are not lost. */
-    private val preroll = ShortArray(PREROLL_SAMPLES)
-    private var prerollAt = 0
-    private var prerollFill = 0
-
     /** Restored on stop; see claimVolume. */
     private var previousVolume: Int? = null
 
@@ -160,9 +141,6 @@ class Interpreter(
         speakingUntil = 0L
         framesWritten = 0L
         drainedAt = 0L
-        speechUntil = 0L
-        prerollAt = 0
-        prerollFill = 0
         runCatching { track?.pause(); track?.flush(); track?.release() }
         track = null
         releaseVolume(context)
@@ -290,57 +268,35 @@ class Interpreter(
      */
     private fun feed(buffer: ShortArray, count: Int) {
         if (!running.get()) return
-        // Muted while the device is talking. This is the half-duplex rule, and
-        // without it the translator hears its own voice and translates that.
-        if (System.currentTimeMillis() < speakingUntil) return
 
-        val now = System.currentTimeMillis()
-        if (RecorderService.speaking) speechUntil = now + HANGOVER_MS
-        // Silence is not sent.
+        // The room goes up continuously, and the only thing ever substituted
+        // for it is the device muting itself.
         //
-        // Handing a quiet room to a speech model is how this system got an
-        // invented 3 a.m. hour out of Whisper, and the translator does the same
-        // thing more expensively: it answers, the answer plays, and the state
-        // flips between listening and speaking with nobody in the room. The
-        // device already measures speech every frame for the archive's own
-        // gate, so the measurement is free and the policy is the same one.
-        val wanted = now < speechUntil
-
-        // The stream is never cut, only emptied.
+        // A voice-activity gate lived here for a few hours, on the reasoning
+        // that a speech model should not be handed a quiet room. It bought
+        // nothing and cost plenty. This model is billed by the minute of audio
+        // whether that audio is speech or not, so there was no saving; it has
+        // its own turn detection and far-field noise reduction, so there was no
+        // help; and it finds the end of a sentence by hearing the pause, so
+        // removing the pause is what made every translation wait for the next
+        // sound. What the gate could do was replace a soft first syllable or a
+        // quiet talker with zeroes on the word of a detector tuned for
+        // something else entirely.
         //
-        // This endpoint accepts three events — session.update, the audio
-        // append, and session.close — and no commit: it decides where a turn
-        // ends by hearing the pause, the way a person does. Gating the upstream
-        // on the local VAD took that pause away, so the model held each
-        // translation until the next burst of audio arrived and pushed it out,
-        // which is exactly the "only speaks when the next sound comes in" that
-        // was reported. Two guesses at a commit event were refused, and the
-        // second refusal listed what the session actually takes.
-        //
-        // So silence is sent as silence. The server keeps its clock and can
-        // find the end of a sentence; the model is still never handed a room
-        // full of ambient noise to invent speech out of. Streaming throughout
-        // costs no more than streaming in bursts, because this model is billed
-        // by the minute of audio either way.
+        // The half-duplex mute stays, because it answers a different question:
+        // both people have to hear the interpretation, so it comes out of the
+        // speaker, so the microphone hears it, so a translator with its input
+        // open translates itself. Zeroes rather than nothing during that
+        // window, so the stream still never stops.
+        val muted = System.currentTimeMillis() < speakingUntil
 
         var index = 0
         while (index + 3 < count) {
-            val mono = (buffer[index] + buffer[index + 1] + buffer[index + 2] + buffer[index + 3]) / 4
+            val mono =
+                (buffer[index] + buffer[index + 1] + buffer[index + 2] + buffer[index + 3]) / 4
             index += 4
 
-            if (!wanted) {
-                // Kept in a ring as well as sent as silence. A voice-activity
-                // detector reports an onset after it has happened, so the
-                // syllable that triggered it is already past — the same reason
-                // the query path captures from before the button was pressed.
-                preroll[prerollAt] = mono.toShort()
-                prerollAt = (prerollAt + 1) % preroll.size
-                if (prerollFill < preroll.size) prerollFill += 1
-            } else if (prerollFill > 0) {
-                flushPreroll()
-            }
-
-            pending[pendingCount++] = if (wanted) mono.toShort() else 0
+            pending[pendingCount++] = if (muted) 0 else mono.toShort()
             if (pendingCount == SEND_SAMPLES) {
                 val payload = ShortArray(SEND_SAMPLES)
                 System.arraycopy(pending, 0, payload, 0, SEND_SAMPLES)
@@ -349,15 +305,6 @@ class Interpreter(
                 worker.execute { send(payload) }
             }
         }
-    }
-
-    private fun flushPreroll() {
-        val ordered = ShortArray(prerollFill)
-        val start = (prerollAt - prerollFill + preroll.size) % preroll.size
-        for (i in 0 until prerollFill) ordered[i] = preroll[(start + i) % preroll.size]
-        prerollFill = 0
-        prerollAt = 0
-        worker.execute { send(ordered) }
     }
 
     private fun send(samples: ShortArray) {
