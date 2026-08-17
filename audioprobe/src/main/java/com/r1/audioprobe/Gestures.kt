@@ -14,16 +14,26 @@ import com.r1.core.Motion
  *
  * Counts, not names. How many peaks a wrist produces when its owner "shakes it
  * twice" is a fact about the wrist, so the mapping is a range rather than an
- * equality and every gesture is logged with what it actually measured. Set
- * these from the `shake` events in the metrics log, not from intuition.
+ * equality and every gesture is logged with what it actually measured.
+ *
+ * These ranges are measured, from ten deliberate gestures on 2026-08-17:
+ *
+ *   "twice"        2, 2, 2, 2, 2
+ *   "three times"  3, 4, 4, 5, 4
+ *
+ * Two shakes produced exactly two peaks every single time and three shakes
+ * never produced fewer than three, so the boundary sits in the one place the
+ * data leaves for it. Note that the counts are not the shakes: three shakes of
+ * the wrist reverse direction four times, not three. Guessing a linear mapping
+ * is what put the first of those gestures on the wrong side.
  */
 object Gestures {
 
-    /** Two-ish peaks: the camera. */
-    private val CAMERA = 2..3
+    /** Exactly two peaks: the camera. */
+    private val CAMERA = 2..2
 
-    /** More than that: the chat. */
-    private val CHAT = 4..Int.MAX_VALUE
+    /** Three or more: the chat. */
+    private val CHAT = 3..Int.MAX_VALUE
 
     /** The standalone R1 Camera, which is a separate app on this device. */
     private const val CAMERA_PACKAGE = "com.r1.camerawrapper"
