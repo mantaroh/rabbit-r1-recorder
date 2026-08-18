@@ -47,7 +47,7 @@ object Gestures {
      * whole day. [Motion] must already be started.
      */
     fun install(context: Context, metrics: Metrics) {
-        Motion.onShake = { peaks, hardest ->
+        Motion.onShake = { peaks, hardest, span ->
             val placement = Motion.placement
 
             // The screen has to be on.
@@ -84,6 +84,7 @@ object Gestures {
                 mapOf(
                     "peaks" to peaks,
                     "peak_ms2" to hardest.toInt(),
+                    "span_ms" to span,
                     "target" to target,
                     "posture" to placement.posture.name,
                     "moving" to placement.moving,

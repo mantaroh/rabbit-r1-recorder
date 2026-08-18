@@ -35,56 +35,46 @@ drill caught one isolate refusing an upload while another still served a read.
 
 ---
 
-## Unverified: the shake threshold
+## Unverified: whether a deliberate shake clears 22 m/s²
 
-**Narrowed 2026-08-17**, by a 55-minute walk. The position half of this entry
-is closed; see below for what it found.
+**Reopened 2026-08-18** by three false camera launches in ninety seconds while
+the device was being carried.
 
-### What is still unproven
+### What the accidents measured
 
-The gesture no longer fires with the screen off, which removes the failure the
-walk produced, but **the 14 m/s² threshold itself has still never been set from
-data.** It was picked by reasoning about walking and running, and the one real
-false positive was not measured — peak magnitude was not being recorded at the
-time.
+The magnitude logging added the day before did its job:
 
-It is now. Every accepted run logs `peak_ms2` alongside `peaks`. Once a few
-weeks of ordinary use have gone by:
+| time | peaks | peak m/s² | fired |
+| --- | --- | --- | --- |
+| 19:35:51 | 2 | 17 | camera |
+| 19:36:04 | 2 | 14 | camera |
+| 19:36:33 | 2 | 17 | camera |
+| 19:37:13 | 2 | 18 | blocked, screen off |
+
+All two-peak runs, all just over the guessed threshold of 14, and three of them
+with the screen on — so the screen-on gate added the day before could not help.
+Peak count cannot separate these from a deliberate double shake, because a
+deliberate double shake is also two peaks.
+
+### What is unproven
+
+The threshold is now 22, which clears the whole observed accident cluster with
+four to spare. **Nobody has measured a deliberate gesture's magnitude.** They
+were not being recorded when the two-versus-three boundary was calibrated, so
+22 might be under a real shake, or over it.
+
+The test is the same one that worked before: shake it twice, then three times,
+a few of each, then
 
 ```bash
 adb shell "run-as com.r1.audioprobe grep shake files/probe.jsonl"
 ```
 
-Deliberate gestures and accidents should separate on `peak_ms2` the way two
-shakes and three separated on `peaks`. If they do, the threshold moves to the
-gap between them and the screen-on gate can be reconsidered — being able to
-reach the camera without waking the device was the point of the gesture, and it
-was given up to stop one false launch an hour rather than because it was a bad
-idea.
-
-If they do not separate, the gate is the answer and this entry closes.
-
-### Closed: the position log
-
-Verified end to end on the same walk.
-
-| | |
-| --- | --- |
-| Fixes | 10, one every 5 minutes exactly |
-| Accuracy | 294 m on the first, cold; **8–14 m** on every one after |
-| Home/away | Switched to `home:false` on leaving Wi-Fi, so the away cadence engaged |
-| Upload | One batch of 10 on return, `position_upload_ok` |
-| Coordinates | 31.574 → 31.593 → 31.576, a route out and back rather than a scatter |
-
-The coordinate order is unambiguous in the data rather than merely plausible:
-longitude reads 130.55, which cannot be a latitude, so a transposition would
-have been rejected by the range check rather than drawn as a journey.
-
-Two things this measured that were not the point of the test: `speed_mps` and
-`bearing_deg` come back as zero from this provider even when moving, so neither
-is worth storing except as evidence they are useless; and the first fix after
-going outside costs about five minutes and 294 m of error, which is the price
-of having no network location to warm the receiver with.
+If deliberate gestures come back at 25 and above, 22 is right and this closes.
+If they land near 18, the gesture cannot be told from a stride by strength, and
+the fallback is `span_ms` — now logged alongside — because a deliberate shake
+is a burst of a few hundred milliseconds while a carried device produces pairs
+spread across a stride.
 
 ---
 

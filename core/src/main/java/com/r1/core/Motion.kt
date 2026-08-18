@@ -109,13 +109,24 @@ object Motion {
      * fallen back below [SHAKE_LOW], so one hard jolt cannot ring up a count on
      * its own decay.
      *
-     * 14 is provisional. Walking peaks around 3-6 m/s^2 and running can reach
-     * low double figures, while a deliberate shake reaches 20-30 — but this
-     * device spends its day being carried, and a false trigger swings the
-     * camera arm. Every accepted run is logged with its peak count so the
-     * number can be set from real gestures rather than from this paragraph.
+     * 22, and this one is measured rather than reasoned about.
+     *
+     * 14 was a guess about walking and running, and a carried device tripped it
+     * three times in ninety seconds on 2026-08-18 — opening the camera each
+     * time, with the screen on, so the screen-on gate could not help. The peak
+     * magnitudes of those accidents were 17, 14, 17 and 18 m/s^2: sitting just
+     * over the old line, which is exactly what a threshold set by guessing
+     * looks like when it is slightly too low.
+     *
+     * Peak counts cannot separate them — every one of those was two peaks, and
+     * so is a deliberate double shake. Magnitude can, and 22 clears the whole
+     * observed accident cluster with four to spare. What it has not yet been
+     * checked against is a deliberate gesture, because magnitudes were not
+     * being recorded when the count boundary was calibrated. If a real shake
+     * turns out to land below this, the number comes down and the tempo below
+     * becomes the discriminator instead.
      */
-    private const val SHAKE_HIGH = 14.0f
+    private const val SHAKE_HIGH = 22.0f
     private const val SHAKE_LOW = 4.0f
 
     /**
@@ -204,7 +215,7 @@ object Motion {
      * recorded before they can be.
      */
     @Volatile
-    var onShake: ((Int, Float) -> Unit)? = null
+    var onShake: ((Int, Float, Long) -> Unit)? = null
 
     private var manager: SensorManager? = null
     private var gravityX = 0.0
@@ -219,6 +230,7 @@ object Motion {
     private var armed = true
     private var peaks = 0
     private var peakMax = 0f
+    private var firstPeakAt = 0L
     private var lastPeakAt = 0L
 
     private val listener = object : SensorEventListener {
@@ -275,6 +287,7 @@ object Motion {
 
     private fun detectShake(linear: Float, now: Long) {
         if (armed && linear > SHAKE_HIGH) {
+            if (peaks == 0) firstPeakAt = now
             peaks += 1
             lastPeakAt = now
             armed = false
@@ -291,12 +304,18 @@ object Motion {
         if (peaks > 0 && now - lastPeakAt > SHAKE_SETTLE_MS) {
             val count = peaks
             val hardest = peakMax
+            // How fast the run was, not just how hard. A deliberate shake is a
+            // burst of a few hundred milliseconds; a carried device produces
+            // pairs of peaks spread over a stride. Recorded now so the next
+            // calibration has both axes to separate on — the count boundary
+            // was set without either.
+            val span = lastPeakAt - firstPeakAt
             peaks = 0
             peakMax = 0f
             // A single peak is a knock, a set-down, or a pocket. Two is the
             // smallest thing a person can mean.
             if (count >= 2) {
-                runCatching { onShake?.invoke(count, hardest) }
+                runCatching { onShake?.invoke(count, hardest, span) }
                     .onFailure { Log.e(TAG, "shake handler failed", it) }
             }
         }
