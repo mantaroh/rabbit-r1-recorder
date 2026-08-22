@@ -61,6 +61,23 @@ class Speaker(private val context: Context) {
     private var track: AudioTrack? = null
     private var previousVolume: Int? = null
 
+    /**
+     * Wall-clock instant at which everything queued so far will have finished
+     * playing, or 0 when nothing is queued.
+     *
+     * Updated as audio is handed in rather than by watching the play head: the
+     * caller needs to know the speaker is *about* to be busy before the first
+     * sample reaches it, and the play head is behind by whatever is in the
+     * buffer. It accumulates duration, so a burst of deltas arriving faster
+     * than real time — which is how these models send — still reports the
+     * instant the last of them will be audible.
+     */
+    @Volatile var speakingUntilMs = 0L; private set
+
+    /** Whether the room is currently hearing this device, plus a tail. */
+    fun speaking(tailMs: Long = 0): Boolean =
+        System.currentTimeMillis() < speakingUntilMs + tailMs
+
     fun start() {
         claimVolume()
         val minBuffer = AudioTrack.getMinBufferSize(
@@ -103,12 +120,20 @@ class Speaker(private val context: Context) {
      * message behind it, including the transcript for the audio being played.
      */
     fun play(pcm: ByteArray) {
+        // Booked before the write is dispatched, not inside it: whoever is
+        // deciding whether the microphone is hearing this device needs the
+        // answer to be yes from the moment the audio exists.
+        val durationMs = pcm.size.toLong() * 1000 / (2 * Realtime.WIRE_RATE)
+        val now = System.currentTimeMillis()
+        speakingUntilMs = maxOf(now, speakingUntilMs) + durationMs
+
         player.execute {
             runCatching { track?.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) }
         }
     }
 
     fun stop() {
+        speakingUntilMs = 0
         runCatching { track?.pause(); track?.flush(); track?.release() }
         track = null
         releaseVolume()
@@ -157,17 +182,43 @@ class Downmix(private val onChunk: (ShortArray) -> Unit) {
     fun feed(buffer: ShortArray, count: Int) {
         var index = 0
         while (index + 3 < count) {
-            pending[pendingCount++] =
+            emit(
                 ((buffer[index] + buffer[index + 1] + buffer[index + 2] + buffer[index + 3]) / 4)
-                    .toShort()
+                    .toShort(),
+            )
             index += 4
+        }
+    }
 
-            if (pendingCount == Realtime.SEND_SAMPLES) {
-                val payload = ShortArray(Realtime.SEND_SAMPLES)
-                System.arraycopy(pending, 0, payload, 0, Realtime.SEND_SAMPLES)
-                pendingCount = 0
-                onChunk(payload)
-            }
+    /**
+     * The same length of stream, with nothing in it.
+     *
+     * For the half-duplex case: while the speaker is talking, the microphone is
+     * hearing this device, and the room must not be sent. Sending silence
+     * rather than sending nothing keeps the stream continuous, so the far side
+     * measures the pause before a person answers as the pause it actually was.
+     */
+    fun feedSilence(count: Int) {
+        var index = 0
+        while (index + 3 < count) {
+            emit(0)
+            index += 4
+        }
+    }
+
+    /** Drops the part-filled chunk, for a caller that is about to change what
+     * it is sending and does not want the two spliced together. */
+    fun reset() {
+        pendingCount = 0
+    }
+
+    private fun emit(sample: Short) {
+        pending[pendingCount++] = sample
+        if (pendingCount == Realtime.SEND_SAMPLES) {
+            val payload = ShortArray(Realtime.SEND_SAMPLES)
+            System.arraycopy(pending, 0, payload, 0, Realtime.SEND_SAMPLES)
+            pendingCount = 0
+            onChunk(payload)
         }
     }
 }

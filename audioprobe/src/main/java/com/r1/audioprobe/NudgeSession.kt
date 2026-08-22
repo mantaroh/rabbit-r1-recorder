@@ -69,6 +69,23 @@ class NudgeSession(
          * the event itself cuts the last word off.
          */
         const val DRAIN_MS = 2_000L
+
+        /**
+         * How long after the speaker falls silent the microphone stays shut.
+         *
+         * The room is not sent while this device is talking, because the
+         * microphone hears the speaker: measured on 2026-08-22, the first
+         * check-in ever made had `speech_started` fire one second after it
+         * began speaking, transcribed its own question as the reply, answered
+         * itself, and hung up. The archive recorded one voice asking the same
+         * thing twice and no human at all.
+         *
+         * The tail covers the estimate being slightly short and the room's own
+         * reverberation. It is the reason a person cannot interrupt — which was
+         * the stated trade when this was designed, and it costs less in a
+         * two-turn check-in than in a conversation.
+         */
+        const val ECHO_TAIL_MS = 600L
     }
 
     private val http = Realtime.http()
@@ -85,6 +102,16 @@ class NudgeSession(
 
     private val downmix = Downmix { chunk -> worker.execute { send(chunk) } }
     private val seen = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** Whether the microphone is currently being held shut; see [feed]. */
+    @Volatile private var muted = false
+
+    /**
+     * A rolling window of what this device has just said, for [looksLikeEcho].
+     * Rolling rather than per-turn because an echo arrives within seconds of
+     * the words that caused it, and nothing older can be the cause.
+     */
+    private val saidRecently = StringBuilder()
 
     @Volatile private var lastEventAt = 0L
 
@@ -169,10 +196,19 @@ class NudgeSession(
                 if (delta.isNotEmpty()) speaker.play(Base64.decode(delta, Base64.NO_WRAP))
             }
 
-            // What the device is saying, as it says it.
+            // What the device is saying, as it says it. Kept as well as shown,
+            // because it is what an echo would come back as.
             type.endsWith("audio_transcript.delta") -> {
                 val delta = message.optString("delta")
-                if (delta.isNotEmpty()) onLine(Said(delta))
+                if (delta.isNotEmpty()) {
+                    synchronized(saidRecently) {
+                        saidRecently.append(delta)
+                        if (saidRecently.length > 400) {
+                            saidRecently.delete(0, saidRecently.length - 400)
+                        }
+                    }
+                    onLine(Said(delta))
+                }
             }
 
             // What the person said, once the transcription lands. This is also
@@ -182,8 +218,18 @@ class NudgeSession(
             type.endsWith("input_audio_transcription.completed") -> {
                 val heard = message.optString("transcript").trim()
                 if (heard.isNotEmpty()) {
-                    answered = true
-                    onLine(Heard(heard))
+                    if (looksLikeEcho(heard)) {
+                        // Not an answer, and it must not end the session or be
+                        // reported as one. The gate in feed() should have made
+                        // this unreachable; it is here because the failure it
+                        // catches is silent and expensive — a device that
+                        // records "somebody answered" when nobody did poisons
+                        // the one table this feature is judged from.
+                        Log.i(TAG, "nudge: heard its own voice, ignoring")
+                    } else {
+                        answered = true
+                        onLine(Heard(heard))
+                    }
                 }
             }
 
@@ -197,6 +243,42 @@ class NudgeSession(
             else -> if (seen.add(type)) Log.i(TAG, "nudge event: $type")
         }
     }
+
+    /**
+     * Whether what the microphone heard is this device's own voice come back.
+     *
+     * Crude on purpose: an echo is a near-copy, not a paraphrase, so
+     * containment either way catches it and a character overlap catches the
+     * case where the far side transcribed the two passes slightly differently.
+     *
+     * Short utterances are taken at face value. "はい" or "まあまあ" is a real
+     * answer far more often than it is an echo, and calling one an echo has the
+     * worse consequence: the exchange would not end when it should, and the log
+     * would say nobody was there.
+     */
+    private fun looksLikeEcho(heard: String): Boolean {
+        val mine = synchronized(saidRecently) { normalise(saidRecently.toString()) }
+        val theirs = normalise(heard)
+        if (mine.isEmpty() || theirs.length < 6) return false
+        if (mine.contains(theirs) || theirs.contains(mine)) return true
+
+        // Character overlap, counted with repetition, against the shorter side.
+        val pool = HashMap<Char, Int>()
+        for (c in mine) pool[c] = (pool[c] ?: 0) + 1
+        var shared = 0
+        for (c in theirs) {
+            val left = pool[c] ?: 0
+            if (left > 0) {
+                pool[c] = left - 1
+                shared += 1
+            }
+        }
+        return shared.toDouble() / theirs.length >= 0.7
+    }
+
+    /** Punctuation and spacing differ between two passes at the same words. */
+    private fun normalise(text: String): String =
+        text.filter { it.isLetterOrDigit() }
 
     /** Lets the last sentence finish playing, then ends the session. */
     private fun closeSoon() {
@@ -227,8 +309,24 @@ class NudgeSession(
 
     // -------------------------------------------------------------- audio ---
 
+    /**
+     * Half duplex, and the reason is in [ECHO_TAIL_MS]. While the speaker has
+     * anything to play, the microphone is hearing this device rather than the
+     * room, so silence of the same length goes up instead.
+     */
     private fun feed(buffer: ShortArray, count: Int) {
         if (!running.get()) return
+        if (speaker.speaking(ECHO_TAIL_MS)) {
+            if (!muted) {
+                muted = true
+                // Drop whatever fragment was mid-chunk rather than splicing it
+                // onto the silence that follows.
+                downmix.reset()
+            }
+            downmix.feedSilence(count)
+            return
+        }
+        muted = false
         downmix.feed(buffer, count)
     }
 
