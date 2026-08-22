@@ -651,11 +651,32 @@ bill.
 
 ### Unsolved
 
-1. **Acoustic echo, carried over unchanged.** The reply plays through the
-   speaker and the microphone hears it. The interpreter ships this way and works
-   well enough, so this starts there; if the model interrupts itself, the fix is
-   half-duplex — suppress the tap while the speaker is busy — and the cost is
-   barge-in, which matters less in a two-turn check-in than in a conversation.
+1. ~~**Acoustic echo, carried over unchanged.**~~ **Closed 2026-08-22, by
+   happening.** It was carried over from the conversation mode on the grounds
+   that the interpreter lives with it; the first check-in ever made showed why
+   that reasoning did not transfer. The interpreter is spoken to first, so its
+   own voice arrives into a conversation already in progress. This one speaks
+   first into a silent room, so the only thing the microphone can hear is
+   itself.
+
+   Measured: audio began at 13:10:16.06, `input_audio_buffer.speech_started`
+   fired at 13:10:17.12, the transcription of that "reply" arrived a second
+   later, and the session closed at 13:10:28 having answered its own question.
+   The archive's own recording of the minute settles it — one voice, the same
+   question twice, the second cut off, no other person in the room:
+
+   > どんな調子ですか?今日は何か忙しそうですか?それともちょっと?
+   > 仕事はどんな調子ですか?今日は何?
+
+   The fix is the one named here before it happened: the microphone is shut
+   while the speaker has anything left to play, plus 600 ms. Silence of the same
+   length is sent rather than nothing, so the far side still measures the pause
+   before a person answers. Barge-in is gone, as predicted.
+
+   The part worth keeping in mind is that `answered` was recorded as 1. A gate
+   that fails this way does not look like a fault in the log — it looks like a
+   successful conversation — which is why the transcript comparison stayed in as
+   a second test even though the gate should make it unreachable.
 2. **What the vision model actually does on this lens.** Above; measured over
    the first fortnight rather than assumed.
 3. **Whether being asked at 12:30 specifically is welcome.** The schedule is a
@@ -679,8 +700,26 @@ interpreter mints — is taken from the documentation and has never been answere
 by the API. The Worker passes OpenAI's own error text through for exactly this
 reason: the first failure will say which field is wrong rather than "failed".
 
-Nothing is deployed and nothing is installed. The switch in 設定 is off by
-default, so an install alone changes nothing.
+**Deployed and installed the same day.** The migration went to the remote D1,
+the Worker went out as version `76419ec6`, and the APK went on the device — at
+which point `enabled_accessibility_services` lost the side-button service again,
+exactly as [Operational notes](DESIGN.md#operational-notes) warns, and had to be
+written back.
+
+Both paid checks then answered on the first attempt. The vision model was given
+a real frame and said はい for 16.9 neurons, describing where in the picture the
+person was; OpenAI issued a client secret for `gpt-realtime-2.1-mini`, so the
+request shape that had never been confirmed was right.
+
+The first live check-in fired at 13:10 and failed in the way recorded under
+Unsolved below. Everything up to the speaking worked: the poll came back
+`due: midday`, the arm took a frame at luma 143, the presence check passed, the
+credential was minted, and the screen took over from the standby display. What
+did not work was the microphone.
+
+Still unproven after all that: whether the schedule is any good, and whether the
+presence check holds up on frames with nobody in them — every frame it has been
+shown so far had a person in it, so it has never yet had the chance to say no.
 
 ### Turns
 
