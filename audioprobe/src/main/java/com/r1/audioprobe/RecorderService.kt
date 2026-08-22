@@ -217,6 +217,7 @@ class RecorderService : Service() {
     }
     private var timelapse: Timelapse? = null
     private var positions: Positions? = null
+    private var nudge: Nudge? = null
     @Volatile private var segments = 0
     @Volatile private var writeErrors = 0
     @Volatile private var diskFull = false
@@ -396,6 +397,12 @@ class RecorderService : Service() {
             // the first cycle needs somewhere to put it back to.
             R1Motor.syncFromDevice()
         }
+        // Built whether or not the switch is on, because the switch is read on
+        // every tick rather than at launch: turning 声かけ on should not need
+        // the recording restarted. It borrows the timelapse for a frame and the
+        // uploader to ship it, and both are fetched rather than held — the
+        // uploader does not exist yet, and the timelapse may never.
+        nudge = Nudge(this, uploadSettings, metrics, { timelapse }, { uploader })
 
         startForeground(NOTIFICATION_ID, buildNotification("starting"))
 
@@ -517,6 +524,7 @@ class RecorderService : Service() {
                 .unregisterNetworkCallback(networkCallback)
         }
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        nudge?.shutdown()
         com.r1.core.Motion.stop()
         metrics.write("stop", mapOf("frames" to frames, "reinits" to reinits))
         snapshot = "stopped"
@@ -682,6 +690,17 @@ class RecorderService : Service() {
             // Independent of the camera: a position costs no motor movement and
             // no shutter, so there is nothing to defer around a conversation.
             positions?.tick(now)
+
+            // Whether the device may speak first. Returns immediately: the poll
+            // itself, and everything it leads to, runs on its own thread.
+            //
+            // Suppressed while a question is in flight for the same reason the
+            // timelapse is — the arm and the microphone are both already spoken
+            // for — and while the interpreter or a previous nudge holds the
+            // audio tap, since two live sessions would fight over it.
+            if (query.state == QueryController.State.LIFELOG && audioTap == null) {
+                nudge?.tick(now, writeAudio)
+            }
 
             // Continuous capture to disk. Amplitude statistics prove the stream
             // is alive; only the audio itself proves it is usable, and only
@@ -945,8 +964,11 @@ class RecorderService : Service() {
             val level = rmsByte(secondSumSquares, secondSamples)
             envelope.add(level)
             // The same measurement decides whether the scene is worth
-            // photographing; there is no reason to compute it twice.
+            // photographing, and whether the room is already busy enough that
+            // the device should not speak into it; there is no reason to
+            // compute it three times.
             timelapse?.noteSecond(level)
+            nudge?.noteSecond(level)
             secondSumSquares = 0.0
             secondSamples = 0
         }

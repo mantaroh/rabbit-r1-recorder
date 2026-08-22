@@ -153,10 +153,12 @@ Consequences worth naming rather than assuming:
   probe, open the chat and set the Wi-Fi the camera may photograph from, so any
   installed app can trigger those. This is strictly weaker than the root shell
   above, which is the reason it is tolerated rather than the reason it is fine.
-- **Three credentials, not one.** The device's token opens the seven routes it
+- **Three credentials, not one.** The device's token opens the ten routes it
   actually uses — create a segment, a photograph, a position; read the day, the
-  headlines, the usage; mint an interpreter session — and returns 403 on the
-  other twenty-two. `ADMIN_TOKEN` opens the destructive ones and lives on a
+  headlines, the usage; mint an interpreter session; ask whether it may speak,
+  confirm it, and report how that went — and returns 403 on the rest. Reading
+  the whole nudge log back is not on the list: that is a question for the web
+  page. `ADMIN_TOKEN` opens the destructive ones and lives on a
   laptop; `AGENT_TOKEN` opens `/mcp` and lives on the Hermes gateway. A lost R1
   can no longer rewrite R2, re-queue Whisper, or read the archive.
 - **What a lost R1 still gives away**: it also carries the Cloudflare Access

@@ -17,6 +17,7 @@
 import { handleMcp } from "./mcp";
 import { fetchMapAssets, serveMap } from "./map";
 import { interpretTargets, mintInterpretSession } from "./interpret";
+import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
 import { UI_HTML } from "./ui";
 
 interface Env {
@@ -137,6 +138,22 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/interpret/session") {
       return mintInterpretSession(env, url);
+    }
+    // The device asking whether it may speak first. The thresholds
+    // travel as an argument rather than being copied into that module: this
+    // file owns what counts as a spoken minute, and two answers to that
+    // question would disagree the first time one of them was tuned.
+    if (request.method === "GET" && url.pathname === "/v1/nudge") {
+      return nudgeDue(env, url, { minSpeechRatio: MIN_SPEECH_RATIO });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/nudge/confirm") {
+      return confirmNudge(env, request, { minSpeechRatio: MIN_SPEECH_RATIO });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/nudge/outcome") {
+      return nudgeOutcome(env, url);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/nudge/history") {
+      return nudgeHistory(env, url);
     }
     if (request.method === "GET" && url.pathname === "/v1/interpret/targets") {
       return interpretTargets();
@@ -311,6 +328,12 @@ const DEVICE_ROUTES: Array<{ method: string; path: RegExp }> = [
   { method: "GET", path: /^\/v1\/usage$/ },
   { method: "PUT", path: /^\/v1\/usage$/ },
   { method: "POST", path: /^\/v1\/interpret\/session$/ },
+  // Three for 声かけ, and deliberately not the fourth: /v1/nudge/history reads
+  // the whole log back and belongs to a person at the web page, not to the
+  // device that only ever needs the next verdict.
+  { method: "GET", path: /^\/v1\/nudge$/ },
+  { method: "POST", path: /^\/v1\/nudge\/confirm$/ },
+  { method: "POST", path: /^\/v1\/nudge\/outcome$/ },
 ];
 
 function principalFor(request: Request, env: Env): Principal | null {

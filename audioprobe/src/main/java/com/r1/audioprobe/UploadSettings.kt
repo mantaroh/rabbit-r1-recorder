@@ -32,6 +32,7 @@ class UploadSettings(context: Context) {
         private const val KEY_VOICE_RECOGNITION = "voice_recognition"
         private const val KEY_OPUS = "opus"
         private const val KEY_INTERPRET_TARGET = "interpret_target"
+        private const val KEY_NUDGE = "nudge"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -182,6 +183,21 @@ class UploadSettings(context: Context) {
     var interpretTarget: String
         get() = prefs.getString(KEY_INTERPRET_TARGET, "en").orEmpty()
         set(v) = prefs.edit().putString(KEY_INTERPRET_TARGET, v.trim()).apply()
+
+    /**
+     * Whether the device may start a conversation of its own.
+     *
+     * The only part of 声かけ that lives on the device. When it may speak, and
+     * what it asks, are the Worker's — this is a switch for the person in the
+     * room, so that a day where being spoken to would be unwelcome does not
+     * need a deploy to fix.
+     *
+     * Off by default. A device that arrives talking is a worse first impression
+     * than one that has to be asked.
+     */
+    var nudge: Boolean
+        get() = prefs.getBoolean(KEY_NUDGE, false)
+        set(v) = prefs.edit().putBoolean(KEY_NUDGE, v).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

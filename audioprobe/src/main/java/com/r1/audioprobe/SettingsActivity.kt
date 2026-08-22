@@ -180,6 +180,14 @@ class SettingsActivity : Activity() {
             (it as Button).text = "Language: ${upload.language}"
         }.also { it.text = "Language: ${upload.language}" }, wide())
 
+        // Whether the device may start a conversation. Only the switch is here:
+        // the hours, the questions, and every reason to stay quiet are the
+        // Worker's, so there is nothing else on this panel to get wrong.
+        column.addView(toggle("声かけ: OFF") {
+            upload.nudge = !upload.nudge
+            (it as Button).text = if (upload.nudge) "声かけ: ON" else "声かけ: OFF"
+        }.also { it.text = if (upload.nudge) "声かけ: ON" else "声かけ: OFF" }, wide())
+
         column.addView(button("戻る") { finish() }, wide())
 
         infoView = TextView(this).apply {

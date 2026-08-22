@@ -603,7 +603,7 @@ brings the task forward and throws the extras away, and the command looks like
 it worked.
 
 **Three credentials, and the device holds the narrow one.** It opens the
-seven routes the R1 actually calls and returns 403 on the other twenty-two, so
+ten routes the R1 actually calls and returns 403 on the rest, so
 a lost device can no longer rewrite objects in R2, re-queue Whisper, or read
 the archive. `ADMIN_TOKEN` opens the destructive endpoints from a laptop;
 `AGENT_TOKEN` opens `/mcp` from the Hermes gateway. What it does *not* close:
@@ -646,6 +646,23 @@ R2. Ingest and administration should not share a credential; they do.
   day contained speech — because a mode that declines to run on days you
   already talked needs a threshold taken from real days. See
   [`BACKLOG.md`](BACKLOG.md).
+- **Any notion of who is speaking.** A transcript records what was said in a
+  room, not who said it, so `GET /v1/talk` cannot separate the owner from the
+  television and the archive cannot answer what one person said. Direction was
+  the cheap way and is measured shut; what remains is voiceprints, which is a
+  new store and a decision about other people's data. See
+  [`BACKLOG.md`](BACKLOG.md).
+- **Anything made of the nights.** The recording does not stop at bedtime and
+  `rms_envelope` has held a second-by-second timeline of every night since
+  migration 0005, so the material for a sleep timeline is already stored and
+  nothing reads it. Whether the same sound is meanwhile being counted as
+  conversation by `GET /v1/talk` is unchecked. See
+  [`BACKLOG.md`](BACKLOG.md).
+- **A device that speaks first.** Every exchange here begins with a person: a
+  double-press, a menu, a screen. The morning and midday check-ins are designed
+  and agreed — the Worker decides whether the hour, an empty room and an
+  interrupted conversation allow it, and the device only carries it out. Not
+  started. See [`BACKLOG.md`](BACKLOG.md).
 
 ## Measured hardware
 

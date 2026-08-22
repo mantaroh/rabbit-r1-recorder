@@ -217,7 +217,15 @@ class Timelapse(
         return home
     }
 
-    @Volatile private var busy = false
+    /**
+     * Whether the arm is in use.
+     *
+     * Atomic rather than a plain flag because there are now two callers: the
+     * timelapse cycle on the capture thread, and [captureFront] from the nudge
+     * poll on its own. A read-then-set would let both decide the arm was free
+     * and move it in opposite directions mid-exposure.
+     */
+    private val busy = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Wall-clock of the last cycle that actually ran. */
     @Volatile var lastRunAt = 0L; private set
@@ -227,7 +235,7 @@ class Timelapse(
      * the cycle rather than laying motor noise over a conversation.
      */
     fun tick(nowMs: Long, speaking: Boolean) {
-        if (busy) return
+        if (busy.get()) return
 
         // A freshly started service has heard nothing yet, so there is no
         // baseline to compare against and no window to judge. Returning
@@ -279,9 +287,10 @@ class Timelapse(
 
         val deferredMs = nowMs - dueSince
         dueSince = 0L
-        busy = true
         // Claim the slot now: the cycle is slow, and a tick arriving while it
-        // runs must not queue a second one behind it.
+        // runs must not queue a second one behind it. Losing the claim means
+        // the other caller got the arm first, and this cycle simply waits.
+        if (!busy.compareAndSet(false, true)) return
         lastRunAt = nowMs
         val peak = windowPeak
         val spoke = speechSeen
@@ -291,8 +300,58 @@ class Timelapse(
             try {
                 run(deferredMs, speaking, peak, spoke)
             } finally {
-                busy = false
+                busy.set(false)
             }
+        }
+    }
+
+    /**
+     * One front-facing frame, now, for the presence check that decides whether
+     * the device may speak. Returns the file, or null if it could not be taken.
+     *
+     * **Runs on the calling thread**, unlike [tick], because the caller is
+     * already off the capture thread and has nothing to do until the frame
+     * exists. It borrows the arm through the same claim a cycle uses, so a
+     * timelapse in flight means no frame rather than two callers driving the
+     * motor at once — and no frame means the nudge does not happen, which is
+     * the right way for this to fail.
+     *
+     * The file is written where the uploader looks and under the name it
+     * parses, so the frame reaches the archive by the ordinary path and gets
+     * captioned like every other one. The presence check reads it back out of
+     * R2 rather than being handed a second copy.
+     */
+    fun captureFront(): File? {
+        if (!busy.compareAndSet(false, true)) return null
+        val restoreTo = R1Motor.currentAngle
+        return try {
+            if (!moveAndWait(R1Motor.MOTOR_FACE)) {
+                metrics.write("nudge_frame", mapOf("ok" to false, "why" to "motor"))
+                return null
+            }
+            Thread.sleep(SETTLE_MS)
+            val bytes = camera.capture(MAX_EDGE, ROTATION_FACE)
+            if (bytes == null) {
+                metrics.write("nudge_frame", mapOf("ok" to false, "why" to "capture"))
+                return null
+            }
+
+            // Measured here as well: this frame is a look at the room like any
+            // other, and letting it update the darkness reading keeps the
+            // asleep rule current when a nudge displaces a cycle.
+            meanLuma(bytes)?.let { lastLuma = it }
+
+            val file = File(dir, "img_${stamp.format(Date())}_front.jpg")
+            if (runCatching { file.writeBytes(bytes) }.isSuccess) {
+                metrics.write("nudge_frame", mapOf("ok" to true, "luma" to lastLuma))
+                file
+            } else {
+                metrics.write("nudge_frame", mapOf("ok" to false, "why" to "write"))
+                null
+            }
+        } finally {
+            moveAndWait(restoreTo)
+            busy.set(false)
         }
     }
 

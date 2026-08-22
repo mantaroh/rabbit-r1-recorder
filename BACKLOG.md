@@ -3,13 +3,16 @@
 Work that is designed, or built, but not finished — kept here rather than in a
 chat log, so that picking it up again means reading rather than re-deciding.
 
-Two kinds, and they are not the same kind:
+Three kinds, and they are not the same kind:
 
 - **Unverified** — shipped, but a claim the documentation makes rests on
   something nobody has observed. Cheap to close and dangerous to forget,
   because built-and-unproven reads exactly like built-and-working.
 - **Shelved** — whole features worked out far enough to cost and to find the
   hard parts, then put down deliberately.
+- **Agreed** — designed, chosen, and about to be built. It sits here until it
+  runs on the device, at which point the description moves to DESIGN.md and
+  only what remains unproven stays behind.
 
 DESIGN.md's [What is not built](DESIGN.md#what-is-not-built) stays what it is:
 one line per gap. The detail lives here.
@@ -75,6 +78,53 @@ If they land near 18, the gesture cannot be told from a stride by strength, and
 the fallback is `span_ms` — now logged alongside — because a deliberate shake
 is a burst of a few hundred milliseconds while a carried device produces pairs
 spread across a stride.
+
+---
+
+## Unverified: whether the night counts as talking
+
+**Raised 2026-08-20**, sideways, from asking whether sleep could be read out of
+the recording.
+
+`GET /v1/talk` states in its own response what it cannot separate: owner,
+family member, the far side of a video call, television. **Sustained non-speech
+is not on that list, and nobody has looked.**
+
+The mechanism is not subtle. The voiced test is a loudness threshold —
+`VOICED_RMS = 32`, chosen against measured levels of 11 quiet, 22 background
+activity, 152–221 speech. Snoring is loud. It clears 32 without difficulty, so
+a snoring minute counts as a voiced minute, and being over `MIN_VOICED_RATIO`
+it is also handed to Whisper and billed, to come back either empty or invented.
+
+Two things rest on it. `/v1/talk` is the built half of the conversation mode
+below, and that gate's threshold is supposed to come from a fortnight of real
+days — a fortnight with the nights folded into it is the wrong fortnight. And
+the hallucination work assumed the expensive case was silence; silence is
+handled, while a loud minute with no words in it is not.
+
+The check needs no new code, only the columns 0004 and 0005 already store:
+
+```bash
+cd cloudflare/lifelog && npx wrangler d1 execute r1-lifelog --remote --command "
+SELECT (started_epoch + 32400) / 3600 % 24 AS hour_jst,
+       COUNT(*) AS segments,
+       SUM(CASE WHEN voiced_ratio >= 0.033 THEN 1 ELSE 0 END) AS voiced,
+       SUM(CASE WHEN voiced_ratio >= 0.033 AND status = 'transcribed'
+                 AND speech_ratio IS NOT NULL AND speech_ratio < 0.15
+                THEN 1 ELSE 0 END) AS loud_but_wordless
+  FROM segments WHERE kind = 'lifelog'
+ GROUP BY hour_jst ORDER BY hour_jst"
+```
+
+If `loud_but_wordless` piles up between 01 and 05 while the daytime hours stay
+clear, this is confirmed and the night is being counted and paid for. If it is
+flat across the day it is something else, and this closes.
+
+The repair would not be a higher threshold — snoring really is as loud as the
+test says. It is a second axis: **loud and wordless is not conversation**, and
+`speech_ratio` already separates the two. Note that this is the first step of
+the sleep item below with its sign reversed: what is contamination to
+`/v1/talk` is the signal there.
 
 ---
 
@@ -232,3 +282,408 @@ separate decision from the one above.
 - [gpt-realtime-2.1 / -2.1-mini announcement](https://community.openai.com/t/new-realtime-models-on-the-api-gpt-realtime-2-1-and-gpt-realtime-2-1-mini/1385896)
 - [Realtime API over WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket)
 - [Realtime API pricing, measured](https://hackernoon.com/openai-realtime-api-pricing-in-2026-real-world-data-from-4000-measured-sessions)
+
+---
+
+## Shelved: telling one voice from another
+
+**Shelved 2026-08-20.** Costed and the hard parts found; not started. Raised by
+asking whether the server could tell speakers apart in a day of recording.
+
+### What it would fix
+
+`GET /v1/talk` carries a limitation load-bearing enough to be repeated in its
+own response body: it measures minutes containing speech, not conversation.
+Owner, family member, the far side of a video call and the television all count
+the same. That is the sentence a speaker signal would delete, and the gate in
+the conversation mode above rests on exactly that distinction — a threshold
+that cannot tell a conversation from a television is measuring the wrong thing.
+
+The archive would gain the query it does not have: what a named person said,
+rather than what was said in a room.
+
+### One word, two features, and they cost differently
+
+| | What it produces | What it needs |
+| --- | --- | --- |
+| **Diarization** | "speaker A / speaker B" — how many voices, and which turn belongs to which. No names | A transcriber that emits speaker turns |
+| **Identification** | "this is the owner", "this is 妻" | Enrolled voiceprints, an embedding per utterance, and clustering across the archive |
+
+The useful queries all want the second one. The first is a step on the way, not
+a smaller version of it.
+
+### The pipeline has neither
+
+Whisper returns a string and nothing else (`cloudflare/lifelog/src/index.ts`,
+`runWhisper`). `segments` has no speaker column; migrations 0004 and 0005 added
+quality and loudness signals only. Nothing needs to be removed to make room —
+there is simply no such field anywhere.
+
+### Three obstacles, in order of how hard they are to move
+
+1. **The minute boundary.** Segments are transcribed independently, so a
+   diarizing model's `speaker_0` is a label local to one segment. There is no
+   reason the next minute's `speaker_0` is the same person, and a day is 1440
+   of them. Utterances also straddle the cut. Continuity across segments is not
+   a setting on a diarizing transcriber — it is speaker embeddings clustered
+   over the whole archive, which is a second piece of machinery.
+2. **Direction is already closed.** The obvious cheap cue is which side the
+   voice came from, and it was measured and does not exist: see
+   [Direction, and why there is none](DESIGN.md#direction-and-why-there-is-none).
+   Level differences are 0.2 dB with overlapping distributions, and
+   cross-correlation puts a frontal talker at zero and a talker behind at zero
+   too. That is the front-back ambiguity of a two-element array, so it is
+   geometry and not tuning. This door does not reopen.
+3. **Far field, and 32 kbps per channel.** Voiceprint embeddings lose accuracy
+   to reverberation and to bitrate, and a device on a desk collects both. It
+   has not been measured here, and it is the measurement that decides whether
+   identification is possible at all rather than merely expensive.
+
+### Cost, and why the VAD gate is a precondition
+
+Twenty-four hours a day is 43,200 minutes a month. At the order of $0.004 a
+minute that is roughly $180 a month, which is more than the whole archive costs
+in a year (`DESIGN.md`, storage table). The measured voiced share of a day is
+about 11% (`audioprobe/FINDINGS.md`), and the silent-segment gate already
+exists in `upload`. Behind it the same work is roughly $20 a month.
+
+So the gate is a precondition rather than an optimisation, and the arithmetic
+above is list prices multiplied out — not a quote, and worth redoing before
+anything is committed to.
+
+### Nothing here expires
+
+The audio in R2 is deliberately never deleted, and `/v1/admin/retranscribe`
+already exists. Whatever this turns into can be applied backwards over
+everything recorded so far, which is a good reason to decide late and a bad
+reason to decide badly.
+
+### The part that is not technical
+
+A voiceprint is a 個人識別符号 under the 個人情報保護法. Recording one's own day
+and storing biometric templates of the people who walk through it are different
+kinds of data, and the second one is a decision to take before anybody is
+enrolled rather than after. It also decides where the templates may live, which
+constrains the routes above.
+
+### Open questions
+
+- **Whether Workers AI can do it at all.** Deepgram's own API takes a `diarize`
+  flag, and its Nova-3 is understood to be in the Workers AI catalogue
+  alongside Whisper — but neither the catalogue entry nor whether the binding
+  passes that parameter through has been checked from this repository. If it
+  does, within-segment labels are nearly free; if not, the route leaves
+  Cloudflare.
+- **Which of the two features is wanted.** Undecided, and it changes everything
+  downstream. Within-segment labels are a small change to the queue consumer;
+  identification is a new store, a nightly clustering job, and an enrolment
+  step.
+- **Embedding accuracy on this microphone.** Unmeasured. See obstacle 3.
+
+---
+
+## Shelved: reading the night back
+
+**Shelved 2026-08-20.** Costed, and blocked on a question that is not
+technical. The device records through the night, so the material exists whether
+or not anything is ever done with it.
+
+### Why this one is unusually cheap
+
+Every other feature here starts by needing data nobody has. This one does not.
+`rms_envelope` has held one byte per second for every segment since migration
+0005 — **a second-by-second acoustic timeline of every night already
+recorded**, queryable without decoding a single Opus frame.
+
+Two properties make it better material than it looks:
+
+- **It is not degraded by the codec.** The bytes are computed on the device
+  from the PCM in hand (`RecorderService.accumulate`), before Opus ever sees
+  it. Whatever 32 kbps does to a quiet room, it did not do it to these numbers.
+- **It is already calibrated.** 11 quiet, 22 background activity, 152–221
+  speech, and the reasoning behind the numbers is written down next to them.
+
+### What is visible in it, and what is not
+
+Snoring sits in the loud range and produces no words, which is the signature:
+`voiced_ratio` high, `speech_ratio` low. Both columns already exist, so the
+first look costs a query — see the Unverified item above, which is the same
+query asked for the opposite reason.
+
+**Periodicity is reachable, barely.** Breathing runs 12–20 a minute, 0.2–0.33
+Hz, against a 1 Hz sampling rate whose Nyquist limit is 0.5 Hz. That is three
+to five samples per cycle: enough for autocorrelation over a window of minutes
+to recover the period, nowhere near enough for the shape of an individual
+snore. The clinical marker for an apnoea is a pause of ten seconds or more, and
+ten seconds is ten samples — a gap that size, bracketed by loud breathing
+either side, is a shape this resolution can hold.
+
+**Ordinary breathing is not visible and will not become visible.** The byte is
+RMS shifted down four bits, so one step is 16 raw units against a quiet room of
+176. Snoring clears that quantisation easily; quiet respiration lives inside a
+single step of it. Anything needing the quiet end has to go to the audio in R2,
+which is a different and more expensive project.
+
+### The question that blocks it
+
+**Where the device spends the night.** Measured runtime in the shipping
+configuration is 8.6 hours (`audioprobe/FINDINGS.md`), so crossing a night
+means sitting on the charger, and whether the charging place is the bedroom
+has not been stated. If it is not, everything above describes an empty room.
+This is the first thing to settle and it costs nothing to settle.
+
+Second, and already written up: **whose snoring**. See the voice item above.
+Another person in the room and the audio cannot attribute any of it.
+
+### It is not a diagnosis, and this repository has already decided that
+
+There is no SpO2, no airflow measurement, and no sensing of the sleeper at all
+— the accelerometer is in the device, not in the bed. The apnoea-hypopnoea
+index is defined partly on oxygen desaturation, so there is nothing here that
+substitutes for it, and the audio-only literature is not uniformly kind about
+what can be claimed from sound alone.
+
+The precedent is directly above, under **Explicitly not being built** in the
+conversation mode: a classifier of 80–90% accuracy, run daily against one
+person, generates false alarms constantly, and a device has no business
+delivering that verdict to its owner. The same rule applies unchanged. If this
+is built it is **a timeline and a trend with no conclusion attached**, and the
+interpretation belongs to a person, and to a doctor if it comes to that.
+
+### Stages, cheapest first
+
+| | What it is | Cost |
+| --- | --- | --- |
+| 0 | The hourly query over stored columns: is anything being recorded at night at all | None |
+| 1 | Autocorrelation over stored envelopes — period, and gaps in it | None; a pure function over data already in D1 |
+| 2 | Going to the audio in R2 to classify what the loud minutes actually are | The first real decision, and the first bill |
+
+Stage 0 answers whether the rest is worth designing, which is the right order:
+measure before specifying, rather than specifying and then discovering the
+device was in the wrong room.
+
+### Open questions
+
+- **The bedroom question above.** Unanswered, and it gates everything.
+- **Whether the night is currently being transcribed and billed.** See the
+  Unverified item; it is the same measurement.
+- **What a snore actually reads as on this envelope.** The 152–221 figure is
+  speech at conversational distance. Snoring from a bed across a room has never
+  been measured here, and if it lands near 32 rather than well above it, the
+  separation this rests on is not there.
+
+---
+
+## Agreed: 声かけ — the device speaks first
+
+**Agreed 2026-08-22.** Design settled, not started. The sibling of the
+conversation mode above and deliberately not the same feature: that one is a
+supplement for days with no conversation in them and refuses to run on days
+there was some, while this one is a check-in on an ordinary working day — the
+morning question about medication and what the day holds, the midday one about
+how work is going, the evening one about whether it will finish. Frequency,
+brevity and *timing* are the whole of it. It does not carry the anti-isolation
+argument, so it does not carry that gate either.
+
+What it must never be is a device that talks to an empty room, or over a
+meeting. Those two are the design.
+
+### The judgment is the server's
+
+The device reports facts only it can know — which Wi-Fi it is on, whether it is
+recording, how the room sounded in the last two minutes, what the camera sees.
+Every decision made from those facts is the Worker's.
+
+This is the same reasoning the conversation mode gave for minting at the server:
+a gate the client evaluates is a gate the client can skip. It buys three more
+things here. The schedule changes with a deploy rather than an APK install and a
+reinstall on a device whose accessibility service has to be toggled by hand
+afterwards. The conversation checks want D1 — `speech_ratio` per minute is
+already there and the device does not have it. And every verdict lands in one
+table, so "why did it not speak all afternoon" is a query rather than a guess.
+
+### Two phases, because the cheap checks are free and the good ones are not
+
+Asking a vision model every minute costs money, and this device's camera is on a
+motorised arm that is audible in its own recording. So the schedule and the
+conversation history run first, on nothing, and the camera only moves for a slot
+that has already survived them.
+
+```
+device, every 2 min            Worker                            D1 / Workers AI
+  GET /v1/nudge ─────────────▶ 1 enabled, home, recording
+  ?home=1&recording=1          2 quiet hours (22:00–08:00 JST)
+                               3 slot due, not fired today,
+                                 45 min since the last one, 4 a day
+                               4 in conversation? last 10 min ──▶ segments
+  ◀── {"due":null,"why":"in_conversation","retry_after_s":900}
+  ◀── {"due":"morning","need_presence":true}
+
+  one front-facing frame, up the ordinary photo route
+  PUT /v1/photos/{id} ───────▶ R2 + the caption queue, like every other frame
+
+  POST /v1/nudge/confirm ────▶ 5 fresh audio: still quiet?
+  {slot, photo_id, envelope,   6 is a person in front of it? ───▶ vision model
+   posture}                    7 mint, with today's material baked in
+  ◀── {"ok":true,"id":12,"client_secret":"ek_…","url":"wss://…"}
+  ◀── {"ok":false,"why":"no_one_there"}
+
+  wss://api.openai.com/v1/realtime  — NudgeActivity, on screen, up to 3 min
+
+  POST /v1/nudge/outcome?id=12&answered=1&seconds=64
+```
+
+The frame travels as an id rather than in the body. The device already holds
+`PUT /v1/photos/{id}`, so sending it that way puts the picture in the archive
+with a caption like every other frame, and the presence check reads it back out
+of R2 — one upload path instead of two, and the frame the check was made from
+is still there in a month when somebody asks whether the check was any good.
+
+`ok:false` is a 200. It is an answer to a question, not a refusal of the
+credential, and returning 403 for it would put "nobody was in the room" in the
+same bucket as "this token is dead".
+
+### The three checks, and what each one gets wrong
+
+**The schedule.** Slots in JST, in the Worker's source rather than in D1 — a
+table would need a screen to edit it before it earned its keep, and a time
+change is one deploy. Defaults: 09:00 morning, 12:30 midday, 17:30 evening, and
+at home an idle check-in every two hours between 10:00 and 21:00. One firing per
+slot per day, nothing within 45 minutes of the previous one, and after two in a
+row that nobody answered the idle ones stop until tomorrow. The timed three do
+not stop, because not answering the morning question is not evidence that the
+morning question was unwanted.
+
+*Wrong when:* the working day moves. There is no calendar here and the schedule
+does not know about holidays; a Sunday at home gets the same three questions as
+a Tuesday. Deliberate for now — see below.
+
+**Whether someone is already talking.** Minutes in the last ten where Whisper
+found real words: `speech_ratio >= MIN_SPEECH_RATIO` and not a stock phrase, the
+same test `/v1/talk` counts spoken minutes with. Over the threshold the slot is
+deferred fifteen minutes, up to three times, and then dropped for the day — the
+idle check-in excepted, since it has no window to miss and the gap rule brings
+it back on its own once the room is quiet. Confirmed again at phase two against
+audio that is seconds rather than minutes old, because segments reach D1 a
+minute or two behind the room.
+
+Deferrals are recorded at most one every fifteen minutes rather than once per
+poll. The device asks every two minutes, so counting polls would spend all three
+deferrals in six.
+
+*Wrong when:* the television is on, or — per the Unverified item above — someone
+is asleep and snoring. Both make the device believe it is interrupting and keep
+it quiet. That is the safe direction of the two, and it is the same measurement
+error, so fixing it there fixes it here.
+
+**Whether anybody is there.** One front-facing frame at the moment the slot
+comes due, through `@cf/meta/llama-3.2-11b-vision-instruct` — the model already
+captioning every photograph in this archive, so no new dependency and no new
+bill beyond the call itself. Asked for a yes or no and a one-line reason, not a
+caption: is there a person in this frame, close enough and facing the camera to
+be spoken to.
+
+*Wrong when:* it is any person, not this person. Telling one human from another
+is the voiceprint item further up and it is shelved. On a device that lives on
+one desk this is a small risk and a named one. Also unmeasured: nobody has run
+this model against a 640-pixel frame of somebody at arm's length from this
+particular lens. The first fortnight logs the verdict *and* the frame id, so the
+question is answered from real frames instead of from a guess about them.
+
+### On the device
+
+Very little of this is new, which is why it is worth building now rather than
+alongside the conversation mode where it was first written down.
+
+- **Microphone contention was the unsolved problem there and is solved here.**
+  `RecorderService.audioTap` hands a share of the live capture to whatever is in
+  front, and the interpreter has been running through it for a week. 48 kHz
+  stereo to 24 kHz mono is the same 2:1 decimation plus channel average.
+- **`Nudge.kt`** — the poll, the confirm, and the session. The socket handling,
+  the `AudioTrack`, and the media-volume claim-and-restore are the interpreter's;
+  the common half comes out of `Interpreter.kt` rather than being copied.
+- **`NudgeActivity.kt`** — full screen, `setShowWhenLocked` and `setTurnScreenOn`
+  as `StopPromptActivity` does, the lines of the exchange as they arrive, and an
+  exit. The opening line is on the panel before the speaker has finished saying
+  it, because somebody who looks up at the third word should still be able to
+  read the question.
+- **Three ways it ends, and the model controls none of them.** It is told to ask
+  one or two things and stop, but a WebSocket gives it no way to hang up: the
+  session closes when a reply has been answered and the response to it
+  completes, after 45 seconds with nothing happening at all, and at the three
+  minutes the Worker sends down. Leaving the screen ends it too.
+- **`RecorderService`** — one more tick beside `applySchedule`, at most every two
+  minutes and only while at home and recording. The photograph borrows
+  `Timelapse`'s `StillCamera`, so the two need an interlock: a cycle in flight
+  means the slot waits rather than fighting the arm for the lens.
+- **Settings** — one switch. The times live on the server and do not appear here.
+
+The conversation is recorded like every other minute of the day. It goes to R2,
+it is transcribed, and it is searchable. That is the intent rather than a side
+effect: the device asking what the day held, and the answer to it, are exactly
+the kind of minute this archive exists for.
+
+### Cost
+
+`gpt-realtime-2.1-mini`, $10/M audio in and $20/M out. An exchange of ninety
+seconds is about $0.02–0.03; four a day is roughly $35 a year. Text input is
+cached at $0.4/M, so priming each session with the day's transcripts and the
+slot's question is close to free.
+
+The vision check is Workers AI neurons, a handful of calls a day against the 96
+photographs a day already being captioned — inside the noise of the existing
+bill.
+
+### Explicitly not being built
+
+- **A calendar.** It would settle "is this a meeting" outright, and it is an
+  OAuth integration in a Worker that currently holds no third-party identity at
+  all. If the audio test proves inadequate this is the answer, but it is a
+  separate piece of work and it should be justified by a measurement rather than
+  by the intuition that meetings are hard to detect.
+- **A face-detection pass on the device.** Camera2 exposes one; whether this
+  sensor supports it is unknown, and it would move the presence decision back to
+  the client to save a few cents a month.
+- **The conversation mode's daily gate.** These are check-ins, not a substitute
+  for human contact, and refusing to say good morning because there was a
+  conversation yesterday would be applying an argument that does not reach here.
+  If both features ship, they share the schedule table and nothing else.
+
+### Unsolved
+
+1. **Acoustic echo, carried over unchanged.** The reply plays through the
+   speaker and the microphone hears it. The interpreter ships this way and works
+   well enough, so this starts there; if the model interrupts itself, the fix is
+   half-duplex — suppress the tap while the speaker is busy — and the cost is
+   barge-in, which matters less in a two-turn check-in than in a conversation.
+2. **What the vision model actually does on this lens.** Above; measured over
+   the first fortnight rather than assumed.
+3. **Whether being asked at 12:30 specifically is welcome.** The schedule is a
+   guess with a deploy behind it. `nudge_log` records the slot, the verdict, and
+   whether anybody answered, which is the material for changing it.
+
+### Built on 2026-08-22, and what is still unproven
+
+The Worker, the migration, the poll, the session and the screen are written and
+they compile. What has actually been *run* is the free half: against a local D1,
+`GET /v1/nudge` was made to answer `not_home`, `not_recording`, `too_soon`,
+`daily_cap`, `in_conversation` and a live `due: "idle"`, two polls during one
+conversation were confirmed to leave one deferral row rather than two, and
+`POST /v1/nudge/outcome` updated the row it was given.
+
+Neither of the two checks that cost money has been run at all. The presence
+check needs Workers AI, which is not available in the local dev runtime, and the
+mint needs a real request to OpenAI. So the shape of the `client_secrets` body
+for a general realtime session — as opposed to the translation session the
+interpreter mints — is taken from the documentation and has never been answered
+by the API. The Worker passes OpenAI's own error text through for exactly this
+reason: the first failure will say which field is wrong rather than "failed".
+
+Nothing is deployed and nothing is installed. The switch in 設定 is off by
+default, so an install alone changes nothing.
+
+### Turns
+
+Design: 2 planned / 2 actual — one to survey the ground and propose, one to
+settle the four choices and write this down. Implementation: 1 planned /
+1 actual.

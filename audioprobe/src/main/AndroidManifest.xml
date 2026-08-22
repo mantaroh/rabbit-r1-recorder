@@ -152,6 +152,19 @@
             android:launchMode="singleTop"
             android:screenOrientation="portrait" />
 
+        <!-- 声かけ. Arrives unasked, so it wakes the screen for the same reason
+             the 23:00 question does — and, like the interpreter, it bills by
+             the minute and ends with the screen that shows it. -->
+        <activity
+            android:name=".NudgeActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
+
         <!-- The 23:00 question. Wakes the screen because it fires while the
              device is asleep on a table, and is often read from a distance. -->
         <activity

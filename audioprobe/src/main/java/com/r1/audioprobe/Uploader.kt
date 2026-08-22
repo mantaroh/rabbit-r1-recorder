@@ -316,6 +316,20 @@ class Uploader(
         }
     }
 
+    /**
+     * One frame, now, ahead of the queue.
+     *
+     * The nudge poll needs a specific photograph to be in R2 before it can ask
+     * whether anybody is in front of the camera, and the ordinary pass runs on
+     * its own thread up to fifteen seconds later. Same route, same durability
+     * contract — the file is deleted only once the server has taken it — so
+     * this is a scheduling difference and nothing more.
+     */
+    fun uploadNow(file: File): Boolean {
+        if (blockedReason() != null) return false
+        return uploadPhoto(file)
+    }
+
     private fun uploadPhoto(file: File): Boolean {
         // img_yyyyMMdd_HHmmss_front.jpg — the stamp is the instant of capture.
         val match = Regex("""^img_(\d{8})_(\d{6})_(front|rear)$""")
