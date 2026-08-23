@@ -62,13 +62,19 @@ class NudgeSession(
         const val IDLE_TIMEOUT_MS = 45_000L
 
         /**
-         * How long to let the speaker drain after the last reply.
+         * The pause after the speaker has actually finished, before closing.
          *
-         * The audio deltas stop arriving when the response completes, but up to
-         * a second of them is still inside the AudioTrack buffer. Closing on
-         * the event itself cuts the last word off.
+         * **`response.done` means generated, not spoken.** These models emit a
+         * reply far faster than it can be played: measured 2026-08-23, a whole
+         * response was generated 1.2 s after it was asked for. Treating that
+         * event as the end of the sentence closed the session while four
+         * seconds of a longer reply were still queued, and the last words were
+         * never heard — twice, before the difference was noticed.
+         *
+         * So the wait is however long the speaker still has to play, and this
+         * on the end of it.
          */
-        const val DRAIN_MS = 2_000L
+        const val DRAIN_MS = 700L
 
         /**
          * How long after the speaker falls silent the microphone stays shut.
@@ -282,8 +288,9 @@ class NudgeSession(
 
     /** Lets the last sentence finish playing, then ends the session. */
     private fun closeSoon() {
+        val stillToPlay = maxOf(0L, speaker.speakingUntilMs - System.currentTimeMillis())
         runCatching {
-            clock.schedule({ stop() }, DRAIN_MS, TimeUnit.MILLISECONDS)
+            clock.schedule({ stop() }, stillToPlay + DRAIN_MS, TimeUnit.MILLISECONDS)
         }
     }
 
@@ -296,7 +303,14 @@ class NudgeSession(
             clock.schedule({ stop() }, maxSeconds.toLong(), TimeUnit.SECONDS)
             clock.scheduleWithFixedDelay(
                 {
-                    if (running.get() && System.currentTimeMillis() - lastEventAt > IDLE_TIMEOUT_MS) {
+                    // A session with the speaker still going is not idle, for
+                    // the same reason `response.done` is not the end of a
+                    // sentence: every event of a long reply arrives in the
+                    // first second or two of playing it, so a reply longer than
+                    // the timeout would otherwise cut its own tail off.
+                    if (running.get() && !speaker.speaking() &&
+                        System.currentTimeMillis() - lastEventAt > IDLE_TIMEOUT_MS
+                    ) {
                         stop()
                     }
                 },
