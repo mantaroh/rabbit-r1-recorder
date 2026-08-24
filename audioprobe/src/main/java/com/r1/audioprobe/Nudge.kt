@@ -225,6 +225,7 @@ class Nudge(
             .putExtra(NudgeActivity.EXTRA_ID, verdict.optInt("id"))
             .putExtra(NudgeActivity.EXTRA_SLOT, slot)
             .putExtra(NudgeActivity.EXTRA_OPENING, verdict.optString("opening"))
+            .putExtra(NudgeActivity.EXTRA_FAREWELL, verdict.optString("farewell"))
             .putExtra(NudgeActivity.EXTRA_SECRET, verdict.optString("client_secret"))
             .putExtra(NudgeActivity.EXTRA_URL, verdict.optString("url"))
             .putExtra(NudgeActivity.EXTRA_MAX_SECONDS, verdict.optInt("max_seconds", 180))

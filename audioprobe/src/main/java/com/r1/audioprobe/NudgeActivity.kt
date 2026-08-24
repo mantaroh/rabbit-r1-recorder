@@ -41,6 +41,9 @@ class NudgeActivity : Activity() {
         const val EXTRA_ID = "nudge_id"
         const val EXTRA_SLOT = "slot"
         const val EXTRA_OPENING = "opening"
+
+        /** What to tell the model when it is time to stop; see NudgeSession. */
+        const val EXTRA_FAREWELL = "farewell"
         const val EXTRA_SECRET = "client_secret"
         const val EXTRA_URL = "url"
         const val EXTRA_MAX_SECONDS = "max_seconds"
@@ -115,6 +118,8 @@ class NudgeActivity : Activity() {
             url = url,
             clientSecret = secret,
             maxSeconds = intent.getIntExtra(EXTRA_MAX_SECONDS, 180),
+            farewell = intent.getStringExtra(EXTRA_FAREWELL).orEmpty()
+                .ifEmpty { NudgeSession.FAREWELL_FALLBACK },
             onState = { state -> main.post { render(state) } },
             onLine = { line ->
                 main.post {

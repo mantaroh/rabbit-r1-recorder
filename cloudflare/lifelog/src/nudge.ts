@@ -182,9 +182,26 @@ const RULES = [
   "答えを要約したり、まとめたり、結論を出したりしないでください。",
   "調べ物・下書き・要約は引き受けないでください。それは別の画面の仕事です。",
   "相づちだけを返さないでください。理由を尋ねてよいし、違う見方を言ってもかまいません。",
-  "相手が答えたら、短く受け止めて自分から会話を終えてください。長引かせないこと。",
+  "相手が答えたら短く受け止めてください。続けて尋ねるのは多くても一度までにしてください。",
+  "終わりは端末が決めます。締めくくるよう指示されたら、そこで質問をせずに終えてください。",
   "相手が忙しそうなら、引き止めずにすぐ終えてください。",
 ].join("\n");
+
+/**
+ * What the device asks for when it decides the check-in is over.
+ *
+ * Here rather than on the device because the words of this feature belong
+ * together — the question that opens a session is chosen here, and so is the
+ * sentence that closes it.
+ *
+ * It exists at all because of what happened without it. The device used to cut
+ * the socket the moment it decided it was finished, which landed in the middle
+ * of whatever the model had just asked: "それで今日は何を作ってるんですか?" and
+ * then silence. Ending a conversation is a thing you say, not a thing you do.
+ */
+const FAREWELL =
+  "会話を締めくくってください。新しい質問はせず、ひとことお礼か気遣いを述べて、" +
+  "終わりであることがはっきり分かるように終えてください。";
 
 // ------------------------------------------------------------ phase one ---
 
@@ -369,6 +386,16 @@ export async function confirmNudge(
 
   const presence = await lookForSomeone(env, body.photo_id ?? "");
   if (!presence.yes) {
+    // A model that could not answer is not a room with nobody in it, and the
+    // two must not be recorded as the same thing. Workers AI returned
+    // "3040: Capacity temporarily exceeded" three times on the day this
+    // shipped; treating those as refusals settled the midday slot and cost the
+    // day a check-in that had a person sitting in front of the camera for it.
+    if (presence.why !== "no_one_there") {
+      const why = await defer(env, now, slot, today, presence.why);
+      return refusal(why, { presence: presence.note });
+    }
+
     await record(env, now, slot.name, "refused", presence.why, {
       photoId: body.photo_id ?? null,
       note: presence.note,
@@ -402,6 +429,7 @@ export async function confirmNudge(
     id,
     slot: slot.name,
     opening: slot.ask,
+    farewell: FAREWELL,
     client_secret: session.secret,
     expires_at: session.expiresAt,
     model: MODEL,

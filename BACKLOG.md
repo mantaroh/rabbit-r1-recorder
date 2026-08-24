@@ -607,11 +607,16 @@ alongside the conversation mode where it was first written down.
   exit. The opening line is on the panel before the speaker has finished saying
   it, because somebody who looks up at the third word should still be able to
   read the question.
-- **Three ways it ends, and the model controls none of them.** It is told to ask
-  one or two things and stop, but a WebSocket gives it no way to hang up: the
-  session closes when a reply has been answered and the response to it
-  completes, after 45 seconds with nothing happening at all, and at the three
-  minutes the Worker sends down. Leaving the screen ends it too.
+- **The device decides when it ends, and then says so.** A WebSocket gives the
+  model no way to hang up, so the device has to — and the first version did it
+  silently, cutting the socket on the event that completed the model's own
+  follow-up question. The room got "それで今日は何を作ってるんですか?" and then
+  nothing. **Ending a conversation is something you say**, so now the exchange
+  runs until three answers or twenty seconds of not answering, the model is
+  asked for a closing remark with no question in it, and the session ends once
+  that has been heard. Underneath sit two bounds that depend on nothing
+  behaving: 45 seconds with no events at all, and the three minutes the Worker
+  sends down. Leaving the screen ends it too.
 - **`RecorderService`** — one more tick beside `applySchedule`, at most every two
   minutes and only while at home and recording. The photograph borrows
   `Timelapse`'s `StillCamera`, so the two need an interlock: a cycle in flight
