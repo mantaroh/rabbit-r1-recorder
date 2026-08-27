@@ -1,11 +1,13 @@
 package com.r1.audioprobe
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -13,6 +15,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -42,16 +49,26 @@ import java.util.Locale
  * **While it waits it is a clock, and nothing else.** No title, no status, no
  * preview of the line. The device is in the room with the audience, and a
  * panel captioned with the sentence it is about to say gives the ending away
- * to anyone close enough to read it; a clock on a desk is furniture. The one
- * concession is the colour: the clock is red instead of white when there is no
- * audio to play, which says nothing to a stranger and everything to the person
- * who has to know before they start talking.
+ * to anyone close enough to read it; a clock on a desk is furniture.
+ *
+ * **The clock is drawn twice.** `assets/stage/` holds a page that draws both
+ * the clock and the character, and the same two states exist here as plain
+ * Android views. The page is the one that shows if it loads; the views are
+ * what is left if it does not. Drawing the clock in the page as well as the
+ * character is what makes the fallback safe to have: the model is loaded and
+ * running from the moment the screen opens rather than at the moment of the
+ * cue, so by the time the line matters the page has either been working for
+ * several minutes or was never used.
+ *
+ * **The audio does not go through any of this.** [Cue] plays samples compiled
+ * into the APK, on a native track, whatever the page is doing. The worst this
+ * screen can do is show the wrong picture while the right words come out.
  *
  * **This is for one talk and is meant to be deleted afterwards.** It is not a
  * feature the device is gaining; it is a prop. What has to go with it: this
- * Activity, [Cue], `res/raw/cue_hello.wav`, the entry in 設定, the manifest
- * entry, [RecorderService.onStage] and its two gates, and the Worker's cue
- * routes, table and page. Nothing else refers to any of them.
+ * Activity, [Cue], `res/raw/cue_hello.wav`, `assets/stage/`, the entry in 設定,
+ * the manifest entry, [RecorderService.onStage] and its two gates, and the
+ * Worker's cue routes, table and page. Nothing else refers to any of them.
  *
  * Note what this screen does *not* do: it never calls `Idle.watch`, so the
  * standby display cannot take it over after a minute of nobody touching the
@@ -61,6 +78,8 @@ import java.util.Locale
 class CueActivity : Activity() {
 
     companion object {
+        private const val TAG = "R1AudioProbe"
+
         private const val R1_ORANGE = 0xFFFE5000.toInt()
         private const val INK = 0xFFF2F2F2.toInt()
 
@@ -74,11 +93,37 @@ class CueActivity : Activity() {
          * sleeve resting on a lectern does. Two seconds is a decision.
          */
         private const val HOLD_TO_CLOSE_MS = 2_000L
+
+        /**
+         * How long the page has to come up before it is written off.
+         *
+         * Twelve seconds against a model of a few megabytes read from the APK
+         * and a renderer starting on a GPU that has never been asked to do
+         * this. Being wrong in this direction costs a picture; being wrong in
+         * the other costs a blank panel through the end of the talk.
+         */
+        private const val PAGE_TIMEOUT_MS = 12_000L
+
+        /**
+         * A host that does not exist, so that the page has an origin.
+         *
+         * Assets loaded straight off `file:///android_asset/` are same-origin
+         * with nothing, and the page has to `fetch` a model file. Serving them
+         * through [WebViewClient.shouldInterceptRequest] under an https host
+         * gives it an ordinary origin without adding androidx.webkit — which
+         * this app does not have, and `android.useAndroidX=false` says why.
+         */
+        private const val ASSET_HOST = "stage.local"
+        private const val ASSET_DIR = "stage"
     }
 
     private lateinit var clock: TextView
     private lateinit var greeting: View
+    private lateinit var page: WebView
     private lateinit var cue: Cue
+
+    /** Whether the page reported that it has a character on screen. */
+    private var pageReady = false
 
     private val main = Handler(Looper.getMainLooper())
     private val stamp = SimpleDateFormat("H:mm", Locale.JAPAN)
@@ -91,6 +136,13 @@ class CueActivity : Activity() {
     }
 
     private val closeAfterHold = Runnable { finish() }
+
+    private val giveUpOnPage = Runnable {
+        if (!pageReady) {
+            Log.w(TAG, "cue page did not report ready; staying with the views")
+            Metrics(this).write("cue_page", mapOf("state" to "timeout"))
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,6 +161,9 @@ class CueActivity : Activity() {
 
         clock.setTextColor(if (cue.ready) INK else ALARM)
         showGreeting(false)
+
+        page.loadUrl("https://$ASSET_HOST/index.html")
+        main.postDelayed(giveUpOnPage, PAGE_TIMEOUT_MS)
     }
 
     override fun onResume() {
@@ -125,11 +180,54 @@ class CueActivity : Activity() {
         cue.stop()
         main.removeCallbacks(tick)
         main.removeCallbacks(closeAfterHold)
+        main.removeCallbacks(giveUpOnPage)
         super.onPause()
         if (!isFinishing) finish()
     }
 
+    override fun onDestroy() {
+        // A WebView outliving its Activity holds the whole view tree; this one
+        // also has a GL context and a few megabytes of model in it.
+        runCatching { page.destroy() }
+        super.onDestroy()
+    }
+
+    /** Called from the page, on the main thread. */
+    private fun onPageState(state: String) {
+        if (state.startsWith("ready")) {
+            pageReady = true
+            page.visibility = View.VISIBLE
+            clock.visibility = View.GONE
+            greeting.visibility = View.GONE
+            // The whole line, not the word "ready": the page measures the
+            // model it loaded and puts the numbers here, and those numbers are
+            // the difference between a renderer that never started and a
+            // camera pointed at empty space.
+            Metrics(this).write("cue_page", mapOf("state" to state.take(200)))
+        } else {
+            Log.w(TAG, "cue page said: $state")
+            Metrics(this).write("cue_page", mapOf("state" to state.take(120)))
+        }
+    }
+
     private fun showGreeting(speaking: Boolean) {
+        if (pageReady) {
+            val call = if (speaking) "cueSpeak" else "cueIdle"
+            // Wrapped so the answer says what happened rather than the
+            // "null" every void call returns. A page that has loaded and a
+            // page whose functions are reachable are two different facts, and
+            // the second is the one that matters at the moment the line plays.
+            val probe =
+                "(function(){try{" +
+                    "if(typeof window.$call!=='function')return 'missing';" +
+                    "window.$call();" +
+                    "return 'ok:'+document.getElementById('clock').style.display;" +
+                    "}catch(e){return 'err:'+e.message}})()"
+            page.evaluateJavascript(probe) { result ->
+                Log.i(TAG, "cue page $call -> $result")
+            }
+            return
+        }
         clock.visibility = if (speaking) View.GONE else View.VISIBLE
         greeting.visibility = if (speaking) View.VISIBLE else View.GONE
     }
@@ -179,6 +277,9 @@ class CueActivity : Activity() {
         setBackgroundColor(Color.BLACK)
         layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
 
+        page = buildPage()
+        addView(page)
+
         clock = TextView(this@CueActivity).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 72f)
             typeface = Typeface.DEFAULT_BOLD
@@ -191,8 +292,86 @@ class CueActivity : Activity() {
         addView(greeting)
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun buildPage(): WebView = WebView(this).apply {
+        layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
+        // Invisible rather than gone. A gone view is never laid out, so the
+        // page measures itself at zero by zero and the renderer draws into a
+        // buffer of that size — which looks exactly like a model that failed
+        // to load. It has to be laid out from the start anyway: the whole
+        // point is that it is running long before the cue.
+        visibility = View.INVISIBLE
+        setBackgroundColor(Color.BLACK)
+
+        settings.javaScriptEnabled = true
+        // Everything is served from the interceptor below; the page has no
+        // reason to reach the network and no way to be told to.
+        settings.blockNetworkLoads = true
+        settings.mediaPlaybackRequiresUserGesture = false
+
+        addJavascriptInterface(Bridge(), "CueBridge")
+
+        // Console output from the page, in logcat beside everything else. The
+        // page is debugged over adb or not at all.
+        webChromeClient = object : android.webkit.WebChromeClient() {
+            override fun onConsoleMessage(
+                message: android.webkit.ConsoleMessage,
+            ): Boolean {
+                Log.i(TAG, "cue page console: " + message.message())
+                return true
+            }
+        }
+
+        webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest,
+            ): WebResourceResponse? {
+                val url = request.url
+                if (!url.host.equals(ASSET_HOST, ignoreCase = true)) return null
+                val name = url.path?.trimStart('/').orEmpty()
+                if (name.isEmpty() || name.contains("..")) return null
+
+                return runCatching {
+                    WebResourceResponse(
+                        mimeFor(name),
+                        if (name.endsWith(".vrm")) null else "utf-8",
+                        assets.open("$ASSET_DIR/$name"),
+                    )
+                }.getOrElse {
+                    Log.w(TAG, "cue page asked for a missing asset: $name")
+                    null
+                }
+            }
+        }
+
+        // The page must not eat the hold-to-close gesture, and it has nothing
+        // of its own to scroll or tap.
+        setOnTouchListener { _, event ->
+            onTouchEvent(event)
+            true
+        }
+        isFocusable = false
+        isFocusableInTouchMode = false
+    }
+
+    private fun mimeFor(name: String) = when {
+        name.endsWith(".html") -> "text/html"
+        name.endsWith(".js") -> "application/javascript"
+        name.endsWith(".vrm") -> "application/octet-stream"
+        else -> "application/octet-stream"
+    }
+
+    private inner class Bridge {
+        @JavascriptInterface
+        fun onState(state: String) {
+            main.post { onPageState(state) }
+        }
+    }
+
     /**
-     * What the room sees for the six seconds the device is talking.
+     * What the room sees for the six seconds the device is talking, when the
+     * page did not come up.
      *
      * The words are on the panel as well as in the air because the line is the
      * last thing said in the talk and a device speaking Japanese through a

@@ -43,6 +43,10 @@ openai_key_for_hermes.txt
 # clone. See CueActivity.
 !audioprobe/src/main/res/raw/cue_hello.wav
 
+# The character on the panel. A third-party model of a dozen megabytes that is
+# swapped per talk; see audioprobe/stage/README.md.
+audioprobe/src/main/assets/stage/*.vrm
+
 # Opens the destructive endpoints; never on the device, never committed.
 .admin-token
 .agent-token

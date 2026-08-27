@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>一言</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #000; color: #f2f2f2; overflow: hidden;
+    font-family: system-ui, "Noto Sans JP", sans-serif;
+    /* The panel is furniture on a lectern; nothing here is meant to be
+       selected, dragged or zoomed by a sleeve brushing past. */
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+
+  #clock {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 88px; font-weight: 700; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #stage { position: absolute; inset: 0; display: none; }
+  #canvas { width: 100%; height: 100%; display: block; }
+
+  #bubble {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: none;
+    padding: 14px 16px 18px;
+    background: linear-gradient(to top, rgba(0,0,0,0.92) 60%, rgba(0,0,0,0));
+    text-align: center;
+  }
+  #bubble .en {
+    color: #fe5000; font-size: 26px; font-weight: 700; line-height: 1.2;
+  }
+  #bubble .ja {
+    margin-top: 8px; font-size: 15px; line-height: 1.45;
+  }
+</style>
+
+<div id="clock">--:--</div>
+
+<div id="stage">
+  <canvas id="canvas"></canvas>
+</div>
+
+<div id="bubble">
+  <div class="en">Hello, World.</div>
+  <div class="ja">素晴らしい世界が<br>見えるようになりました。</div>
+</div>
+
+<script src="bundle.js"></script>
