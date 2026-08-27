@@ -20,6 +20,7 @@ import { interpretTargets, mintInterpretSession } from "./interpret";
 import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
 import { CUE_HTML, cueFire, cuePoll, cueState } from "./cue";
 import { UI_HTML } from "./ui";
+import { askAboutImage, LEGACY_VISION_MODEL, VISION_MODEL } from "./vision";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -1245,14 +1246,24 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
 }
 
 /**
- * Runs one stored photograph through the vision model and reports what it
- * cost, so the price of captioning the archive is measured rather than
- * guessed.
+ * Runs one stored photograph through a vision model and reports what it cost,
+ * so the price of captioning the archive is measured rather than guessed.
  *
  * The pricing page bills vision input per token and does not say how many
- * tokens an image becomes — the model tiles at 560x560, so a 640x480 frame is
- * somewhere between one and four tiles and the estimate spans 4x. The raw
- * response is returned unedited because whether it carries a usage block is
+ * tokens an image becomes — and the count is a property of the model, not of
+ * the picture. One that tiles at 560x560 and one that patches dynamically will
+ * not agree about the same frame, so an estimate carried across from the old
+ * model to a new one is not evidence of anything.
+ *
+ * The model is therefore a parameter. The way to choose one is to show two of
+ * them the same photograph and read the usage block off each:
+ *
+ *   ?model=       defaults to the current model; "legacy" reaches the old one
+ *   ?max_tokens=  the ceiling, which a thinking model spends before answering
+ *   ?reasoning=   low | medium | high
+ *
+ * The raw response is returned unedited because whether it carries a usage
+ * block — and where the answer sits inside it once a model thinks first — is
  * exactly what needs finding out.
  */
 async function debugCaption(env: Env, url: URL): Promise<Response> {
@@ -1270,22 +1281,38 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
 
   const prompt = url.searchParams.get("prompt") ??
     "この写真に写っているものを日本語で簡潔に説明してください。";
+  // "legacy" rather than the full id, because the point of this endpoint is to
+  // type the same request twice against the same photograph.
+  const wanted = url.searchParams.get("model");
+  const model = wanted === "legacy" ? LEGACY_VISION_MODEL : wanted ?? VISION_MODEL;
+  const maxTokens = intParam(url, "max_tokens") ?? 128;
+
+  const asked = url.searchParams.get("reasoning");
+  const reasoning =
+    asked === "low" || asked === "medium" || asked === "high" ? asked : undefined;
 
   const started = Date.now();
   try {
-    const result: any = await env.AI.run(
-      "@cf/meta/llama-3.2-11b-vision-instruct" as any,
-      { image: [...bytes], prompt, max_tokens: 128 } as any,
-    );
+    const answer = await askAboutImage(env.AI, bytes, prompt, maxTokens, {
+      model,
+      mime: object.httpMetadata?.contentType,
+      reasoning,
+    });
     return json({
       photo_id: photoId,
+      model,
+      max_tokens: maxTokens,
+      reasoning: reasoning ?? null,
       image_bytes: bytes.length,
       elapsed_ms: Date.now() - started,
+      // Pulled out because the comparison is read by eye, and the raw block is
+      // deep enough that the caption itself is hard to find in it.
+      text: answer.text,
       // Verbatim: the usage block, if there is one, is the whole point.
-      raw: result,
+      raw: answer.raw,
     });
   } catch (error) {
-    return json({ photo_id: photoId, error: String(error).slice(0, 400) }, 500);
+    return json({ photo_id: photoId, model, error: String(error).slice(0, 400) }, 500);
   }
 }
 
