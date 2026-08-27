@@ -86,6 +86,8 @@ class CueActivity : Activity() {
         /** Only ever seen by the person running the talk; see the class note. */
         private const val ALARM = 0xFFD24A2A.toInt()
 
+        private const val DIM = 0xFF8A8A8A.toInt()
+
         /**
          * How long the panel has to be held before the screen closes.
          *
@@ -120,6 +122,7 @@ class CueActivity : Activity() {
     private lateinit var clock: TextView
     private lateinit var greeting: View
     private lateinit var page: WebView
+    private lateinit var closeButton: TextView
     private lateinit var cue: Cue
 
     /** Whether the page reported that it has a character on screen. */
@@ -164,6 +167,7 @@ class CueActivity : Activity() {
         // back to the clock to express.
         clock.visibility = View.VISIBLE
         greeting.visibility = View.GONE
+        closeButton.visibility = View.GONE
 
         page.loadUrl("https://$ASSET_HOST/index.html")
         main.postDelayed(giveUpOnPage, PAGE_TIMEOUT_MS)
@@ -222,6 +226,11 @@ class CueActivity : Activity() {
      * back. Only the mouth stops.
      */
     private fun showGreeting(speaking: Boolean) {
+        // Appears with the character and stays with it. There is nothing to
+        // close while the panel is a clock, and a cross on a clock is a
+        // question from the audience about what the clock is.
+        if (speaking) closeButton.visibility = View.VISIBLE
+
         if (pageReady) {
             val call = if (speaking) "cueSpeak" else "cueQuiet"
             // Wrapped so the answer says what happened rather than the
@@ -304,6 +313,44 @@ class CueActivity : Activity() {
 
         greeting = buildGreeting()
         addView(greeting)
+
+        // Added last, so it is the first child offered a touch. The WebView
+        // below it swallows everything in its own bounds -- see buildPage --
+        // and a cross the page had to hear about would have to be plumbed
+        // through that.
+        closeButton = buildCloseButton()
+        addView(closeButton)
+    }
+
+    /**
+     * The way out once there is a character on the panel.
+     *
+     * The two-second hold still works and is still the only way out while the
+     * panel is a clock. This is for the other end of the talk: the device is
+     * being handed round, somebody is looking at it, and a gesture nobody
+     * knows about is not a way out at all.
+     *
+     * Not focusable, for the same reason nothing else here is: the side button
+     * activates whatever holds focus, and a cross that could be pressed by the
+     * button that says the line is the one arrangement this screen must not
+     * have.
+     */
+    private fun buildCloseButton(): TextView = TextView(this).apply {
+        text = "×"
+        setTextColor(DIM)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+        isFocusable = false
+        isFocusableInTouchMode = false
+        // A generous target on a panel this size, and far enough from the
+        // edges that a hand holding the device does not find it by accident.
+        layoutParams = FrameLayout.LayoutParams(dp(44), dp(44)).apply {
+            gravity = Gravity.TOP or Gravity.END
+            topMargin = dp(4)
+            marginEnd = dp(4)
+        }
+        setOnClickListener { finish() }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
