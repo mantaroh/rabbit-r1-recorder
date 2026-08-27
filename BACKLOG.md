@@ -822,13 +822,48 @@ existing screens drawn over it, rather than one more screen in the rotation —
 which is a larger change to that Activity than it sounds, and is most of the
 work.
 
-### The licence is a design constraint here, not a footnote
+### The licence is not the constraint it looked like
 
-ミニずんだもん carries `creditNotation: required` in its own metadata. On the
-talk prop the credit sits under the caption for the few minutes it is up. A
-screen that runs for hours has to carry it permanently, in a corner, at a size
-that is legible — which is panel space, on a panel that has already been
-argued down to one headline because there was not enough of it.
+This was written down wrong the first time and the correction is worth keeping,
+because the wrong version was about to cost the headline its space.
+
+The model's own metadata says `creditNotation: required`. **The licence it
+points at says the opposite.** The VN3 agreement shipped with the model set
+answers "Credit for use" with **Not necessary**, and the line reading
+`SSS LLC.` under "Credit notation" is the wording to use *if* a credit is
+shown, not an instruction to show one. `commercialUsage` in the metadata is
+`personalNonProfit`, which the agreement does bear out — publicising for
+non-profit purposes is what it permits.
+
+So the standby display does not owe a permanent credit in a corner, and the
+headline keeps its panel. The metadata enum is coarse and the exporter picks
+from a short list; the agreement is the document that governs.
+
+The credit is still worth showing, because it costs almost nothing in the right
+place and being correct here is cheap. That place is a licence screen in 設定,
+not the panel — see below. The talk prop keeps its credit under the caption,
+which is a few minutes of a screen nobody is reading anyway.
+
+Read from `ミニずんだもん_使用ライセンスvn3.pdf` in the model set. The Japanese
+original does not extract as text; the English edition shipped alongside it
+does, and the sentences quoted above are from that. Terms may change —
+<https://zunko.jp/guideline.html> is where the licensor says so.
+
+## Proposed: a licence screen in 設定
+
+There is not one, and the app has quietly accumulated things that want naming:
+OkHttp (Apache-2.0), and — since the talk prop — three.js and
+`@pixiv/three-vrm` (both MIT) bundled into `assets/stage/bundle.js`, plus a
+character model under its own agreement.
+
+One screen behind 設定, listing each component, its licence, and the full text
+where the licence asks for it. Apache-2.0 does ask; MIT asks for the copyright
+notice and permission text. Nothing here is a hardship and none of it is
+currently written down anywhere a person could find it.
+
+The reason to do it is not only tidiness. It gives every future credit — the
+next model, the next library — a place to go that is not the panel, which is
+the argument that nearly cost the standby display its headline above.
 
 ### Explicitly not proposed
 
