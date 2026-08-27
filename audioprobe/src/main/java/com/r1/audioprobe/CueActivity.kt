@@ -9,11 +9,16 @@ import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 本番 — the screen the device is left on while a talk is happening.
@@ -34,6 +39,14 @@ import android.widget.TextView
  * Recording itself is untouched. The talk is worth keeping, and the microphone
  * makes no noise.
  *
+ * **While it waits it is a clock, and nothing else.** No title, no status, no
+ * preview of the line. The device is in the room with the audience, and a
+ * panel captioned with the sentence it is about to say gives the ending away
+ * to anyone close enough to read it; a clock on a desk is furniture. The one
+ * concession is the colour: the clock is red instead of white when there is no
+ * audio to play, which says nothing to a stranger and everything to the person
+ * who has to know before they start talking.
+ *
  * **This is for one talk and is meant to be deleted afterwards.** It is not a
  * feature the device is gaining; it is a prop. What has to go with it: this
  * Activity, [Cue], `res/raw/cue_hello.wav`, the entry in 設定, the manifest
@@ -50,12 +63,34 @@ class CueActivity : Activity() {
     companion object {
         private const val R1_ORANGE = 0xFFFE5000.toInt()
         private const val INK = 0xFFF2F2F2.toInt()
-        private const val DIM = 0xFF8A8A8A.toInt()
+
+        /** Only ever seen by the person running the talk; see the class note. */
+        private const val ALARM = 0xFFD24A2A.toInt()
+
+        /**
+         * How long the panel has to be held before the screen closes.
+         *
+         * Android's own long press is around half a second, which is what a
+         * sleeve resting on a lectern does. Two seconds is a decision.
+         */
+        private const val HOLD_TO_CLOSE_MS = 2_000L
     }
 
-    private lateinit var status: TextView
+    private lateinit var clock: TextView
+    private lateinit var greeting: View
     private lateinit var cue: Cue
+
     private val main = Handler(Looper.getMainLooper())
+    private val stamp = SimpleDateFormat("H:mm", Locale.JAPAN)
+
+    private val tick = object : Runnable {
+        override fun run() {
+            clock.text = stamp.format(Date())
+            main.postDelayed(this, 1_000)
+        }
+    }
+
+    private val closeAfterHold = Runnable { finish() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,8 +105,10 @@ class CueActivity : Activity() {
         setContentView(buildUi())
 
         cue = Cue(this, UploadSettings(this), Metrics(this))
-        cue.onEvent = { line -> main.post { status.text = line } }
-        status.text = if (cue.ready) "準備中…" else "音声がありません"
+        cue.onSpeaking = { speaking -> main.post { showGreeting(speaking) } }
+
+        clock.setTextColor(if (cue.ready) INK else ALARM)
+        showGreeting(false)
     }
 
     override fun onResume() {
@@ -80,13 +117,21 @@ class CueActivity : Activity() {
         // seconds cannot race a timelapse cycle for the arm.
         RecorderService.onStage = true
         cue.watch()
+        tick.run()
     }
 
     override fun onPause() {
         RecorderService.onStage = false
         cue.stop()
+        main.removeCallbacks(tick)
+        main.removeCallbacks(closeAfterHold)
         super.onPause()
         if (!isFinishing) finish()
+    }
+
+    private fun showGreeting(speaking: Boolean) {
+        clock.visibility = if (speaking) View.GONE else View.VISIBLE
+        greeting.visibility = if (speaking) View.VISIBLE else View.GONE
     }
 
     /**
@@ -111,70 +156,76 @@ class CueActivity : Activity() {
         else -> super.onKeyDown(keyCode, event)
     }
 
+    /**
+     * Held for two seconds to leave.
+     *
+     * There is no exit on the panel because there is nothing on the panel, so
+     * the gesture has to be one nothing else performs. A tap would be the
+     * device brushing a lectern; a long hold is a hand deciding.
+     */
+    override fun onTouchEvent(event: MotionEvent?): Boolean {
+        when (event?.action) {
+            MotionEvent.ACTION_DOWN -> main.postDelayed(closeAfterHold, HOLD_TO_CLOSE_MS)
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL,
+            -> main.removeCallbacks(closeAfterHold)
+        }
+        return true
+    }
+
     // ------------------------------------------------------------------ ui ---
 
-    private fun buildUi(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
+    private fun buildUi(): View = FrameLayout(this).apply {
         setBackgroundColor(Color.BLACK)
-        setPadding(dp(16), dp(20), dp(16), dp(16))
         layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
 
-        addView(label("一言", 13f, DIM))
-        addView(space(dp(10)))
-
-        status = TextView(this@CueActivity).apply {
-            setTextColor(R1_ORANGE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+        clock = TextView(this@CueActivity).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 72f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply {
-                topMargin = dp(8)
-                bottomMargin = dp(12)
-            }
+            layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         }
-        addView(status)
+        addView(clock)
 
-        addView(
-            label("「Hello, World.\n素晴らしい世界が見えるようになりました。」", 14f, INK).apply {
-                gravity = Gravity.CENTER
-            },
-        )
-
-        // Pushes the exit to the bottom of the panel, out of reach of a thumb
-        // that is holding the device up.
-        addView(
-            View(this@CueActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
-            },
-        )
-
-        addView(label("サイドボタンで鳴らす", 13f, DIM).apply { gravity = Gravity.CENTER })
-        addView(space(dp(12)))
-
-        // Tapped, never focused. The side button activates whatever view has
-        // focus, so a focusable exit here would mean the button closed the
-        // screen instead of saying the line — which is the one failure this
-        // screen cannot recover from.
-        addView(
-            label("閉じる", 15f, DIM).apply {
-                gravity = Gravity.CENTER
-                isFocusable = false
-                isFocusableInTouchMode = false
-                setPadding(0, dp(10), 0, dp(10))
-                setOnClickListener { finish() }
-            },
-        )
+        greeting = buildGreeting()
+        addView(greeting)
     }
 
-    private fun label(text: String, sp: Float, colour: Int) = TextView(this).apply {
-        this.text = text
-        setTextColor(colour)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
-        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
-    }
+    /**
+     * What the room sees for the six seconds the device is talking.
+     *
+     * The words are on the panel as well as in the air because the line is the
+     * last thing said in the talk and a device speaking Japanese through a
+     * small speaker is not always caught first time.
+     */
+    private fun buildGreeting(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(dp(18), dp(18), dp(18), dp(18))
+        layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
 
-    private fun space(height: Int) = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(MATCH, height)
+        addView(
+            TextView(this@CueActivity).apply {
+                text = "Hello, World."
+                setTextColor(R1_ORANGE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
+            },
+        )
+        addView(
+            TextView(this@CueActivity).apply {
+                text = "素晴らしい世界が\n見えるようになりました。"
+                setTextColor(INK)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                gravity = Gravity.CENTER
+                setLineSpacing(0f, 1.3f)
+                layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                    topMargin = dp(14)
+                }
+            },
+        )
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()

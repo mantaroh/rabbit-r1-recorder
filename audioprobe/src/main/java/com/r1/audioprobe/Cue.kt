@@ -53,8 +53,16 @@ class Cue(
         private const val TAIL_MS = 400L
     }
 
-    /** Called on a background thread when something worth showing happens. */
-    @Volatile var onEvent: ((String) -> Unit)? = null
+    /**
+     * Called on a background thread as playback starts and again as it ends.
+     *
+     * The only thing the screen is told. It used to be handed status lines to
+     * print, and there is nowhere to print them now: the panel shows a clock
+     * and nothing else until the moment it shows the greeting, because it is
+     * sitting in front of an audience and a caption reading "待機中" over the
+     * line it is about to say would give the ending away.
+     */
+    @Volatile var onSpeaking: ((Boolean) -> Unit)? = null
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
@@ -100,17 +108,13 @@ class Cue(
      * button pressed because the phone did not work.
      */
     fun speak(why: String) {
-        val samples = pcm
-        if (samples == null) {
-            onEvent?.invoke("音声がありません")
-            return
-        }
+        val samples = pcm ?: return
         // A second press while the first is still audible is a nervous hand,
         // not a second cue.
         if (!speaking.compareAndSet(false, true)) return
 
         player.execute {
-            onEvent?.invoke("鳴らしています")
+            onSpeaking?.invoke(true)
             metrics.write("cue", mapOf("why" to why, "bytes" to samples.size))
             val speaker = Speaker(context)
             try {
@@ -123,11 +127,10 @@ class Cue(
             } catch (error: Throwable) {
                 Log.w(TAG, "cue playback failed", error)
                 metrics.write("cue", mapOf("why" to why, "error" to (error.message ?: "?")))
-                onEvent?.invoke("再生に失敗しました")
             } finally {
                 runCatching { speaker.stop() }
                 speaking.set(false)
-                onEvent?.invoke("待機中")
+                onSpeaking?.invoke(false)
             }
         }
     }
@@ -137,10 +140,9 @@ class Cue(
     /** Start watching the Worker's counter. Safe to call twice. */
     fun watch() {
         if (watcher != null) return
-        if (!settings.enabled || settings.baseUrl.isEmpty()) {
-            onEvent?.invoke("サイドボタンのみ")
-            return
-        }
+        // No upload target configured: the side button is the whole feature,
+        // and there is nothing to poll.
+        if (!settings.enabled || settings.baseUrl.isEmpty()) return
         watcher = Thread({ loop() }, "probe-cue").apply {
             isDaemon = true
             start()
@@ -156,16 +158,13 @@ class Cue(
         while (!Thread.currentThread().isInterrupted) {
             val seq = fetchSeq()
             when {
-                seq == null -> onEvent?.invoke("サーバーに繋がりません")
-                lastSeq == null -> {
-                    lastSeq = seq
-                    onEvent?.invoke("待機中")
-                }
+                seq == null -> Unit
+                // Adopted rather than acted on; see lastSeq.
+                lastSeq == null -> lastSeq = seq
                 seq != lastSeq -> {
                     lastSeq = seq
                     speak("poll")
                 }
-                else -> if (!speaking.get()) onEvent?.invoke("待機中")
             }
 
             try {
