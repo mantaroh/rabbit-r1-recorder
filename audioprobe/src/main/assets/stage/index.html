@@ -39,6 +39,14 @@
   #bubble .ja {
     margin-top: 8px; font-size: 15px; line-height: 1.45;
   }
+  /* The model's own metadata says creditNotation: required. It is small
+     because it is a legal line and not part of the ending, and it is on the
+     panel rather than only in a document because this is where the character
+     appears. */
+  #bubble .credit {
+    margin-top: 10px; font-size: 9px; line-height: 1.5;
+    letter-spacing: .04em; color: #8a8a8a;
+  }
 </style>
 
 <div id="clock">--:--</div>
@@ -50,6 +58,7 @@
 <div id="bubble">
   <div class="en">Hello, World.</div>
   <div class="ja">素晴らしい世界が<br>見えるようになりました。</div>
+  <div class="credit">ミニずんだもん © SSS LLC.<br>VOICEVOX：ずんだもん</div>
 </div>
 
 <script src="bundle.js"></script>

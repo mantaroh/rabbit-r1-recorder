@@ -160,7 +160,10 @@ class CueActivity : Activity() {
         cue.onSpeaking = { speaking -> main.post { showGreeting(speaking) } }
 
         clock.setTextColor(if (cue.ready) INK else ALARM)
-        showGreeting(false)
+        // Set here rather than through showGreeting, which no longer has a way
+        // back to the clock to express.
+        clock.visibility = View.VISIBLE
+        greeting.visibility = View.GONE
 
         page.loadUrl("https://$ASSET_HOST/index.html")
         main.postDelayed(giveUpOnPage, PAGE_TIMEOUT_MS)
@@ -210,9 +213,17 @@ class CueActivity : Activity() {
         }
     }
 
+    /**
+     * The character arrives and then stays.
+     *
+     * There is no way back to the clock. The line is the end of the talk, and
+     * what follows it is questions and people coming up to look at the device;
+     * a panel that reverted to a clock six seconds later would take the ending
+     * back. Only the mouth stops.
+     */
     private fun showGreeting(speaking: Boolean) {
         if (pageReady) {
-            val call = if (speaking) "cueSpeak" else "cueIdle"
+            val call = if (speaking) "cueSpeak" else "cueQuiet"
             // Wrapped so the answer says what happened rather than the
             // "null" every void call returns. A page that has loaded and a
             // page whose functions are reachable are two different facts, and
@@ -228,8 +239,11 @@ class CueActivity : Activity() {
             }
             return
         }
-        clock.visibility = if (speaking) View.GONE else View.VISIBLE
-        greeting.visibility = if (speaking) View.VISIBLE else View.GONE
+        // The same one-way rule for the fallback views.
+        if (speaking) {
+            clock.visibility = View.GONE
+            greeting.visibility = View.VISIBLE
+        }
     }
 
     /**

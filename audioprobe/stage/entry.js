@@ -62,19 +62,31 @@ key.position.set(0.6, 1.6, 1.4);
 scene.add(key);
 
 let vrm = null;
+
+/** Whether the mouth is moving. */
 let speaking = false;
+
+/**
+ * Whether the lid is off.
+ *
+ * One way only. The character arrives with the last line of the talk and then
+ * stays for whatever follows it -- questions, applause, somebody walking up to
+ * look at the device. Going back to a clock would take the ending away again.
+ */
+let revealed = false;
 const clock = new THREE.Clock();
 
 /**
- * Which way the model has to be turned to face the room.
+ * Which way the model has to be turned to face the room, decided per model.
  *
- * `VRMUtils.rotateVRM0` is supposed to settle this: VRM 0.x characters are
- * authored facing -Z and it turns them to +Z, where the camera is. The model
- * in this build came out facing away regardless, and a character delivering
- * the last line of a talk with its back to the audience is not a subtle bug.
- * Half a turn, decided by looking at the panel.
+ * A VRM 1.0 character is authored facing the viewer and needs nothing. A 0.x
+ * one is authored facing away and `VRMUtils.rotateVRM0` turns it -- except
+ * that the 0.x model this was first built against came out facing away even
+ * so, and a character delivering the last line of a talk with its back to the
+ * audience is not a subtle bug. Half a turn for 0.x, none for 1.0; both
+ * confirmed by looking at the panel rather than at the specification.
  */
-const BASE_YAW = Math.PI;
+let baseYaw = 0;
 
 // -------------------------------------------------------------- expression ---
 
@@ -124,7 +136,9 @@ function frame() {
   // Covered by the clock and nobody is watching: draw a few times a second
   // rather than sixty, so a talk's worth of waiting is not spent turning the
   // GPU over. Still drawing, though -- that is the whole point of this page.
-  if (!speaking) {
+  // Once the lid is off this stops applying, mouth moving or not: a character
+  // on screen at five frames a second reads as a fault.
+  if (!revealed) {
     if (t - lastDrawnAt < 0.2) return;
     lastDrawnAt = t;
   }
@@ -138,7 +152,7 @@ function frame() {
     // A slow sway around the base yaw, so a still model does not look like a
     // frozen one. Written as base plus offset rather than assigned outright,
     // which is how the first version quietly undid the turn above.
-    vrm.scene.rotation.y = BASE_YAW + Math.sin(t * 0.5) * 0.06;
+    vrm.scene.rotation.y = baseYaw + Math.sin(t * 0.5) * 0.06;
     vrm.scene.position.y = Math.sin(t * 1.1) * 0.004;
     vrm.update(delta);
   }
@@ -159,6 +173,7 @@ loader.load(
     // VRM 0.x models face -Z; without this the character has its back to the
     // room, which is a very quiet way to fail.
     VRMUtils.rotateVRM0(vrm);
+    baseYaw = vrm.meta && vrm.meta.metaVersion === "0" ? Math.PI : 0;
     VRMUtils.removeUnnecessaryJoints(gltf.scene);
     vrm.scene.traverse((object) => {
       object.frustumCulled = false;
@@ -185,11 +200,22 @@ loader.load(
     const size = box.getSize(new THREE.Vector3());
     const centre = box.getCenter(new THREE.Vector3());
 
-    const framed = Math.max(size.y, size.x) * 1.15;
+    // Head and torso rather than the whole figure. The panel is the size of a
+    // matchbox and a full-length character puts a face on it a few millimetres
+    // across; the caption covers the lower third anyway, so the legs were
+    // paying rent on space that is already spoken for.
+    // 0.8 of the figure, not half. A tighter crop put the mouth behind the
+    // caption, and the mouth is the part that moves while the line plays.
+    const framed = size.y * 0.8;
     const distance = framed / 2 / Math.tan((camera.fov / 2) * (Math.PI / 180));
 
-    camera.position.set(centre.x, centre.y, centre.z + distance);
-    camera.lookAt(centre.x, centre.y, centre.z);
+    // Anchored to the top of the model rather than to its centre, so the face
+    // lands in the upper half whatever the proportions are -- which is the one
+    // thing that has to hold when the model is swapped.
+    const lookY = box.max.y + size.y * 0.02 - framed / 2;
+
+    camera.position.set(centre.x, lookY, centre.z + distance);
+    camera.lookAt(centre.x, lookY, centre.z);
     camera.updateProjectionMatrix();
 
     // Out of the T-pose. A VRM loads with its arms straight out because that
@@ -212,6 +238,7 @@ loader.load(
           view: [document.documentElement.clientWidth, document.documentElement.clientHeight],
           size: round(size),
           cam: round(camera.position),
+          meta: (vrm.meta && vrm.meta.metaVersion) || "?",
         }),
     );
   },
@@ -235,12 +262,19 @@ function report(state) {
  * has been drawing since the screen opened, and this only lifts the lid.
  */
 window.cueSpeak = function () {
+  revealed = true;
   speaking = true;
   clockEl.style.opacity = "0";
   bubbleEl.style.display = "block";
 };
 
+/** The line has finished. The mouth stops; everything else stays. */
+window.cueQuiet = function () {
+  speaking = false;
+};
+
 window.cueIdle = function () {
+  revealed = false;
   speaking = false;
   clockEl.style.opacity = "1";
   bubbleEl.style.display = "none";

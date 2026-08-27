@@ -24,6 +24,13 @@ Without it the page reports a failure, `CueActivity` keeps its own views, and
 the line is still spoken — the audio never goes through the page. So a
 forgotten model costs the picture and nothing else.
 
+The model in use for this talk is ミニずんだもん (SSS LLC., 2025), whose own
+metadata carries `creditNotation: required`. The credit is on the panel, in
+`index.html`, under the caption. It is not decoration and it does not come off.
+Terms: <https://zunko.jp/guideline.html>.
+
+Not committed for the same reason it is not ours to commit.
+
 Nothing about a model's scale, proportions or facing is assumed; the camera is
 framed from the bounding box after the matrices are updated. `BASE_YAW` in
 `entry.js` is the one thing decided by looking at the panel rather than
