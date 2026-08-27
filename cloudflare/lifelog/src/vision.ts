@@ -48,6 +48,17 @@ function takesBytesDirectly(model: string): boolean {
 export interface VisionAnswer {
   /** The answer, trimmed. Empty means the model said nothing usable. */
   text: string;
+  /**
+   * Why the model stopped.
+   *
+   * "length" is the one that matters: it means the ceiling cut the answer off,
+   * and on a model that thinks first it means the ceiling was spent thinking
+   * and the answer was never written. That is indistinguishable from a refusal
+   * if you only look at the text, and they want opposite fixes.
+   */
+  finishReason: string | null;
+  /** What it thought before answering, when it thinks out loud. */
+  reasoning: string | null;
   /** What it cost, when the response carries a usage block. */
   neurons: number | null;
   /** Unedited, for the debug endpoint. Nothing else should read this. */
@@ -85,6 +96,18 @@ export interface AskOptions {
    * rather than a short one — see the note on the presence check in nudge.ts.
    */
   reasoning?: "low" | "medium" | "high";
+  /**
+   * Asks the chat template not to think at all.
+   *
+   * Measured, and the reason this exists: reasoning_effort "low" did not
+   * shorten the thinking by a single token — the same frame came back at 220
+   * of 220 and 8.709 neurons with the setting and without it — and at a
+   * ceiling of 512 the model was still thinking when it was cut off, so the
+   * answer field was empty every time. The effort knob does not reach this.
+   * chat_template_kwargs does, if the template honours it; whether it does is
+   * what the debug endpoint is for.
+   */
+  noThink?: boolean;
 }
 
 /**
@@ -121,14 +144,25 @@ export async function askAboutImage(
         max_completion_tokens: maxTokens,
       };
 
-  if (options.reasoning && !takesBytesDirectly(model)) {
-    input.reasoning_effort = options.reasoning;
+  if (!takesBytesDirectly(model)) {
+    if (options.reasoning) input.reasoning_effort = options.reasoning;
+    if (options.noThink) input.chat_template_kwargs = { enable_thinking: false };
   }
 
   const result: any = await ai.run(model as any, input as any);
 
+  // Two response shapes, for the same reason there are two request shapes.
+  // The old model answers in `response`; everything newer answers where
+  // OpenAI puts it. Reading only the first is how five measurements came back
+  // blank while the model had in fact looked at the picture and described it.
+  const choice = result?.choices?.[0];
+  const text = String(choice?.message?.content ?? result?.response ?? "").trim();
+  const reasoning = choice?.message?.reasoning_content;
+
   return {
-    text: String(result?.response ?? "").trim(),
+    text,
+    finishReason: choice?.finish_reason ?? null,
+    reasoning: typeof reasoning === "string" && reasoning ? reasoning : null,
     neurons: Number(result?.usage?.neurons) || null,
     raw: result,
   };

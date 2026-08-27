@@ -17,7 +17,13 @@
 import { handleMcp } from "./mcp";
 import { fetchMapAssets, serveMap } from "./map";
 import { interpretTargets, mintInterpretSession } from "./interpret";
-import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
+import {
+  confirmNudge,
+  nudgeDue,
+  nudgeHistory,
+  nudgeOutcome,
+  PRESENCE_PROMPT,
+} from "./nudge";
 import { CUE_HTML, cueFire, cuePoll, cueState } from "./cue";
 import { UI_HTML } from "./ui";
 import { askAboutImage, LEGACY_VISION_MODEL, VISION_MODEL } from "./vision";
@@ -1261,6 +1267,14 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
  *   ?model=       defaults to the current model; "legacy" reaches the old one
  *   ?max_tokens=  the ceiling, which a thinking model spends before answering
  *   ?reasoning=   low | medium | high
+ *   ?no_think=1   asks the chat template to skip thinking altogether
+ *   ?preset=presence   the presence check's own question, verbatim
+ *
+ * The preset is not a convenience. Passing that question as ?prompt= put it
+ * through a URL, and what reached the model was "この画像に、話" and then
+ * mojibake — it spent its whole budget wondering what had been asked, and the
+ * three measurements taken that way answered nothing. A question that lives in
+ * the source is a question that arrives.
  *
  * The raw response is returned unedited because whether it carries a usage
  * block — and where the answer sits inside it once a model thinks first — is
@@ -1279,8 +1293,10 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
   if (!object) return json({ error: "image missing" }, 404);
   const bytes = new Uint8Array(await object.arrayBuffer());
 
-  const prompt = url.searchParams.get("prompt") ??
-    "この写真に写っているものを日本語で簡潔に説明してください。";
+  const prompt = url.searchParams.get("preset") === "presence"
+    ? PRESENCE_PROMPT
+    : url.searchParams.get("prompt") ??
+      "この写真に写っているものを日本語で簡潔に説明してください。";
   // "legacy" rather than the full id, because the point of this endpoint is to
   // type the same request twice against the same photograph.
   const wanted = url.searchParams.get("model");
@@ -1297,6 +1313,7 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
       model,
       mime: object.httpMetadata?.contentType,
       reasoning,
+      noThink: url.searchParams.get("no_think") === "1",
     });
     return json({
       photo_id: photoId,
@@ -1308,6 +1325,10 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
       // Pulled out because the comparison is read by eye, and the raw block is
       // deep enough that the caption itself is hard to find in it.
       text: answer.text,
+      // "length" with an empty text is the failure this endpoint exists to
+      // catch: the ceiling went on thinking and no answer was ever written.
+      finish_reason: answer.finishReason,
+      reasoning_chars: answer.reasoning?.length ?? 0,
       // Verbatim: the usage block, if there is one, is the whole point.
       raw: answer.raw,
     });
