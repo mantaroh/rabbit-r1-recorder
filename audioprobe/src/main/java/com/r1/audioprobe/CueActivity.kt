@@ -221,7 +221,7 @@ class CueActivity : Activity() {
                 "(function(){try{" +
                     "if(typeof window.$call!=='function')return 'missing';" +
                     "window.$call();" +
-                    "return 'ok:'+document.getElementById('clock').style.display;" +
+                    "return 'ok:'+document.getElementById('clock').style.opacity;" +
                     "}catch(e){return 'err:'+e.message}})()"
             page.evaluateJavascript(probe) { result ->
                 Log.i(TAG, "cue page $call -> $result")

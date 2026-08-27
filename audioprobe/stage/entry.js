@@ -114,10 +114,20 @@ function mouth(t, expressions) {
   expressions.setValue("aa", Math.max(0, open) * 0.7);
 }
 
+let lastDrawnAt = 0;
+
 function frame() {
   requestAnimationFrame(frame);
   const delta = clock.getDelta();
   const t = clock.elapsedTime;
+
+  // Covered by the clock and nobody is watching: draw a few times a second
+  // rather than sixty, so a talk's worth of waiting is not spent turning the
+  // GPU over. Still drawing, though -- that is the whole point of this page.
+  if (!speaking) {
+    if (t - lastDrawnAt < 0.2) return;
+    lastDrawnAt = t;
+  }
 
   if (vrm) {
     const expressions = vrm.expressionManager;
@@ -215,17 +225,24 @@ function report(state) {
 
 // -------------------------------------------------------------- the states ---
 
+/**
+ * The character is always on the panel. The clock is what covers it.
+ *
+ * Showing the stage at the moment of the cue meant the compositor had a GL
+ * surface to bring up right then, and it took over a second to arrive --
+ * measured, by photographing the panel every 800 ms: the voice had started
+ * and the picture had not. Nothing is switched on at the cue now. The canvas
+ * has been drawing since the screen opened, and this only lifts the lid.
+ */
 window.cueSpeak = function () {
   speaking = true;
-  clockEl.style.display = "none";
-  stageEl.style.display = "block";
+  clockEl.style.opacity = "0";
   bubbleEl.style.display = "block";
 };
 
 window.cueIdle = function () {
   speaking = false;
-  clockEl.style.display = "flex";
-  stageEl.style.display = "none";
+  clockEl.style.opacity = "1";
   bubbleEl.style.display = "none";
 };
 

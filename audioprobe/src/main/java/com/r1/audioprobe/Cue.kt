@@ -49,8 +49,18 @@ class Cue(
          */
         const val POLL_INTERVAL_MS = 2_000L
 
-        /** Let the last sample clear the buffer before the track is released. */
-        private const val TAIL_MS = 400L
+        /**
+         * How long to keep waiting after the audio should have finished.
+         *
+         * [Speaker.stop] pauses and flushes the track, so anything still in
+         * the buffer is discarded rather than played out. The instant the
+         * speaker reports is computed from the byte count at the moment the
+         * write is handed over, which is before the track has decided to
+         * start; whatever it spent priming comes off the end. A second and a
+         * half is far more than that gap and costs nothing but a screen that
+         * holds the greeting slightly longer.
+         */
+        private const val TAIL_MS = 1_500L
     }
 
     /**
