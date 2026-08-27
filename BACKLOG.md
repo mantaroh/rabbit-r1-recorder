@@ -731,3 +731,126 @@ shown so far had a person in it, so it has never yet had the chance to say no.
 Design: 2 planned / 2 actual — one to survey the ground and propose, one to
 settle the four choices and write this down. Implementation: 1 planned /
 1 actual.
+
+## Proposed: an avatar on the standby display, holding the news
+
+The standby display becomes a character rather than a page of text: the model
+stands on the panel and holds a board with the current headline on it.
+
+Written down the night the talk prop was built, because that prop answered most
+of the questions this feature would otherwise have had to ask first.
+
+### What is now known rather than assumed
+
+All of it measured on the device on 2026-08-27, building 一言:
+
+- The R1 runs **WebView 147** (Chromium) over **OpenGL ES 3.2** on a PowerVR
+  GE8320. three.js and `@pixiv/three-vrm` bundled to one classic script render
+  a **19 MB VRM 1.0 model** on it, with spring bones, blinking and expression
+  weights, at a frame rate that reads as smooth on a 480×640 panel.
+- Assets reach the page through `WebViewClient.shouldInterceptRequest` under a
+  host that does not exist. That gives an ordinary origin — needed for `fetch`
+  — without adding androidx.webkit, which this app deliberately does not have.
+- The model was on screen well inside a twelve-second budget from a cold start.
+  The load time itself was never measured; it wants measuring before anything
+  depends on it.
+- Four failures that all look identical from the outside, each of which cost an
+  hour: a `GONE` WebView is never laid out and the page measures itself at zero
+  by zero; `Box3` read before `updateMatrixWorld` puts the camera at knee
+  height; the head bone is not nine tenths of the way up every rig (0.28 of
+  0.72 on one model); and `VRMUtils.rotateVRM0` does not leave every 0.x model
+  facing the viewer. Framing from the bounding box after the matrices are
+  updated, and taking the facing from `meta.metaVersion`, survives a model
+  swap. See `audioprobe/stage/entry.js`.
+- Drawing at five frames a second while nothing is happening is invisible and
+  cheap. Anything on screen has to be drawn properly.
+
+### Why the battery objection mostly is not one
+
+A 3D scene running all day would be indefensible on a 1010 mAh device. The
+standby display is not all day: `Idle` only fires while charging, and
+`SignageActivity.applyKeepAwake` only holds the panel awake while charging. So
+the avatar renders on a desk with a cable in it and nowhere else, which is the
+same condition under which the display already keeps a bright panel lit.
+
+What does want measuring is the *idle* draw, since the panel is up for hours
+rather than the five minutes the talk needed.
+
+### The part that is genuinely hard, and it is not the 3D
+
+The board.
+
+`HeadlinesScreen` already settled this argument once, and the note above it
+says so: at a size that fits four Japanese headlines on a 240 dp panel, none of
+them can be read from across a desk. It shows **one headline, large, for
+fifteen seconds**. A board held by a character is by definition smaller than
+the panel the headline currently gets all of — so the charming version is
+strictly worse at the one thing the screen exists for.
+
+Three ways out, in order of how much they give up:
+
+1. **Board holds the headline.** Most faithful to the idea, least readable.
+   Only viable if the character is small and the board is most of the frame,
+   at which point it is a text screen with a mascot in the corner.
+2. **Character beside the text.** The headline keeps its size and position; the
+   model stands to one side of it, or behind it at low contrast. Readable, and
+   the least interesting version of the idea.
+3. **Board holds the source, text holds the headline.** The board carries the
+   feed name — short, fixed, legible at any size — and the headline stays as
+   HTML underneath. The board earns its place by saying something the text no
+   longer has to.
+
+Three is the one to build. One is the one to try first for a day, because the
+argument above is about reading and this screen is glanced at, and that
+distinction has already been wrong once here.
+
+### How the board would be made
+
+A `THREE.Mesh` plane parented to the hand bone —
+`vrm.humanoid.getNormalizedBoneNode("rightHand")` — with a `CanvasTexture` for
+its face, redrawn when the headline changes and marked `needsUpdate`. Canvas 2D
+draws Japanese in this WebView. The arm goes into a holding pose the same way
+the talk prop takes the model out of its T-pose: setting rotations on the
+normalized rig, which three-vrm copies onto the real bones each update.
+
+### Where it does not fit yet
+
+`SignageScreen` hands back a `View` and `SignageActivity.show()` swaps one for
+another. An avatar built that way would parse a 19 MB model on every turn of
+the wheel. The avatar has to become the standby display's *frame*, with the
+existing screens drawn over it, rather than one more screen in the rotation —
+which is a larger change to that Activity than it sounds, and is most of the
+work.
+
+### The licence is a design constraint here, not a footnote
+
+ミニずんだもん carries `creditNotation: required` in its own metadata. On the
+talk prop the credit sits under the caption for the few minutes it is up. A
+screen that runs for hours has to carry it permanently, in a corner, at a size
+that is legible — which is panel space, on a panel that has already been
+argued down to one headline because there was not enough of it.
+
+### Explicitly not proposed
+
+- Lip sync. The page never sees audio; the talk prop moves the mouth on a
+  shaped oscillator and that is all this would get.
+- The avatar speaking. That is 声かけ, which has its own screen and its own
+  reasons for taking over the panel.
+- Animation clips. VRMA would want a second dependency and a second licence
+  question, for movement a sway and a blink already cover.
+
+### Open questions
+
+- The idle draw, in milliamps, over an hour. Everything above assumes it is
+  small next to a lit panel and nothing has measured it.
+- Whether the model belongs in the APK or in R2 behind the Worker. Nineteen
+  megabytes is a fifth of the current APK, and the device already knows how to
+  fetch things.
+- Whether the character should react to anything — a segment uploading, a
+  question being asked — or simply stand there. Reacting is where this stops
+  being a wallpaper and starts being a second thing to debug.
+
+### Turns
+
+Design: 1 planned / 1 actual, written from a prop that had just answered the
+technical half. Implementation: not started.
