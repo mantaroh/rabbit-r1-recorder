@@ -161,6 +161,19 @@ class RecorderService : Service() {
          */
         @Volatile var audioTap: ((ShortArray, Int) -> Unit)? = null
 
+        /**
+         * Whether the device is in front of an audience; see [CueActivity].
+         *
+         * Set while the stage screen is up, and it means one thing: nothing
+         * that moves the arm or starts a conversation. Away from the home
+         * Wi-Fi the timelapse fires every five minutes and the arm is audible,
+         * so a talk without this would have had a motor run through it.
+         *
+         * Recording is deliberately not included. The talk is worth keeping
+         * and the microphone makes no noise.
+         */
+        @Volatile var onStage = false
+
     }
 
     private lateinit var metrics: Metrics
@@ -682,7 +695,7 @@ class RecorderService : Service() {
             // Returns immediately; the cycle itself runs on its own thread.
             // Skipped entirely while a question is in flight — the camera and
             // the arm have no business moving mid-question.
-            if (photosEnabled && query.state == QueryController.State.LIFELOG) {
+            if (photosEnabled && !onStage && query.state == QueryController.State.LIFELOG) {
                 if (vad.isSpeaking) timelapse?.noteSpeech()
                 timelapse?.tick(now, vad.isSpeaking)
             }
@@ -698,7 +711,7 @@ class RecorderService : Service() {
             // timelapse is — the arm and the microphone are both already spoken
             // for — and while the interpreter or a previous nudge holds the
             // audio tap, since two live sessions would fight over it.
-            if (query.state == QueryController.State.LIFELOG && audioTap == null) {
+            if (!onStage && query.state == QueryController.State.LIFELOG && audioTap == null) {
                 nudge?.tick(now, writeAudio)
             }
 

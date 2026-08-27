@@ -188,6 +188,15 @@ class SettingsActivity : Activity() {
             (it as Button).text = if (upload.nudge) "声かけ: ON" else "声かけ: OFF"
         }.also { it.text = if (upload.nudge) "声かけ: ON" else "声かけ: OFF" }, wide())
 
+        // Behind 設定 rather than on the home screen, which has six entries
+        // deliberately and none of them for something used once and then
+        // never again. The screen is opened before the talk starts, so the
+        // extra two presses cost nothing at the moment they would matter.
+        column.addView(
+            button("本番（一言）") { startActivity(Intent(this, CueActivity::class.java)) },
+            wide(),
+        )
+
         column.addView(button("戻る") { finish() }, wide())
 
         infoView = TextView(this).apply {

@@ -38,6 +38,11 @@ openai_key_for_hermes.txt
 *.opus
 *.m4a
 
+# One exception: a line synthesised for a talk, which is source rather than a
+# recording of anybody. Without this the demo builds silently from a fresh
+# clone. See CueActivity.
+!audioprobe/src/main/res/raw/cue_hello.wav
+
 # Opens the destructive endpoints; never on the device, never committed.
 .admin-token
 .agent-token

@@ -18,6 +18,7 @@ import { handleMcp } from "./mcp";
 import { fetchMapAssets, serveMap } from "./map";
 import { interpretTargets, mintInterpretSession } from "./interpret";
 import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
+import { CUE_HTML, cueFire, cuePoll, cueState } from "./cue";
 import { UI_HTML } from "./ui";
 
 interface Env {
@@ -151,6 +152,18 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/nudge/outcome") {
       return nudgeOutcome(env, url);
+    }
+    // 一言. Three routes and a page; see cue.ts.
+    if (url.pathname === "/v1/cue") {
+      return request.method === "POST" ? cueFire(env) : cuePoll(env);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/cue/state") {
+      return cueState(env);
+    }
+    if (request.method === "GET" && url.pathname === "/cue") {
+      return new Response(CUE_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
     }
     if (request.method === "GET" && url.pathname === "/v1/nudge/history") {
       return nudgeHistory(env, url);
@@ -334,6 +347,10 @@ const DEVICE_ROUTES: Array<{ method: string; path: RegExp }> = [
   { method: "GET", path: /^\/v1\/nudge$/ },
   { method: "POST", path: /^\/v1\/nudge\/confirm$/ },
   { method: "POST", path: /^\/v1\/nudge\/outcome$/ },
+  // 一言: the poll only. Firing the cue belongs to the person holding the
+  // phone, and a device that could advance the counter could interrupt its
+  // own talk.
+  { method: "GET", path: /^\/v1\/cue$/ },
 ];
 
 function principalFor(request: Request, env: Env): Principal | null {
