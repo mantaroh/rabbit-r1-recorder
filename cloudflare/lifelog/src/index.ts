@@ -1211,8 +1211,10 @@ const CAPTION_PROMPT =
  * Room for the answer, and a ceiling on what a runaway one can cost.
  *
  * The measurement that justified this feature came back truncated at 128, so
- * this is higher; output is 14x the price of input per token, which is why it
- * is not higher still.
+ * this is higher; output is 3x the price of input per token, which is why it
+ * is not higher still. It was 14x under the model this replaced, and the
+ * ceiling has not moved because the reason for it has not: a caption that runs
+ * long is a caption nobody asked for.
  */
 const CAPTION_MAX_TOKENS = 220;
 
@@ -1230,12 +1232,30 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
   }
 
   const bytes = new Uint8Array(await object.arrayBuffer());
-  const result: any = await env.AI.run(
-    "@cf/meta/llama-3.2-11b-vision-instruct" as any,
-    { image: [...bytes], prompt: CAPTION_PROMPT, max_tokens: CAPTION_MAX_TOKENS } as any,
-  );
+  const answer = await askAboutImage(env.AI, bytes, CAPTION_PROMPT, CAPTION_MAX_TOKENS, {
+    mime: object.httpMetadata?.contentType,
+    // This model thinks before it answers unless the template is told not to,
+    // and thinking is billed as output. Measured on one frame: 567 output
+    // tokens with it and 21 without, for the same caption. The ceiling is 220,
+    // so left alone it spends all of it thinking and returns nothing at all.
+    noThink: true,
+  });
 
-  const text = String(result?.response ?? "").trim();
+  // An empty answer is not a caption. Storing one would mark the frame
+  // captioned forever with nothing in it, and the frame would never come back
+  // through the backfill — so this is a failure, and it says which kind.
+  if (!answer.text) {
+    await env.DB.prepare(
+      `UPDATE photos SET status = 'failed', error = ?1 WHERE photo_id = ?2`,
+    )
+      .bind(
+        `empty caption (finish_reason: ${answer.finishReason ?? "none"})`,
+        message.segmentId,
+      )
+      .run();
+    return;
+  }
+
   await env.DB.prepare(
     `UPDATE photos
         SET caption = ?1, caption_at = ?2, caption_neurons = ?3,
@@ -1243,9 +1263,9 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
       WHERE photo_id = ?4`,
   )
     .bind(
-      text,
+      answer.text,
       new Date().toISOString(),
-      Number(result?.usage?.neurons) || null,
+      answer.neurons,
       message.segmentId,
     )
     .run();
@@ -1268,7 +1288,8 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
  *   ?max_tokens=  the ceiling, which a thinking model spends before answering
  *   ?reasoning=   low | medium | high
  *   ?no_think=1   asks the chat template to skip thinking altogether
- *   ?preset=presence   the presence check's own question, verbatim
+ *   ?preset=caption | presence   the prompt one of the two callers uses,
+ *                    verbatim
  *
  * The preset is not a convenience. Passing that question as ?prompt= put it
  * through a URL, and what reached the model was "この画像に、話" and then
@@ -1293,8 +1314,11 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
   if (!object) return json({ error: "image missing" }, 404);
   const bytes = new Uint8Array(await object.arrayBuffer());
 
-  const prompt = url.searchParams.get("preset") === "presence"
+  const preset = url.searchParams.get("preset");
+  const prompt = preset === "presence"
     ? PRESENCE_PROMPT
+    : preset === "caption"
+    ? CAPTION_PROMPT
     : url.searchParams.get("prompt") ??
       "この写真に写っているものを日本語で簡潔に説明してください。";
   // "legacy" rather than the full id, because the point of this endpoint is to
