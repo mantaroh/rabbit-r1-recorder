@@ -188,6 +188,16 @@ class SettingsActivity : Activity() {
             (it as Button).text = if (upload.nudge) "声かけ: ON" else "声かけ: OFF"
         }.also { it.text = if (upload.nudge) "声かけ: ON" else "声かけ: OFF" }, wide())
 
+        // Only ever runs while charging, like the panel it draws on; see
+        // UploadSettings.avatar.
+        column.addView(toggle("待受アバター: ON") {
+            upload.avatar = !upload.avatar
+            (it as Button).text =
+                if (upload.avatar) "待受アバター: ON" else "待受アバター: OFF"
+        }.also {
+            it.text = if (upload.avatar) "待受アバター: ON" else "待受アバター: OFF"
+        }, wide())
+
         // Behind 設定 rather than on the home screen, which has six entries
         // deliberately and none of them for something used once and then
         // never again. The screen is opened before the talk starts, so the

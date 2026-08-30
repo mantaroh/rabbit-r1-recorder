@@ -6,15 +6,20 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.webkit.WebView
 import android.widget.FrameLayout
+import org.json.JSONObject
 
 /**
  * The standby display: what the device shows when nobody is using it.
@@ -32,11 +37,26 @@ import android.widget.FrameLayout
 class SignageActivity : Activity() {
 
     companion object {
+        private const val TAG = "R1AudioProbe"
+
         /** How often the visible screen is asked to redraw. */
         private const val TICK_MS = 1_000L
 
         /** How often the server is asked what today looks like. */
         private const val FETCH_MS = 120_000L
+
+        /**
+         * How much of the panel the screens get when the character is up.
+         *
+         * The rest is the character's, and the two must agree: `STANDBY_CROP`
+         * in `stage/entry.js` puts the figure in the bottom half or so, and
+         * this keeps the text out of it. Centring a screen in the whole panel
+         * would put a headline across the character's face.
+         *
+         * Both numbers were settled by looking at the panel. There is no
+         * measurement that would have given either.
+         */
+        private const val CONTENT_FRACTION = 0.52f
 
         /**
          * The instance currently on screen, or null.
@@ -69,6 +89,26 @@ class SignageActivity : Activity() {
     @Volatile private var shownAt = 0L
 
     private lateinit var frame: FrameLayout
+
+    /**
+     * Where the screens go, over the character rather than instead of it.
+     *
+     * The character is the standby display's frame and not one more screen in
+     * the rotation: built once, kept through every turn of the wheel. As a
+     * screen it would have re-parsed nineteen megabytes of model each time the
+     * wheel moved, which is the whole reason this Activity is shaped this way.
+     */
+    private lateinit var content: FrameLayout
+
+    /** The page drawing the character, or null when it is switched off. */
+    private var stage: WebView? = null
+
+    /** Whether the page has reported a character actually on screen. */
+    private var stageReady = false
+
+    /** What the character is currently holding up; see [pushBoard]. */
+    private var shownBoard: String? = null
+
     private lateinit var settings: UploadSettings
     private var screens: List<SignageScreen> = emptyList()
     private var index = 0
@@ -90,6 +130,10 @@ class SignageActivity : Activity() {
             // particular thing, and this one is often glanced at rather than
             // watched.
             screens.getOrNull(index)?.refresh(LifelogSummary.current)
+            // After the refresh, because that is when a screen decides what it
+            // has to hold up. HeadlinesScreen changes feed every fifteen
+            // seconds and the board has to follow it.
+            pushBoard()
 
             ticker.postDelayed(this, TICK_MS)
         }
@@ -110,6 +154,20 @@ class SignageActivity : Activity() {
 
         frame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         setContentView(frame)
+
+        // The character first, so every screen is drawn over it. Loaded here
+        // and left alone: it takes seconds to have a model on screen, and
+        // standby is a display that is looked at rather than waited for.
+        if (settings.avatar) {
+            stage = StagePage.build(this) { state -> onPageState(state) }
+                .also { page ->
+                    frame.addView(page)
+                    page.loadUrl(StagePage.URL)
+                }
+        }
+
+        content = FrameLayout(this)
+        frame.addView(content, contentLayout())
 
         screens = settings.signageIds.mapNotNull { Signage.byId(it) }
             .ifEmpty { listOf(Signage.ALL.first()) }
@@ -149,15 +207,113 @@ class SignageActivity : Activity() {
     private fun show(next: Int) {
         index = next
         val screen = screens.getOrNull(index) ?: return
-        frame.removeAllViews()
-        frame.addView(
-            screen.createView(this),
+        content.removeAllViews()
+        val view = screen.createView(this)
+        // Screens paint themselves black — see SignageStyle.column — which is
+        // right when they are the whole panel and wrong when there is a
+        // character behind them. The scrim on [content] is what backs the text
+        // instead, and it stops before the character does.
+        if (stageReady) view.setBackgroundColor(Color.TRANSPARENT)
+        screen.onBoardShown(stageReady)
+        content.addView(
+            view,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
         screen.refresh(LifelogSummary.current)
+        // A new screen holds up something different, or nothing.
+        shownBoard = null
+        pushBoard()
+    }
+
+    /**
+     * How much of the panel the screens get, and what backs them.
+     *
+     * With no character they get all of it on plain black, which is what this
+     * display has always been. With one they get the top half over a scrim
+     * that fades out before the figure starts.
+     */
+    private fun contentLayout(): FrameLayout.LayoutParams {
+        if (!stageReady) {
+            return FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+        }
+        val height = (resources.displayMetrics.heightPixels * CONTENT_FRACTION).toInt()
+        return FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, height).apply {
+            gravity = Gravity.TOP
+        }
+    }
+
+    /**
+     * Opaque where the text is, gone by the time the character starts.
+     *
+     * Five evenly spaced stops: solid for the first quarter, fading through
+     * the second, clear from halfway down. Text on a 3D scene is unreadable
+     * and the headline is the one thing this screen exists for.
+     */
+    private fun scrim() = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        intArrayOf(
+            Color.BLACK,
+            Color.BLACK,
+            Color.TRANSPARENT,
+            Color.TRANSPARENT,
+            Color.TRANSPARENT,
+        ),
+    )
+
+    /**
+     * Tells the page what to put on the board.
+     *
+     * Sent only when it changes. Most screens have nothing for it, and an
+     * empty string is how the page is told to put the board away rather than
+     * hold up a blank one.
+     */
+    private fun pushBoard() {
+        val page = stage ?: return
+        if (!stageReady) return
+        val wanted = screens.getOrNull(index)?.board.orEmpty()
+        if (wanted == shownBoard) return
+        shownBoard = wanted
+        StagePage.call(page, "window.stageBoard(" + JSONObject.quote(wanted) + ")", "board")
+    }
+
+    /**
+     * Called from the page once it has a character on screen, or once it knows
+     * it will not have one.
+     *
+     * `assets/stage/character.vrm` is not committed, so a failure here is the
+     * ordinary case on a fresh clone rather than an exception: the page stays
+     * invisible and the standby display is exactly what it was before.
+     */
+    private fun onPageState(state: String) {
+        Metrics(this).write("signage_page", mapOf("state" to state.take(200)))
+        if (!state.startsWith("ready")) {
+            Log.w(TAG, "standby page said: $state")
+            return
+        }
+
+        stageReady = true
+        stage?.let { page ->
+            page.visibility = View.VISIBLE
+            StagePage.call(page, "window.stageStandby()", "standby")
+        }
+
+        // The screens were laid out for a black panel a moment ago.
+        content.background = scrim()
+        content.layoutParams = contentLayout()
+        content.getChildAt(0)?.setBackgroundColor(Color.TRANSPARENT)
+        // The screen on show was built while there was no character, so it is
+        // still carrying whatever it would have put on the board.
+        screens.getOrNull(index)?.let { screen ->
+            screen.onBoardShown(true)
+            screen.refresh(LifelogSummary.current)
+        }
+        pushBoard()
     }
 
     private fun applyKeepAwake() {
@@ -170,6 +326,13 @@ class SignageActivity : Activity() {
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+
+        // The same condition, for the same reason. Once the panel is allowed
+        // to go dark there is nobody to draw for, and a GL context turning
+        // over against a 1010 mAh battery is exactly the objection this
+        // feature has to answer. Paused rather than destroyed: unplugging and
+        // plugging in again must not cost another model load.
+        stage?.let { page -> if (charging) page.onResume() else page.onPause() }
     }
 
     /**
@@ -210,6 +373,13 @@ class SignageActivity : Activity() {
 
     override fun onDestroy() {
         if (showing === this) showing = null
+        // A WebView outliving its Activity holds the whole view tree, and this
+        // one has a GL context and a model in it as well.
+        stage?.let { page ->
+            frame.removeView(page)
+            runCatching { page.destroy() }
+        }
+        stage = null
         super.onDestroy()
     }
 }

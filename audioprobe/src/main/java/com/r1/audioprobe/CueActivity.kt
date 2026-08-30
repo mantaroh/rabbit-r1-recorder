@@ -1,6 +1,5 @@
 package com.r1.audioprobe
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Color
 import android.graphics.Typeface
@@ -15,11 +14,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.webkit.JavascriptInterface
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -106,17 +101,6 @@ class CueActivity : Activity() {
          */
         private const val PAGE_TIMEOUT_MS = 12_000L
 
-        /**
-         * A host that does not exist, so that the page has an origin.
-         *
-         * Assets loaded straight off `file:///android_asset/` are same-origin
-         * with nothing, and the page has to `fetch` a model file. Serving them
-         * through [WebViewClient.shouldInterceptRequest] under an https host
-         * gives it an ordinary origin without adding androidx.webkit — which
-         * this app does not have, and `android.useAndroidX=false` says why.
-         */
-        private const val ASSET_HOST = "stage.local"
-        private const val ASSET_DIR = "stage"
     }
 
     private lateinit var clock: TextView
@@ -169,7 +153,7 @@ class CueActivity : Activity() {
         greeting.visibility = View.GONE
         closeButton.visibility = View.GONE
 
-        page.loadUrl("https://$ASSET_HOST/index.html")
+        page.loadUrl(StagePage.URL)
         main.postDelayed(giveUpOnPage, PAGE_TIMEOUT_MS)
     }
 
@@ -300,7 +284,7 @@ class CueActivity : Activity() {
         setBackgroundColor(Color.BLACK)
         layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
 
-        page = buildPage()
+        page = StagePage.build(this@CueActivity) { state -> onPageState(state) }
         addView(page)
 
         clock = TextView(this@CueActivity).apply {
@@ -315,7 +299,7 @@ class CueActivity : Activity() {
         addView(greeting)
 
         // Added last, so it is the first child offered a touch. The WebView
-        // below it swallows everything in its own bounds -- see buildPage --
+        // below it swallows everything in its own bounds -- see StagePage --
         // and a cross the page had to hear about would have to be plumbed
         // through that.
         closeButton = buildCloseButton()
@@ -351,83 +335,6 @@ class CueActivity : Activity() {
             marginEnd = dp(4)
         }
         setOnClickListener { finish() }
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun buildPage(): WebView = WebView(this).apply {
-        layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
-        // Invisible rather than gone. A gone view is never laid out, so the
-        // page measures itself at zero by zero and the renderer draws into a
-        // buffer of that size — which looks exactly like a model that failed
-        // to load. It has to be laid out from the start anyway: the whole
-        // point is that it is running long before the cue.
-        visibility = View.INVISIBLE
-        setBackgroundColor(Color.BLACK)
-
-        settings.javaScriptEnabled = true
-        // Everything is served from the interceptor below; the page has no
-        // reason to reach the network and no way to be told to.
-        settings.blockNetworkLoads = true
-        settings.mediaPlaybackRequiresUserGesture = false
-
-        addJavascriptInterface(Bridge(), "CueBridge")
-
-        // Console output from the page, in logcat beside everything else. The
-        // page is debugged over adb or not at all.
-        webChromeClient = object : android.webkit.WebChromeClient() {
-            override fun onConsoleMessage(
-                message: android.webkit.ConsoleMessage,
-            ): Boolean {
-                Log.i(TAG, "cue page console: " + message.message())
-                return true
-            }
-        }
-
-        webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(
-                view: WebView,
-                request: WebResourceRequest,
-            ): WebResourceResponse? {
-                val url = request.url
-                if (!url.host.equals(ASSET_HOST, ignoreCase = true)) return null
-                val name = url.path?.trimStart('/').orEmpty()
-                if (name.isEmpty() || name.contains("..")) return null
-
-                return runCatching {
-                    WebResourceResponse(
-                        mimeFor(name),
-                        if (name.endsWith(".vrm")) null else "utf-8",
-                        assets.open("$ASSET_DIR/$name"),
-                    )
-                }.getOrElse {
-                    Log.w(TAG, "cue page asked for a missing asset: $name")
-                    null
-                }
-            }
-        }
-
-        // The page must not eat the hold-to-close gesture, and it has nothing
-        // of its own to scroll or tap.
-        setOnTouchListener { _, event ->
-            onTouchEvent(event)
-            true
-        }
-        isFocusable = false
-        isFocusableInTouchMode = false
-    }
-
-    private fun mimeFor(name: String) = when {
-        name.endsWith(".html") -> "text/html"
-        name.endsWith(".js") -> "application/javascript"
-        name.endsWith(".vrm") -> "application/octet-stream"
-        else -> "application/octet-stream"
-    }
-
-    private inner class Bridge {
-        @JavascriptInterface
-        fun onState(state: String) {
-            main.post { onPageState(state) }
-        }
     }
 
     /**

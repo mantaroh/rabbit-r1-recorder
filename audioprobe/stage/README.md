@@ -1,10 +1,19 @@
-# stage — the page the panel shows during the talk
+# stage — the page the panel draws a character on
 
 Source for `audioprobe/src/main/assets/stage/bundle.js`. Kept outside `assets/`
 so the unbundled module is not packaged into the APK as well.
 
+Two screens use it and it has a mode for each. `CueActivity` drives
+`cueSpeak` / `cueQuiet` / `cueIdle`: the page is a clock until the cue, and then
+the lid comes off and the character delivers the line. `SignageActivity` drives
+`stageStandby` / `stageBoard`: the page's own clock goes away entirely, the
+character is framed small and low so the standby screens keep the top of the
+panel, and it holds up a board with the feed name on it. One page and one
+bundle, because a second of either would pay for the model and the GL surface
+twice.
+
 ```bash
-npm install three@0.169.0 @pixiv/three-vrm@3.1.6
+npm install    # versions are pinned in package.json
 npx esbuild entry.js --bundle --format=iife --minify --target=chrome110 \
   --outfile=../src/main/assets/stage/bundle.js
 ```
@@ -32,7 +41,12 @@ Terms: <https://zunko.jp/guideline.html>.
 Not committed for the same reason it is not ours to commit.
 
 Nothing about a model's scale, proportions or facing is assumed; the camera is
-framed from the bounding box after the matrices are updated. `BASE_YAW` in
-`entry.js` is the one thing decided by looking at the panel rather than
-measured, and it is there because `VRMUtils.rotateVRM0` did not leave this
-model facing the room.
+framed from the bounding box after the matrices are updated. The numbers decided by looking at the panel
+rather than measured are named and gathered near the top of `entry.js`:
+`BASE_YAW`, which is there because `VRMUtils.rotateVRM0` did not leave this
+model facing the room, and the crops and board offsets, which are where they
+are because that is where they looked right on a 240 dp panel.
+
+`STANDBY_CROP` has a counterpart in Kotlin — `SignageActivity.CONTENT_FRACTION`
+— and the two have to agree about where the character stops and the text
+starts. Nothing enforces it.

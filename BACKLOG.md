@@ -732,7 +732,7 @@ Design: 2 planned / 2 actual — one to survey the ground and propose, one to
 settle the four choices and write this down. Implementation: 1 planned /
 1 actual.
 
-## Proposed: an avatar on the standby display, holding the news
+## Built: an avatar on the standby display, holding the news
 
 The standby display becomes a character rather than a page of text: the model
 stands on the panel and holds a board with the current headline on it.
@@ -813,14 +813,22 @@ draws Japanese in this WebView. The arm goes into a holding pose the same way
 the talk prop takes the model out of its T-pose: setting rotations on the
 normalized rig, which three-vrm copies onto the real bones each update.
 
-### Where it does not fit yet
+### Where it did not fit, and what it cost to make it
 
 `SignageScreen` hands back a `View` and `SignageActivity.show()` swaps one for
 another. An avatar built that way would parse a 19 MB model on every turn of
-the wheel. The avatar has to become the standby display's *frame*, with the
+the wheel. The avatar had to become the standby display's *frame*, with the
 existing screens drawn over it, rather than one more screen in the rotation —
-which is a larger change to that Activity than it sounds, and is most of the
+which was a larger change to that Activity than it sounds, and was most of the
 work.
+
+It is now two children of the same frame: the page underneath, built once in
+`onCreate` and left alone, and a `content` container that `show()` swaps
+screens into. `content` takes the top 52% of the panel and carries a scrim that
+is opaque for its first quarter and clear by halfway down; the screens, which
+paint themselves black, are made transparent over it. The two numbers that have
+to agree — `CONTENT_FRACTION` in the Activity and `STANDBY_CROP` in
+`entry.js` — are commented as agreeing, because nothing enforces it.
 
 ### The licence is not the constraint it looked like
 
@@ -885,7 +893,47 @@ the argument that nearly cost the standby display its headline above.
   question being asked — or simply stand there. Reacting is where this stops
   being a wallpaper and starts being a second thing to debug.
 
+### Built on 2026-08-30
+
+Option three, as argued above: the board carries the feed name and the headline
+stays as text over it. Option one was never tried for its day — the board was
+legible enough holding a source that the question of it holding a headline
+stopped being interesting.
+
+What is on the device:
+
+- `StagePage` holds the WebView, the asset host and the four failures worth
+  knowing about; `CueActivity` and `SignageActivity` both build from it. The
+  page is one bundle with two modes — `cueSpeak`/`cueIdle` for the talk,
+  `stageStandby`/`stageBoard` for the panel — because a second page would pay
+  for the model and the GL surface twice.
+- The board is a plane parented to the right hand for the sway, but placed and
+  turned in the camera's axes every frame. Parenting alone put it through the
+  character's own torso: a rig can orient its wrist any way it likes.
+- The arm follows the board rather than the mode. Most standby screens have
+  nothing to hold up, and a raised arm with nothing in it reads as a fault.
+- Feed names are broken over two lines and then three before the type is
+  allowed to shrink. "ギズモード・ジャパン" takes two; "はてなブックマーク -
+  人気エントリー - 総合" takes three and is the worst case there is.
+- `UploadSettings.avatar`, on by default. Off puts the display back exactly as
+  it was, which includes giving `HeadlinesScreen` its feed name back — the
+  screens are told whether the board is really up, so moving something onto it
+  is reversible.
+
+### Still unproven
+
+- **The idle draw, in milliamps, over an hour.** Unchanged from the open
+  question below, and it stayed open: the device measures battery current, and
+  on a full battery on a charger that number sits near zero whatever the GPU is
+  doing. Measuring it wants either a meter on the cable or a run off charge
+  with the panel forced awake, and neither is a thing the device can do to
+  itself.
+- A headline of four lines reaches into the fade and sits over the character's
+  ears. It is readable and it is not nothing.
+
 ### Turns
 
 Design: 1 planned / 1 actual, written from a prop that had just answered the
-technical half. Implementation: not started.
+technical half. Implementation: 1 planned / 4 actual — one to build it and
+three spent entirely on where the board sits and how large its type can be,
+which is the half of this that no amount of design settled.
