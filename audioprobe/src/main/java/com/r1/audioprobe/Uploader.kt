@@ -176,20 +176,23 @@ class Uploader(
                     true
                 }
 
-                // 4xx other than 429 will not fix itself; keep the file but do
-                // not hammer the endpoint over it.
+                // 4xx other than 429 will not fix itself, and retrying it cost
+                // more than the segment was worth: the backoff is shared with
+                // photographs and positions, so one segment the server would
+                // never accept stopped everything else for a day. Setting it
+                // aside lets the rest of the pass continue.
                 code in 400..499 && code != 429 -> {
-                    failWith("$code ${connection.responseMessage}", segmentId, fatal = true)
-                    false
+                    quarantine(file, segmentId, code, connection.responseMessage)
+                    true
                 }
 
                 else -> {
-                    failWith("$code ${connection.responseMessage}", segmentId, fatal = false)
+                    failWith("$code ${connection.responseMessage}", segmentId)
                     false
                 }
             }
         } catch (t: Throwable) {
-            failWith(t.message ?: t.javaClass.simpleName, segmentId, fatal = false)
+            failWith(t.message ?: t.javaClass.simpleName, segmentId)
             false
         } finally {
             connection?.disconnect()
@@ -267,7 +270,37 @@ class Uploader(
         }
     }
 
-    private fun failWith(reason: String, segmentId: String, fatal: Boolean) {
+    /**
+     * Takes a segment the server refused out of the queue, without backing off.
+     *
+     * Renamed rather than deleted, sidecar included: a 4xx means one side or
+     * the other is wrong about what a segment should look like, and these two
+     * files are the only evidence of which. `isSegment` matches on the `.wav`
+     * and `.opus` endings, so nothing picks them up again.
+     */
+    private fun quarantine(file: File, segmentId: String, code: Int, message: String?) {
+        failures += 1
+        lastError = "$code $message"
+        val sidecar = envelopeFile(file)
+        val moved = runCatching {
+            file.renameTo(File(file.parentFile, file.name + ".rejected"))
+        }.getOrDefault(false)
+        // Deleting beats leaving it where the next pass will trip over it again.
+        if (!moved) file.delete()
+        if (sidecar.exists()) {
+            val kept = runCatching {
+                sidecar.renameTo(File(sidecar.parentFile, sidecar.name + ".rejected"))
+            }.getOrDefault(false)
+            if (!kept) sidecar.delete()
+        }
+        Log.w(TAG, "upload rejected $segmentId: $code $message")
+        metrics.write(
+            "upload_rejected",
+            mapOf("segment" to segmentId, "code" to code, "kept" to moved),
+        )
+    }
+
+    private fun failWith(reason: String, segmentId: String) {
         failures += 1
         lastError = reason
         val index = consecutiveFailures.coerceAtMost(BACKOFF_MS.lastIndex)
@@ -281,7 +314,6 @@ class Uploader(
                 "segment" to segmentId,
                 "error" to reason.take(200),
                 "retry_in_s" to delay / 1000,
-                "client_error" to fatal,
             ),
         )
     }

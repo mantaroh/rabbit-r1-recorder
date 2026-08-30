@@ -721,6 +721,15 @@ class RecorderService : Service() {
             if ((writeAudio || sampleRequested) && !diskFull) {
                 if (pending == null) {
                     sampleRequested = false
+                    // The envelope describes this segment and nothing before
+                    // it. Loudness is measured every second whether or not a
+                    // segment is open, but only closing one empties the list —
+                    // so a night with recording stopped left seventeen hours of
+                    // readings to be flushed onto the first segment of the
+                    // morning. That sidecar rode the upload URL as `rms=` and
+                    // came back 414, and the retry blocked photographs and
+                    // positions behind it for the rest of the day.
+                    envelope.clear()
                     pending = openSegmentWriter()
                     pendingSamples = 0
                 }
@@ -975,7 +984,11 @@ class RecorderService : Service() {
         // A second of *audio*, not of samples: stereo delivers twice as many.
         if (secondSamples >= sampleRate * channels) {
             val level = rmsByte(secondSumSquares, secondSamples)
-            envelope.add(level)
+            // One segment's worth and no more. Opening a segment clears this,
+            // so the cap is never reached in ordinary running; it is here so
+            // that any future path which stops closing segments costs a
+            // truncated envelope rather than an unbounded URL.
+            if (envelope.size < SEGMENT_SECONDS + 2) envelope.add(level)
             // The same measurement decides whether the scene is worth
             // photographing, and whether the room is already busy enough that
             // the device should not speak into it; there is no reason to
