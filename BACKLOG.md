@@ -951,6 +951,26 @@ or not anything is drawn with it, so every throttled frame threw its slice
 away and everything driven by time ran at half speed. Invisible in a sway.
 Not invisible at all in a motion clip.
 
+### It moves on its own too, added 2026-09-01
+
+A tap was the only thing that made the character move, and a standby display is
+mostly not being touched. Now a clip also plays by itself, somewhere between
+two and five minutes after the last one, the interval drawn afresh each time so
+it does not settle into a period next to the fifteen-second headline rotation
+and the two-minute fetch.
+
+- Only on a cable. Off one the panel is already dark and the page paused, and a
+  clip played then is a GL context turning over for nobody. Nothing catches up
+  afterwards: a display asleep for an hour owes no motions.
+- A tap restarts the clock, so a motion asked for by hand is not followed a
+  second later by one nobody asked for.
+- The timer gives up permanently the first time the page reports it cannot read
+  a clip. The pack is not committed, so a device without it is ordinary rather
+  than broken, and asking every few minutes would spend the day learning the
+  same thing. A tap still asks, and its report is how the absence is noticed.
+- No page change. `window.stagePlay` already took the turn and answered "busy"
+  to anything arriving mid-clip.
+
 ### The board came off, 2026-09-01
 
 Removed. The board was legible on its own terms and that turned out not to be

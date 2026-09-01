@@ -20,6 +20,7 @@ import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
 import com.r1.core.Motion
+import kotlin.random.Random
 
 /**
  * The standby display: what the device shows when nobody is using it.
@@ -88,6 +89,22 @@ class SignageActivity : Activity() {
         private const val SETTLE_MAX_MS = 30_000L
 
         /**
+         * How long the character stands still between motions of its own.
+         *
+         * A clip runs about four seconds. Two minutes at the bottom because
+         * anything quicker is a thing happening on a screen that is glanced at
+         * rather than watched; five at the top because past that the display
+         * has stopped looking alive at all.
+         *
+         * Drawn afresh after every clip rather than fixed. A standby display
+         * has a fifteen-second headline rotation and a two-minute fetch
+         * already, and a third exact period would line up with them and read
+         * as a mechanism.
+         */
+        private const val IDLE_MOVE_MIN_MS = 120_000L
+        private const val IDLE_MOVE_MAX_MS = 300_000L
+
+        /**
          * The instance currently on screen, or null.
          *
          * Held so a side-button press — which arrives at the accessibility
@@ -135,6 +152,30 @@ class SignageActivity : Activity() {
     /** Whether the page has reported a character actually on screen. */
     private var stageReady = false
 
+    /** When the character next moves on its own; see [maybeMove]. */
+    private var nextMoveAt = 0L
+
+    /**
+     * Set once the page has said it cannot read a clip.
+     *
+     * `assets/stage/motion/VRMA_*.vrma` are not committed, so a device without
+     * them is an ordinary case rather than a fault. Asking every few minutes
+     * anyway would write a metric and a warning for the rest of the day to
+     * learn the same thing each time, so the timer gives up after the first
+     * answer. A tap still asks: a person pressing the panel is owed the
+     * attempt, and the report that comes back is how the absence gets noticed.
+     */
+    private var movesMissing = false
+
+    /**
+     * Whether the device is on a cable, as of the last [applyKeepAwake].
+     *
+     * Kept rather than read on demand because the tick asks every second and
+     * this is a system call. Charging state is already watched, so nothing has
+     * to poll for it.
+     */
+    private var charging = false
+
     /** The last wheel step acted on, and when; see [settling]. */
     private var lastStep = 0
     private var lastStepAt = 0L
@@ -160,6 +201,7 @@ class SignageActivity : Activity() {
             // particular thing, and this one is often glanced at rather than
             // watched.
             screens.getOrNull(index)?.refresh(LifelogSummary.current)
+            maybeMove(now)
 
             ticker.postDelayed(this, TICK_MS)
         }
@@ -300,6 +342,9 @@ class SignageActivity : Activity() {
         Metrics(this).write("signage_page", mapOf("state" to state.take(200)))
         if (!state.startsWith("ready")) {
             Log.w(TAG, "standby page said: $state")
+            // The clips are not committed and a device without them says so
+            // here. Asked again in a few minutes it would say the same thing.
+            if (state.startsWith("motion-failed")) movesMissing = true
             return
         }
 
@@ -313,10 +358,38 @@ class SignageActivity : Activity() {
         content.background = scrim()
         content.layoutParams = contentLayout()
         content.getChildAt(0)?.setBackgroundColor(Color.TRANSPARENT)
+        // Not now. The character has this second only just stood up, and the
+        // first thing it does should not be to move.
+        scheduleMove(System.currentTimeMillis())
+    }
+
+    /**
+     * Asks the character to move, if it is time and there is anyone to see it.
+     *
+     * Only on a cable, because off one [applyKeepAwake] has already let the
+     * panel go dark and paused the page: a clip played then is a GL context
+     * turning over for nobody. Nothing catches up afterwards either — a
+     * display that had been asleep for an hour would owe twenty motions, and
+     * it owes none.
+     *
+     * A clip already running comes back "busy" from the page and the timer
+     * simply moves on; the next draw is a few minutes away in either case.
+     */
+    private fun maybeMove(now: Long) {
+        if (movesMissing || !stageReady || !charging) return
+        val page = stage ?: return
+        if (now < nextMoveAt) return
+        scheduleMove(now)
+        StagePage.call(page, "window.stagePlay()", "play")
+    }
+
+    /** Somewhere in the next few minutes; see [IDLE_MOVE_MIN_MS]. */
+    private fun scheduleMove(now: Long) {
+        nextMoveAt = now + Random.nextLong(IDLE_MOVE_MIN_MS, IDLE_MOVE_MAX_MS)
     }
 
     private fun applyKeepAwake() {
-        val charging = runCatching {
+        charging = runCatching {
             getSystemService(BatteryManager::class.java)?.isCharging == true
         }.getOrDefault(false)
 
@@ -424,6 +497,10 @@ class SignageActivity : Activity() {
         if (event?.action == MotionEvent.ACTION_DOWN) {
             val page = stage
             if (stageReady && page != null) {
+                // The clock starts again from the tap. Otherwise a motion
+                // asked for by hand could be followed a second later by one
+                // nobody asked for.
+                scheduleMove(System.currentTimeMillis())
                 StagePage.call(page, "window.stagePlay()", "play")
             } else {
                 finish()
