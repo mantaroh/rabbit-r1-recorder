@@ -444,9 +444,25 @@ class SignageActivity : Activity() {
         return true
     }
 
+    /**
+     * A tap asks the character to do something, and no longer leaves.
+     *
+     * Leaving was always the side button's job — the doc on [onKeyDown] says so
+     * — and a touch that dismissed was a second way out that nothing pointed
+     * at. Now it is the only thing on this screen a person can actually do.
+     *
+     * With no character there is nothing to ask, and a display that swallowed
+     * touches and did nothing would read as a device that had stopped
+     * answering. So it goes back to dismissing.
+     */
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         if (event?.action == MotionEvent.ACTION_DOWN) {
-            finish()
+            val page = stage
+            if (stageReady && page != null) {
+                StagePage.call(page, "window.stagePlay()", "play")
+            } else {
+                finish()
+            }
             return true
         }
         return super.onTouchEvent(event)

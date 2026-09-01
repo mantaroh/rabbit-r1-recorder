@@ -879,8 +879,12 @@ the argument that nearly cost the standby display its headline above.
   shaped oscillator and that is all this would get.
 - The avatar speaking. That is 声かけ, which has its own screen and its own
   reasons for taking over the panel.
-- Animation clips. VRMA would want a second dependency and a second licence
-  question, for movement a sway and a blink already cover.
+- Lip sync, and the avatar speaking: both still stand.
+- Animation clips were on this list — "VRMA would want a second dependency and a
+  second licence question, for movement a sway and a blink already cover" — and
+  were built anyway on 2026-08-30, see below. Both costs were real and both were
+  small. The reasoning was not wrong about the price; it was wrong that a sway
+  covers it, because a sway is not something a person can *do* to the thing.
 
 ### Open questions
 
@@ -920,6 +924,33 @@ What is on the device:
   screens are told whether the board is really up, so moving something onto it
   is reversible.
 
+### A tap plays a motion, added 2026-08-30
+
+The standby display had one gesture and it dismissed the screen — a second way
+out that nothing pointed at, next to the side button that the code already
+called the way out. A tap now plays one clip from pixiv's VRMA_MotionPack,
+round the six in order, and the side button is the only way back.
+
+- The clips are read only after the panel enters standby. The talk shares the
+  page and cannot play one; making it read five megabytes to find that out
+  would be the second dependency earning its bad reputation.
+- Nothing puts a rig back. An action that has finished leaves the bones on its
+  last frame, which after the knee bend is a character stuck in a crouch, so
+  the whole normalized rest pose is captured at load and written back when a
+  clip ends.
+- The board is hidden while a clip runs. It is held in the hand the clips move.
+- A tap during a clip is ignored rather than queued or restarted. Cut short a
+  motion reads as a fault; queued, as a device that stopped listening.
+- `VRMA_04` is drawing and firing a weapon and is not used.
+- The clips must not be committed. The pack forbids redistributing them "in a
+  state where they can be extracted", which a public repository is. Same
+  treatment as the model: gitignored, and named in `stage/README.md`.
+
+It also found a real bug in the frame loop. `getDelta` resets the clock whether
+or not anything is drawn with it, so every throttled frame threw its slice
+away and everything driven by time ran at half speed. Invisible in a sway.
+Not invisible at all in a motion clip.
+
 ### Still unproven
 
 - **The idle draw, in milliamps, over an hour.** Unchanged from the open
@@ -937,3 +968,7 @@ Design: 1 planned / 1 actual, written from a prop that had just answered the
 technical half. Implementation: 1 planned / 4 actual — one to build it and
 three spent entirely on where the board sits and how large its type can be,
 which is the half of this that no amount of design settled.
+
+Motion on tap: 1 planned / 1 actual. The clips retargeted and played first try;
+what cost anything was noticing that the rig had to be put back afterwards, and
+that the frame throttle had been lying about time all along.

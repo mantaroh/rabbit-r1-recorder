@@ -40,6 +40,26 @@ Terms: <https://zunko.jp/guideline.html>.
 
 Not committed for the same reason it is not ours to commit.
 
+## The motions
+
+`assets/stage/motion/VRMA_*.vrma` are **not committed either**, and this time
+the terms say so outright: the pack forbids redistributing the motions, altered
+or not, "in a state where they can be extracted without permission", and a
+public repository is exactly that state. Drop the files in at that path before
+building; without them the character still stands and sways, and a tap reports
+a failure instead of moving.
+
+Six of the seven clips in pixiv's VRMA_MotionPack are used, listed in `MOTIONS`
+in `entry.js`. `VRMA_04` is drawing and firing a weapon and is left out. The
+credit the terms name for commercial use — キャラクターアニメーション:
+ピクシブ株式会社 VRoidプロジェクト — belongs on the licence screen in 設定 when
+that exists, not on the panel. Terms:
+<https://www.pixiv.net/support?type=45&mode=inquiry&service=vroid-feedback>
+
+They are read only in standby, one at a time, and only after the panel enters
+that mode: the talk cannot play one and has no business reading five megabytes
+it will never use.
+
 Nothing about a model's scale, proportions or facing is assumed; the camera is
 framed from the bounding box after the matrices are updated. The numbers decided by looking at the panel
 rather than measured are named and gathered near the top of `entry.js`:

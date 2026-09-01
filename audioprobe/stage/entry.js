@@ -16,6 +16,11 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import {
+  VRMAnimationLoaderPlugin,
+  VRMLookAtQuaternionProxy,
+  createVRMAnimationClip,
+} from "@pixiv/three-vrm-animation";
 
 const clockEl = document.getElementById("clock");
 const stageEl = document.getElementById("stage");
@@ -166,9 +171,20 @@ function mouth(t, expressions) {
 
 let lastDrawnAt = 0;
 
+/**
+ * Time dropped by the throttles below, carried to the frame that does draw.
+ *
+ * `getDelta` resets the clock whether or not anything is drawn with it, so a
+ * skipped frame used to throw its slice away: at thirty frames a second the
+ * renderer was handed sixteen milliseconds for thirty-three that had passed,
+ * and everything driven by time ran at half speed. Invisible in a sway, not
+ * invisible at all in a motion clip.
+ */
+let carried = 0;
+
 function frame() {
   requestAnimationFrame(frame);
-  const delta = clock.getDelta();
+  carried += clock.getDelta();
   const t = clock.elapsedTime;
 
   // Covered by the clock and nobody is watching: draw a few times a second
@@ -184,7 +200,14 @@ function frame() {
     lastDrawnAt = t;
   }
 
+  const delta = carried;
+  carried = 0;
+
   if (vrm) {
+    // Before vrm.update, which is what copies the normalized rig the clip
+    // drives onto the bones that are actually drawn.
+    if (mixer) mixer.update(delta);
+
     const expressions = vrm.expressionManager;
     if (expressions) {
       blink(t, expressions);
@@ -497,6 +520,132 @@ function splitInto(text, n) {
     .filter((line) => line.length > 0);
 }
 
+// ------------------------------------------------------------- the motions ---
+
+/**
+ * The clips a tap plays, in the order taps play them.
+ *
+ * Six of the seven in the pack. `VRMA_04` is somebody drawing and firing a
+ * weapon, which is not what a character standing on a desk should do when the
+ * screen is touched.
+ *
+ * Round in order rather than at random: every one is reachable, and the same
+ * tap twice does not give the same thing twice.
+ */
+const MOTIONS = [
+  "VRMA_01.vrma",
+  "VRMA_02.vrma",
+  "VRMA_03.vrma",
+  "VRMA_05.vrma",
+  "VRMA_06.vrma",
+  "VRMA_07.vrma",
+];
+
+let motionAt = 0;
+let mixer = null;
+let action = null;
+let playing = false;
+
+/** Promise per clip, so a tap during a load waits for it instead of racing. */
+const clips = new Map();
+
+/**
+ * Every normalized bone as the model arrived, so a clip can be undone.
+ *
+ * Nothing puts a rig back. An action that has finished leaves the bones on its
+ * last frame — after the knee bend that is a character stuck in a crouch — and
+ * `applyPose` only ever touches three bones, so it cannot undo the other
+ * fifty. The whole rest pose is kept instead.
+ */
+let restPose = null;
+
+function eachBone(fn) {
+  const humanoid = vrm && vrm.humanoid;
+  if (!humanoid || !humanoid.humanBones) return;
+  Object.keys(humanoid.humanBones).forEach((name) => {
+    const node = humanoid.getNormalizedBoneNode(name);
+    if (node) fn(name, node);
+  });
+}
+
+function captureRest() {
+  restPose = {};
+  eachBone((name, node) => {
+    restPose[name] = { q: node.quaternion.clone(), p: node.position.clone() };
+  });
+}
+
+function restoreRest() {
+  if (restPose) {
+    eachBone((name, node) => {
+      const saved = restPose[name];
+      if (!saved) return;
+      node.quaternion.copy(saved.q);
+      node.position.copy(saved.p);
+    });
+  }
+  applyPose();
+}
+
+const animations = new GLTFLoader();
+animations.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+function loadClip(name) {
+  if (clips.has(name)) return clips.get(name);
+  const pending = new Promise((resolve, reject) => {
+    animations.load(
+      "motion/" + name,
+      (gltf) => {
+        const found = gltf.userData.vrmAnimations && gltf.userData.vrmAnimations[0];
+        if (!found) {
+          reject(new Error("no animation in " + name));
+          return;
+        }
+        // Retargeted onto this model. A clip is authored against the
+        // normalized humanoid and means nothing without a rig to bind it to.
+        resolve(createVRMAnimationClip(found, vrm));
+      },
+      undefined,
+      reject,
+    );
+  });
+  pending.catch(() => clips.delete(name));
+  clips.set(name, pending);
+  return pending;
+}
+
+let preloading = false;
+
+/**
+ * Reads the clips in, one at a time, once there is a panel that can play them.
+ *
+ * Standby only, and started from `stageStandby` rather than from the loader:
+ * the talk cannot play a clip and has no business reading five megabytes it
+ * will never use. Serial rather than at once because the first tap is likely to
+ * want the first clip, and six parallel reads would put it last.
+ */
+function preload() {
+  if (preloading || !vrm) return;
+  preloading = true;
+  MOTIONS.reduce(
+    (queue, name) => queue.then(() => loadClip(name)).catch(() => {}),
+    Promise.resolve(),
+  );
+}
+
+function makeMixer() {
+  mixer = new THREE.AnimationMixer(vrm.scene);
+  mixer.addEventListener("finished", () => {
+    if (action) {
+      action.stop();
+      action = null;
+    }
+    playing = false;
+    restoreRest();
+    if (boardMesh) boardMesh.visible = holding();
+  });
+}
+
 // ------------------------------------------------------------------- load ---
 
 const loader = new GLTFLoader();
@@ -514,16 +663,28 @@ loader.load(
     vrm.scene.traverse((object) => {
       object.frustumCulled = false;
     });
-    if (vrm.lookAt) vrm.lookAt.target = camera;
+    if (vrm.lookAt) {
+      vrm.lookAt.target = camera;
+      // A clip's gaze track has nowhere to land without this, and
+      // createVRMAnimationClip makes one itself and says so every time it is
+      // called. Made once, here, where it can be seen.
+      const gaze = new VRMLookAtQuaternionProxy(vrm.lookAt);
+      gaze.name = "lookAtQuaternionProxy";
+      vrm.scene.add(gaze);
+    }
     scene.add(vrm.scene);
 
     // Framed and posed from the model, both of which depend on the mode.
     // Done here and again from stageStandby: the standby display switches mode
     // after the model is already up, and re-framing is a few matrix operations
     // against re-loading nineteen megabytes.
+    captureRest();
     frameCamera();
     applyPose();
     makeBoard();
+    makeMixer();
+    // The clips are not read here; see preload.
+    if (standby) preload();
 
     const round = (v) => v.toArray().map((n) => Math.round(n * 100) / 100);
     report(
@@ -594,6 +755,7 @@ window.stageStandby = function () {
   frameCamera();
   if (boardMesh) boardMesh.visible = holding();
   applyPose();
+  preload();
   return "standby";
 };
 
@@ -614,6 +776,48 @@ window.stageBoard = function (text) {
   // The arm comes up with the board and goes down with it.
   applyPose();
   return boardText;
+};
+
+/**
+ * One clip, once, on a tap of the panel.
+ *
+ * Standby only. The talk has six seconds and a line to deliver, and a
+ * character breaking into a knee bend halfway through it is not a feature.
+ *
+ * A tap while one is running is ignored rather than queued or restarted: cut
+ * short, a motion reads as a fault, and queued it reads as a device that stopped
+ * listening. Returning the name is what tells Kotlin which it was.
+ */
+window.stagePlay = function () {
+  if (!standby || !vrm || !mixer) return "not ready";
+  if (playing) return "busy";
+
+  const name = MOTIONS[motionAt % MOTIONS.length];
+  motionAt += 1;
+  playing = true;
+  // It is held in the hand the clips move. A board thrown around by a V sign
+  // is worse than no board for the four seconds it takes.
+  if (boardMesh) boardMesh.visible = false;
+
+  loadClip(name)
+    .then((clip) => {
+      if (!playing) return;
+      action = mixer.clipAction(clip);
+      action.reset();
+      action.setLoop(THREE.LoopOnce, 1);
+      // The bones are put back by hand when it finishes; clamping would only
+      // fight that.
+      action.clampWhenFinished = false;
+      action.play();
+    })
+    .catch((error) => {
+      playing = false;
+      restoreRest();
+      if (boardMesh) boardMesh.visible = holding();
+      report("motion-failed:" + name + ":" + (error && error.message ? error.message : "?"));
+    });
+
+  return name;
 };
 
 window.addEventListener("resize", resize);

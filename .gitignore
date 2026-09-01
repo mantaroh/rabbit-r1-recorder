@@ -47,6 +47,18 @@ openai_key_for_hermes.txt
 # swapped per talk; see audioprobe/stage/README.md.
 audioprobe/src/main/assets/stage/*.vrm
 
+# Motion clips, likewise not ours to hand on. The pack's terms forbid
+# redistributing the motions "in a state where they can be extracted", which a
+# public repository is; see audioprobe/stage/README.md for where to put them.
+audioprobe/src/main/assets/stage/motion/*.vrma
+
+# The same rule at the top of the tree, where the downloads land. A stray
+# `git add -A` publishing a model or a motion pack is the one mistake here that
+# cannot be taken back.
+/*.vrm
+/*.vrma
+/VRMA_MotionPack.zip
+
 # Opens the destructive endpoints; never on the device, never committed.
 .admin-token
 .agent-token

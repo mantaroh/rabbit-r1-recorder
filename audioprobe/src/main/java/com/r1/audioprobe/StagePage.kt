@@ -100,8 +100,11 @@ object StagePage {
                         WebResourceResponse(
                             mimeFor(name),
                             // A binary body with a charset on it is a body the
-                            // WebView tries to decode as text.
-                            if (name.endsWith(".vrm")) null else "utf-8",
+                            // WebView tries to decode as text. `.vrma` does not
+                            // end with `.vrm`, which is a difference of one
+                            // character between a model that loads and an
+                            // animation that arrives as mangled text.
+                            if (isBinary(name)) null else "utf-8",
                             activity.assets.open("$DIR/$name"),
                         )
                     }.getOrElse {
@@ -139,6 +142,10 @@ object StagePage {
         name.endsWith(".js") -> "application/javascript"
         else -> "application/octet-stream"
     }
+
+    /** Models and motion clips, which are glTF containers and not text. */
+    private fun isBinary(name: String) =
+        name.endsWith(".vrm", true) || name.endsWith(".vrma", true)
 
     private class Bridge(private val onState: (String) -> Unit) {
         @JavascriptInterface
