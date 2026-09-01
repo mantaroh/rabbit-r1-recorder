@@ -19,6 +19,7 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
+import com.r1.core.Motion
 import org.json.JSONObject
 
 /**
@@ -57,6 +58,35 @@ class SignageActivity : Activity() {
          * measurement that would have given either.
          */
         private const val CONTENT_FRACTION = 0.52f
+
+        /**
+         * How long after a step the opposite one is treated as the wheel
+         * settling rather than as a turn.
+         *
+         * The wheel is not a mechanical encoder. It is read by a Hall sensor —
+         * `och1970_holl_key`, `/dev/input/event2`, the only device on this
+         * phone that emits `KEY_UP`/`KEY_DOWN` — and after a downward turn the
+         * magnet can come to rest on a detent boundary and drift back across
+         * it. The driver reports that as an ordinary key: press and release
+         * both present, 119 µs apart, against 109, 167 and 363 µs for turns
+         * made by hand. Nothing in the shape of the event separates them, so
+         * nothing that looks only at the event can.
+         *
+         * When they arrive does separate them. Every one measured on
+         * 2026-09-01 came 6.0, 7.3, 11.7 and 25.6 seconds after a *downward*
+         * turn and never after an upward one — the asymmetry being the stand,
+         * which holds the device 24.7 degrees back and gives the magnet a
+         * direction to fall in. Left alone the wheel stayed silent for minutes
+         * at a stretch, so this is a wheel settling and not a wheel that
+         * chatters.
+         *
+         * Two seconds at the bottom because a reversal that quick is somebody
+         * who overshot, and they are never wrong about it. Thirty at the top
+         * because 25.6 is the longest yet seen and a window that ends inside
+         * the measurements would only look like it worked.
+         */
+        private const val SETTLE_MIN_MS = 2_000L
+        private const val SETTLE_MAX_MS = 30_000L
 
         /**
          * The instance currently on screen, or null.
@@ -108,6 +138,10 @@ class SignageActivity : Activity() {
 
     /** What the character is currently holding up; see [pushBoard]. */
     private var shownBoard: String? = null
+
+    /** The last wheel step acted on, and when; see [settling]. */
+    private var lastStep = 0
+    private var lastStepAt = 0L
 
     private lateinit var settings: UploadSettings
     private var screens: List<SignageScreen> = emptyList()
@@ -345,17 +379,69 @@ class SignageActivity : Activity() {
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> {
-                show((index - 1 + screens.size) % screens.size)
-                return true
-            }
-
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                show((index + 1) % screens.size)
-                return true
-            }
+            KeyEvent.KEYCODE_DPAD_UP -> return step(keyCode, -1)
+            KeyEvent.KEYCODE_DPAD_DOWN -> return step(keyCode, 1)
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    /** One turn of the wheel, unless the wheel turned itself; see [settling]. */
+    private fun step(keyCode: Int, by: Int): Boolean {
+        if (settling(keyCode)) return true
+        lastStep = keyCode
+        lastStepAt = System.currentTimeMillis()
+        show((index + by + screens.size) % screens.size)
+        return true
+    }
+
+    /**
+     * Whether this step is the wheel coming to rest rather than being turned.
+     *
+     * Three things have to agree, and the third is the one doing the work.
+     * Nobody turns this wheel without moving the device it is mounted on, and
+     * the magnet that falls back across a detent boundary moves nothing at
+     * all — so the accelerometer is a witness the ghost cannot produce. The
+     * timing conditions on their own would swallow an ordinary "back up one
+     * after reading for a while", which is a thing people do.
+     *
+     * It gives up after one. A second step is somebody insisting, and
+     * insisting has to work: a wheel that has decided you did not mean it is
+     * worse than a wheel that occasionally moves on its own. So the cost of
+     * guessing wrong is one turn that does nothing, against a screen that
+     * vanishes while it is being read.
+     */
+    private fun settling(keyCode: Int): Boolean {
+        val previous = lastStep
+        // Only a reversal. Steps that keep going the same way are somebody
+        // travelling, and the ghost has never once continued a direction.
+        if (previous == 0 || previous == keyCode) return false
+
+        val gap = System.currentTimeMillis() - lastStepAt
+        if (gap < SETTLE_MIN_MS || gap > SETTLE_MAX_MS) return false
+
+        // Without the accelerometer running there is no evidence either way,
+        // and [Motion.placement] defaults to "still" — which would make every
+        // reversal look like a ghost on a device that had simply not started
+        // watching yet.
+        if (!Motion.watching) return false
+        val placement = Motion.placement
+        if (placement.moving) return false
+
+        // Every one of these is a guess, so every one is written down. If the
+        // window is wrong it will show up here as steps somebody meant.
+        Metrics(this).write(
+            "wheel_ghost",
+            mapOf(
+                "key" to KeyEvent.keyCodeToString(keyCode),
+                "gap_ms" to gap,
+                "tilt_deg" to placement.tiltDeg,
+                "posture" to placement.posture.name,
+            ),
+        )
+
+        lastStep = 0
+        lastStepAt = 0L
+        return true
     }
 
     override fun onTouchEvent(event: MotionEvent?): Boolean {
