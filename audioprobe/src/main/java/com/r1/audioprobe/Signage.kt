@@ -39,30 +39,6 @@ interface SignageScreen {
      * rather than show a zero.
      */
     fun refresh(data: LifelogSummary.Snapshot?)
-
-    /**
-     * What the character holds up while this screen is showing, or null.
-     *
-     * Read by the host after every [refresh]. Short and fixed: a feed name, a
-     * day of the week. Not a headline — a board held by a character is smaller
-     * than the panel the headline already has, and [HeadlinesScreen] settled
-     * once what that costs.
-     *
-     * Null by default, which is the honest answer for most screens. A
-     * character holding a blank board looks like a character holding a
-     * mistake, so nothing is drawn rather than something empty.
-     */
-    val board: String? get() = null
-
-    /**
-     * Told by the host whether [board] is actually being held up.
-     *
-     * False whenever there is no character: the avatar is switched off, or
-     * `assets/stage/character.vrm` is not there to load. A screen that moved
-     * something onto the board has to be able to take it back, or turning the
-     * avatar off would quietly lose it.
-     */
-    fun onBoardShown(shown: Boolean) {}
 }
 
 /** Shared palette, so the screens look like one device rather than four. */
@@ -233,22 +209,6 @@ private class HeadlinesScreen : SignageScreen {
     private var advancedAt = 0L
     private var showing: String? = null
 
-    /** The feed the headline on screen came from; see [board]. */
-    private var source: String? = null
-
-    override val board: String? get() = source
-
-    /** Whether the character is showing [source], or this screen has to. */
-    private var boardShown = false
-
-    override fun onBoardShown(shown: Boolean) {
-        if (shown == boardShown) return
-        boardShown = shown
-        // The meta line says something different now, and refresh only repaints
-        // when the headline itself changes.
-        showing = null
-    }
-
     private companion object {
         /**
          * Fifteen seconds. Six was tried and was too quick, and the reason is
@@ -311,7 +271,6 @@ private class HeadlinesScreen : SignageScreen {
             // means the crawler has not run or cannot be reached — and those
             // two are worth telling apart.
             meta.text = ""
-            source = null
             body.text = when (Headlines.reachable) {
                 null -> "読み込み中…"
                 false -> "取得できません"
@@ -336,18 +295,12 @@ private class HeadlinesScreen : SignageScreen {
         showing = item.title
 
         val paint = {
-            // The counter, and the feed name only when nothing else is
-            // carrying it. Held up by the character it is legible and it earns
-            // the board its place; with no character it has to come back here,
-            // because a headline whose source is nowhere is worse than a
-            // crowded line.
+            // The counter and the feed name. A headline whose source is
+            // nowhere is worse than a crowded line.
             meta.text = buildString {
                 append(index % items.size + 1).append(" / ").append(items.size)
-                if (!boardShown) {
-                    append("   ").append(item.source.ifEmpty { "新着" })
-                }
+                append("   ").append(item.source.ifEmpty { "新着" })
             }
-            source = item.source.ifEmpty { null }
             body.text = item.title
         }
 
@@ -475,9 +428,6 @@ private class TasksScreen : SignageScreen {
     }
 
     override fun refresh(data: LifelogSummary.Snapshot?) {
-        // Named for the cards rather than the kanban board it came from: the
-        // screens now inherit a `board`, and that one is a thing a character
-        // holds up.
         val cards = HermesStatus.board
         body.text = when {
             cards == null -> "—"

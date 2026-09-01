@@ -20,7 +20,6 @@ import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
 import com.r1.core.Motion
-import org.json.JSONObject
 
 /**
  * The standby display: what the device shows when nobody is using it.
@@ -136,9 +135,6 @@ class SignageActivity : Activity() {
     /** Whether the page has reported a character actually on screen. */
     private var stageReady = false
 
-    /** What the character is currently holding up; see [pushBoard]. */
-    private var shownBoard: String? = null
-
     /** The last wheel step acted on, and when; see [settling]. */
     private var lastStep = 0
     private var lastStepAt = 0L
@@ -164,10 +160,6 @@ class SignageActivity : Activity() {
             // particular thing, and this one is often glanced at rather than
             // watched.
             screens.getOrNull(index)?.refresh(LifelogSummary.current)
-            // After the refresh, because that is when a screen decides what it
-            // has to hold up. HeadlinesScreen changes feed every fifteen
-            // seconds and the board has to follow it.
-            pushBoard()
 
             ticker.postDelayed(this, TICK_MS)
         }
@@ -248,7 +240,6 @@ class SignageActivity : Activity() {
         // character behind them. The scrim on [content] is what backs the text
         // instead, and it stops before the character does.
         if (stageReady) view.setBackgroundColor(Color.TRANSPARENT)
-        screen.onBoardShown(stageReady)
         content.addView(
             view,
             FrameLayout.LayoutParams(
@@ -257,9 +248,6 @@ class SignageActivity : Activity() {
             ),
         )
         screen.refresh(LifelogSummary.current)
-        // A new screen holds up something different, or nothing.
-        shownBoard = null
-        pushBoard()
     }
 
     /**
@@ -301,22 +289,6 @@ class SignageActivity : Activity() {
     )
 
     /**
-     * Tells the page what to put on the board.
-     *
-     * Sent only when it changes. Most screens have nothing for it, and an
-     * empty string is how the page is told to put the board away rather than
-     * hold up a blank one.
-     */
-    private fun pushBoard() {
-        val page = stage ?: return
-        if (!stageReady) return
-        val wanted = screens.getOrNull(index)?.board.orEmpty()
-        if (wanted == shownBoard) return
-        shownBoard = wanted
-        StagePage.call(page, "window.stageBoard(" + JSONObject.quote(wanted) + ")", "board")
-    }
-
-    /**
      * Called from the page once it has a character on screen, or once it knows
      * it will not have one.
      *
@@ -341,13 +313,6 @@ class SignageActivity : Activity() {
         content.background = scrim()
         content.layoutParams = contentLayout()
         content.getChildAt(0)?.setBackgroundColor(Color.TRANSPARENT)
-        // The screen on show was built while there was no character, so it is
-        // still carrying whatever it would have put on the board.
-        screens.getOrNull(index)?.let { screen ->
-            screen.onBoardShown(true)
-            screen.refresh(LifelogSummary.current)
-        }
-        pushBoard()
     }
 
     private fun applyKeepAwake() {

@@ -2,9 +2,9 @@
 //
 // Three states and one job. For the talk it waits as a clock and then a
 // character stands up and greets the room; for the standby display the same
-// character stands at the bottom of the panel holding a board, with the screens
-// drawn over it by Android. Kotlin drives all of it through the functions hung
-// on window at the bottom.
+// character stands at the bottom of the panel, with the screens drawn over it
+// by Android. Kotlin drives all of it through the functions hung on window at
+// the bottom.
 //
 // One page and one bundle on purpose. The model is nineteen megabytes and the
 // renderer takes a second to bring a GL surface up; a second page would pay
@@ -219,13 +219,6 @@ function frame() {
     vrm.scene.rotation.y = baseYaw + Math.sin(t * 0.5) * 0.06;
     vrm.scene.position.y = Math.sin(t * 1.1) * 0.004;
     vrm.update(delta);
-
-    // Placed and turned every frame rather than parented and left. It is a
-    // child of the hand so that it moves with the sway, but where it sits and
-    // which way it faces are decided in the camera's axes -- a rig can orient
-    // its bones any way it likes and the panel is not where that should be
-    // discovered.
-    placeBoard();
   }
 
   renderer.render(scene, camera);
@@ -286,11 +279,11 @@ function frameCamera() {
 }
 
 /**
- * Out of the T-pose, into whatever the mode needs.
+ * Out of the T-pose, into a pose a character can stand in.
  *
  * A VRM loads with its arms straight out because that is the pose it is rigged
- * in, and nobody greets a room like that. For the talk both arms come down.
- * For standby the right one folds up to carry the board.
+ * in, and nobody greets a room like that. Both arms come down, for the talk and
+ * for standby alike.
  *
  * The numbers are eye-work, like BASE_YAW. A rig can put its elbow anywhere
  * and no amount of reading the specification says where this one put it.
@@ -301,223 +294,8 @@ function applyPose() {
   const rightLower = bone("rightLowerArm");
 
   if (leftArm) leftArm.rotation.z = -1.15;
-
-  // The pose follows the board and not the mode. A character standing with one
-  // arm raised and nothing in it reads as a fault, and most standby screens
-  // have nothing to hold up.
-  if (holding()) {
-    if (rightArm) rightArm.rotation.set(0, 0, 0.75);
-    if (rightLower) rightLower.rotation.set(0, 0, 0.55);
-  } else {
-    if (rightArm) rightArm.rotation.set(0, 0, 1.15);
-    if (rightLower) rightLower.rotation.set(0, 0, 0);
-  }
-}
-
-/** Whether there is a board to hold. */
-function holding() {
-  return standby && boardText.length > 0;
-}
-
-// -------------------------------------------------------------- the board ---
-
-/**
- * What the character holds up: a plane parented to the right hand, with a
- * canvas for its face.
- *
- * The board carries the feed name and not the headline. `HeadlinesScreen`
- * settled that argument once already -- at a size that fits on a board held by
- * a character, a headline cannot be read from across a desk -- so the board
- * says the short fixed thing and the panel keeps the long one. The board earns
- * its place by saying something the text no longer has to.
- */
-const BOARD_PX_W = 512;
-const BOARD_PX_H = 288;
-
-/** Board width as a fraction of the figure's height. Eye-work, again. */
-const BOARD_SCALE = 0.38;
-
-/**
- * Where the board sits relative to the hand, as fractions of the figure's
- * height: a little above it, and well in front of the chest.
- *
- * Applied in world space each frame rather than as a local offset on the bone.
- * A rig can orient its wrist any way it likes and the first attempt put the
- * board through the character's own torso; the camera's axes are the only ones
- * this page can rely on.
- */
-const BOARD_LIFT = 0.11;
-const BOARD_REACH = 0.30;
-
-let boardMesh = null;
-let boardTexture = null;
-let boardCanvas = null;
-let boardText = "";
-
-function makeBoard() {
-  const hand = bone("rightHand");
-  if (!hand) return;
-
-  boardCanvas = document.createElement("canvas");
-  boardCanvas.width = BOARD_PX_W;
-  boardCanvas.height = BOARD_PX_H;
-
-  boardTexture = new THREE.CanvasTexture(boardCanvas);
-  boardTexture.colorSpace = THREE.SRGBColorSpace;
-
-  boardMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, BOARD_PX_H / BOARD_PX_W),
-    new THREE.MeshBasicMaterial({ map: boardTexture, transparent: true }),
-  );
-  boardMesh.frustumCulled = false;
-  // The mode and the text may both have been set before the model finished
-  // loading; the board is the last thing here to exist, so it reads them.
-  boardMesh.visible = holding();
-  hand.add(boardMesh);
-
-  // The normalized rig carries a scale of its own, and it is not the model's.
-  // Dividing it out sizes the board against the figure rather than against
-  // whatever units the bone happens to be in.
-  const boneScale = new THREE.Vector3();
-  hand.getWorldScale(boneScale);
-  boardMesh.scale.setScalar((figureSize.y * BOARD_SCALE) / (boneScale.x || 1));
-
-  paintBoard();
-}
-
-/**
- * Canvas 2D draws Japanese in this WebView, which is the whole reason the
- * board can carry a feed name at all.
- */
-/** Just above the hand and well in front of the chest, facing the viewer. */
-const boardAt = new THREE.Vector3();
-
-function placeBoard() {
-  if (!boardMesh || !boardMesh.visible || !boardMesh.parent) return;
-  boardMesh.parent.getWorldPosition(boardAt);
-  boardAt.y += figureSize.y * BOARD_LIFT;
-  boardAt.z += figureSize.y * BOARD_REACH;
-  boardMesh.position.copy(boardMesh.parent.worldToLocal(boardAt));
-  boardMesh.lookAt(camera.position);
-}
-
-function paintBoard() {
-  if (!boardCanvas) return;
-  const ctx = boardCanvas.getContext("2d");
-
-  ctx.clearRect(0, 0, BOARD_PX_W, BOARD_PX_H);
-  ctx.fillStyle = "#f4f1e8";
-  ctx.fillRect(0, 0, BOARD_PX_W, BOARD_PX_H);
-  ctx.strokeStyle = "#2b2b2b";
-  ctx.lineWidth = 12;
-  ctx.strokeRect(6, 6, BOARD_PX_W - 12, BOARD_PX_H - 12);
-
-  ctx.fillStyle = "#1b1b1b";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-
-  const laid = layOut(ctx);
-  const step = laid.size * 1.18;
-  const top = BOARD_PX_H / 2 - (step * (laid.lines.length - 1)) / 2;
-  laid.lines.forEach((line, i) => ctx.fillText(line, BOARD_PX_W / 2, top + step * i));
-
-  boardTexture.needsUpdate = true;
-}
-
-const BOARD_MARGIN = 56;
-
-/** The largest the board will draw, and the smallest worth drawing. */
-const BOARD_MAX_PX = 108;
-const BOARD_MIN_PX = 24;
-
-/** Where a feed title may be broken. Japanese offers nothing else. */
-const BREAKS = "・･ 　/|:：-—";
-
-/**
- * The board is a label, and a label has to be read from across a desk.
- *
- * Feed titles run from "ギズモード・ジャパン" to "はてなブックマーク - 人気
- * エントリー - 総合". On one line the long ones shrink to something nobody
- * reads, so a name is broken over two lines and then three before the size is
- * given up. A line is only taken if it actually buys size back.
- *
- * Trimming the title to its first segment was the other way out and is worse:
- * there is no rule that keeps "ギズモード・ジャパン" whole and still cuts
- * "はてなブックマーク - 人気エントリー - 総合" down, and a board naming the
- * wrong thing is worse than a board naming it in small type.
- */
-function layOut(ctx) {
-  const font = (n) => `700 ${n}px system-ui, "Noto Sans JP", sans-serif`;
-  const room = BOARD_PX_W - BOARD_MARGIN;
-
-  const fit = (lines) => {
-    let size = BOARD_MAX_PX;
-    ctx.font = font(size);
-    const widest = () => lines.reduce((w, l) => Math.max(w, ctx.measureText(l).width), 0);
-    while (size > BOARD_MIN_PX && widest() > room) {
-      size -= 4;
-      ctx.font = font(size);
-    }
-    return size;
-  };
-
-  let lines = [boardText];
-  let size = fit(lines);
-
-  // Two thirds of the biggest the board can draw. Above that the name is
-  // already legible and a second line would only make it smaller.
-  for (let n = 2; n <= 3 && size < BOARD_MAX_PX * 0.66; n += 1) {
-    const candidate = splitInto(boardText, n);
-    if (candidate.length < n) break;
-    const candidateSize = fit(candidate);
-    if (candidateSize <= size) break;
-    lines = candidate;
-    size = candidateSize;
-  }
-
-  ctx.font = font(size);
-  return { lines: lines, size: size };
-}
-
-/**
- * Cuts [text] into [n] lines at the separators nearest the even divisions, or
- * at the divisions themselves where the writing offers no seam.
- */
-function splitInto(text, n) {
-  if (text.length < n * 2) return [text];
-
-  const cuts = [];
-  for (let k = 1; k < n; k += 1) {
-    const ideal = (text.length * k) / n;
-    let at = -1;
-    for (let i = 1; i < text.length; i += 1) {
-      if (cuts.indexOf(i) >= 0) continue;
-      if (BREAKS.indexOf(text[i]) < 0) continue;
-      if (at < 0 || Math.abs(i - ideal) < Math.abs(at - ideal)) at = i;
-    }
-    cuts.push(at >= 0 ? at : Math.round(ideal));
-  }
-  cuts.sort((a, b) => a - b);
-
-  const lines = [];
-  let from = 0;
-  for (let i = 0; i < cuts.length; i += 1) {
-    lines.push(text.slice(from, cuts[i]));
-    // Step over the separator itself; a line ending in a dash names nothing
-    // that the dash was joining.
-    from = BREAKS.indexOf(text[cuts[i]]) >= 0 ? cuts[i] + 1 : cuts[i];
-  }
-  lines.push(text.slice(from));
-
-  return lines
-    .map((line) => {
-      let a = 0;
-      let b = line.length;
-      while (a < b && BREAKS.indexOf(line[a]) >= 0) a += 1;
-      while (b > a && BREAKS.indexOf(line[b - 1]) >= 0) b -= 1;
-      return line.slice(a, b);
-    })
-    .filter((line) => line.length > 0);
+  if (rightArm) rightArm.rotation.set(0, 0, 1.15);
+  if (rightLower) rightLower.rotation.set(0, 0, 0);
 }
 
 // ------------------------------------------------------------- the motions ---
@@ -642,7 +420,6 @@ function makeMixer() {
     }
     playing = false;
     restoreRest();
-    if (boardMesh) boardMesh.visible = holding();
   });
 }
 
@@ -681,7 +458,6 @@ loader.load(
     captureRest();
     frameCamera();
     applyPose();
-    makeBoard();
     makeMixer();
     // The clips are not read here; see preload.
     if (standby) preload();
@@ -753,29 +529,9 @@ window.stageStandby = function () {
   clockEl.style.display = "none";
   bubbleEl.style.display = "none";
   frameCamera();
-  if (boardMesh) boardMesh.visible = holding();
   applyPose();
   preload();
   return "standby";
-};
-
-/**
- * What the board says, or an empty string to put it away.
- *
- * Called whenever the screen above changes what it is showing. Most standby
- * screens have nothing for it, and a character holding a blank board looks
- * like a character holding a mistake -- so an empty string hides the mesh
- * rather than drawing an empty one.
- */
-window.stageBoard = function (text) {
-  boardText = typeof text === "string" ? text.trim() : "";
-  if (boardMesh) {
-    boardMesh.visible = holding();
-    if (boardMesh.visible) paintBoard();
-  }
-  // The arm comes up with the board and goes down with it.
-  applyPose();
-  return boardText;
 };
 
 /**
@@ -795,9 +551,6 @@ window.stagePlay = function () {
   const name = MOTIONS[motionAt % MOTIONS.length];
   motionAt += 1;
   playing = true;
-  // It is held in the hand the clips move. A board thrown around by a V sign
-  // is worse than no board for the four seconds it takes.
-  if (boardMesh) boardMesh.visible = false;
 
   loadClip(name)
     .then((clip) => {
@@ -813,7 +566,6 @@ window.stagePlay = function () {
     .catch((error) => {
       playing = false;
       restoreRest();
-      if (boardMesh) boardMesh.visible = holding();
       report("motion-failed:" + name + ":" + (error && error.message ? error.message : "?"));
     });
 

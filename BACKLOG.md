@@ -732,7 +732,7 @@ Design: 2 planned / 2 actual — one to survey the ground and propose, one to
 settle the four choices and write this down. Implementation: 1 planned /
 1 actual.
 
-## Built: an avatar on the standby display, holding the news
+## Built: an avatar on the standby display
 
 The standby display becomes a character rather than a page of text: the model
 stands on the panel and holds a board with the current headline on it.
@@ -950,6 +950,25 @@ It also found a real bug in the frame loop. `getDelta` resets the clock whether
 or not anything is drawn with it, so every throttled frame threw its slice
 away and everything driven by time ran at half speed. Invisible in a sway.
 Not invisible at all in a motion clip.
+
+### The board came off, 2026-09-01
+
+Removed. The board was legible on its own terms and that turned out not to be
+the test: on the panel, over a character framed at a third of its height, a
+feed name in a held-up sign is read after the headline it belongs to rather
+than with it, and by then the text has already said where the item came from.
+It was answering a question nobody had while it was up.
+
+So the mesh, its canvas and the line-breaking that fitted "はてなブックマーク -
+人気エントリー - 総合" onto three lines are all gone, along with
+`window.stageBoard`, `SignageScreen.board` and `onBoardShown`. The arm no
+longer follows anything: both come down, in standby as in the talk.
+`HeadlinesScreen` keeps its feed name on the meta line unconditionally, which
+is where it was before any of this and where the avatar switch put it back.
+
+What stays is the arrangement underneath, which was the expensive part and is
+not in question: the character built once as the display's frame, the screens
+swapped into a container over it, the scrim, and a tap playing a motion.
 
 ### Still unproven
 

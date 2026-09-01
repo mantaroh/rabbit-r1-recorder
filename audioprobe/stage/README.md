@@ -6,11 +6,10 @@ so the unbundled module is not packaged into the APK as well.
 Two screens use it and it has a mode for each. `CueActivity` drives
 `cueSpeak` / `cueQuiet` / `cueIdle`: the page is a clock until the cue, and then
 the lid comes off and the character delivers the line. `SignageActivity` drives
-`stageStandby` / `stageBoard`: the page's own clock goes away entirely, the
-character is framed small and low so the standby screens keep the top of the
-panel, and it holds up a board with the feed name on it. One page and one
-bundle, because a second of either would pay for the model and the GL surface
-twice.
+`stageStandby`: the page's own clock goes away entirely and the character is
+framed small and low so the standby screens keep the top of the panel. One page
+and one bundle, because a second of either would pay for the model and the GL
+surface twice.
 
 ```bash
 npm install    # versions are pinned in package.json
@@ -64,8 +63,8 @@ Nothing about a model's scale, proportions or facing is assumed; the camera is
 framed from the bounding box after the matrices are updated. The numbers decided by looking at the panel
 rather than measured are named and gathered near the top of `entry.js`:
 `BASE_YAW`, which is there because `VRMUtils.rotateVRM0` did not leave this
-model facing the room, and the crops and board offsets, which are where they
-are because that is where they looked right on a 240 dp panel.
+model facing the room, and the crops, which are where they are because that is
+where they looked right on a 240 dp panel.
 
 `STANDBY_CROP` has a counterpart in Kotlin — `SignageActivity.CONTENT_FRACTION`
 — and the two have to agree about where the character stops and the text
