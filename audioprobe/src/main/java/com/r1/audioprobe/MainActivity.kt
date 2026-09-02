@@ -202,9 +202,12 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Six, deliberately. The wheel is a slow way to travel and this is the
-     * screen you land on every time the standby display is dismissed; anything
-     * that is not used most days belongs behind 設定.
+     * Seven, and the count is the rule rather than the number. The wheel is a
+     * slow way to travel and this is the screen you land on every time the
+     * standby display is dismissed, so anything that is not used most days
+     * belongs behind 設定. 消灯 is used every night, which is what earns it a
+     * row; it sits next to 待受 because both are things done on the way to
+     * putting the device down.
      */
     private fun entries() = listOf(
         Entry({ "話す" }) {
@@ -218,6 +221,9 @@ class MainActivity : Activity() {
         },
         Entry({ "待受" }) {
             startActivity(Intent(this, SignageActivity::class.java))
+        },
+        Entry({ "消灯" }) {
+            startActivity(Intent(this, DarkActivity::class.java))
         },
         Entry({ "設定" }) {
             startActivity(Intent(this, SettingsActivity::class.java))

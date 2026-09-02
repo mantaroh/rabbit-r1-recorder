@@ -463,9 +463,9 @@ sets it.
 
 ## What the device shows
 
-Three screens, in the order they are met:
+Four screens, in the order they are met:
 
-- **Home** is a six-row menu — 話す, 記録, 通訳, 待受, 設定, Hermes — turned through
+- **Home** is a seven-row menu — 話す, 記録, 通訳, 待受, 消灯, 設定, Hermes — turned through
   with the wheel, one row lit at a time. It was a column of small Android
   buttons first, which on this device means the one interaction it is worst at:
   hitting a 30 dp target on a 240 dp panel. The app registers as a HOME
@@ -474,11 +474,20 @@ Three screens, in the order they are met:
   charging**. Whatever it shows holds the panel awake, and doing that on
   battery turns a day of recording into an afternoon. The wheel steps between
   screens and never dismisses; leaving is the side button's job.
+- **消灯** turns the panel off and leaves everything else running. Every other
+  screen holds the display awake on a cable, which is right on a desk and wrong
+  next to a bed, and an app cannot reach `goToSleep` — so the accessibility
+  service that already watches the side button locks the screen instead. The
+  window goes black at zero brightness first, which needs no permission and
+  covers the case where that service is not connected; the device's own
+  sixty-second timeout finishes it there. Waking finishes the screen, so the
+  device comes back to the menu rather than to a dark panel. The recorder is a
+  foreground service and does not notice any of this.
 - **The evening prompt** is styled after the R1 rather than after Android,
   because it is the screen most likely to be seen by someone who was not
   looking for it.
 
-All three are driven by Android's focus system rather than by intercepting keys
+All of them are driven by Android's focus system rather than by intercepting keys
 at the Activity. A clickable view is focusable, so it takes the D-pad before
 `onKeyDown` ever runs — the first version of every one of these screens
 overrode `onKeyDown` and the wheel did nothing at all.

@@ -153,6 +153,17 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!-- 消灯. Not in recents for the same reason as the standby display:
+             it is a state the device is put into, not a screen to come back
+             to. It finishes itself on the way back. -->
+        <activity
+            android:name=".DarkActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait" />
+
         <!-- The standby display. Not exported and not in recents: it is a
              state the device falls into, not a screen anyone navigates to. -->
         <activity
