@@ -485,7 +485,10 @@ Four screens, in the order they are met:
   foreground service and does not notice any of this.
 - **The evening prompt** is styled after the R1 rather than after Android,
   because it is the screen most likely to be seen by someone who was not
-  looking for it.
+  looking for it. Answering 今日はここまで hands straight over to 消灯: the
+  prompt turned the panel on by itself to ask, at an hour when the answer is
+  given from a bed, so it puts it back. まだ続ける changes nothing — the day is
+  still going.
 
 All of them are driven by Android's focus system rather than by intercepting keys
 at the Activity. A clickable view is focusable, so it takes the D-pad before
