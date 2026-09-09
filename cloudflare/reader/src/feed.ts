@@ -23,6 +23,8 @@ export interface FeedItem {
   publishedAt: string | null;
   /** The entry's body as plain text, cut short. Null when it has none. */
   summary: string | null;
+  /** An absolute http(s) picture of the article, big enough to be worth showing. */
+  imageUrl: string | null;
 }
 
 /**
@@ -61,6 +63,7 @@ export function parseFeed(xml: string): FeedItem[] {
       link,
       publishedAt: dateOf(block),
       summary: summaryOf(block),
+      imageUrl: imageOf(block),
     });
   }
 
@@ -84,8 +87,6 @@ function linkOf(block: string): string | null {
   // Atom: prefer an explicit alternate, then any link with no rel, and never
   // rel="self" or rel="replies" if something else is on offer.
   const hrefs = [...block.matchAll(/<link\b([^>]*)\/?>/g)].map((m) => m[1]);
-  const attrOf = (attrs: string, name: string) =>
-    new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`).exec(attrs)?.[1] ?? null;
 
   let fallback: string | null = null;
   for (const attrs of hrefs) {
@@ -100,6 +101,158 @@ function linkOf(block: string): string | null {
   // RSS 2.0 and RDF: the URL is the element's text.
   const inline = text(block, "link");
   return inline || null;
+}
+
+/**
+ * The smallest a picture may declare itself and still be shown.
+ *
+ * Two things sit under this and neither is the article: Blogger's
+ * media:thumbnail is 72 pixels square, and the pixel FeedBurner puts at the
+ * end of a body is one.
+ */
+const MIN_IMAGE_PX = 200;
+
+/**
+ * Hosts that serve something other than the article, whatever the element
+ * says it is. Gravatar is the author's face; mozillagfx offers it as
+ * media:content on every entry.
+ *
+ * "favicon." rather than one CDN hostname: it anchors on a hostname label, so
+ * a path segment that merely contains the word does not match, and the next
+ * favicon CDN does not have to be discovered the same way. No article
+ * picture has a URL with a favicon label in its host.
+ *
+ * `b.st-hatena.com` and `b.hatena.ne.jp/entry/image` are Hatena Bookmark, an
+ * aggregator whose entry body is a quote card built out of interface images —
+ * a favicon, an OGP thumbnail proxy, a "add this bookmark" badge — and never
+ * the linked article's picture. That is a property of the source, not of any
+ * one image's size, so no size check was ever going to find all of it;
+ * measured 2026-09-09 by watching a size-based rule clear one of these and
+ * immediately uncover the next. `f.st-hatena.com` is deliberately left off:
+ * that is Hatena Blog, a different product on a different subdomain, and
+ * cdn-ak.f.st-hatena.com serves a real article's picture.
+ */
+const IMAGE_DENYLIST = ["gravatar.com", "favicon.", "b.st-hatena.com", "b.hatena.ne.jp/entry/image"];
+
+/**
+ * One attribute out of a tag's attribute string.
+ *
+ * Anchored on a boundary that is whitespace or the start, so `width` does not
+ * also match `data-width`.
+ */
+function attrOf(attrs: string, name: string): string | null {
+  return new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(attrs)?.[1] ?? null;
+}
+
+/** The attribute strings of every occurrence of a tag, in document order. */
+function tagsOf(xml: string, name: string): string[] {
+  return [...xml.matchAll(new RegExp(`<${name}\\b([^>]*?)/?>`, "gi"))].map((m) => m[1]);
+}
+
+/**
+ * The article's picture, or null when the entry only offers something that is
+ * not one.
+ *
+ * Four places, in descending order of how likely the publisher was to mean the
+ * article by it, and every candidate has to survive [usableImage] — so an
+ * entry whose media:content is an avatar falls through to the body rather than
+ * ending up with a face on the screen.
+ */
+function imageOf(block: string): string | null {
+  for (const attrs of tagsOf(block, "enclosure")) {
+    const type = attrOf(attrs, "type");
+    if (type && !type.toLowerCase().startsWith("image/")) continue;
+    const url = usableImage(attrOf(attrs, "url"), attrs);
+    if (url) return url;
+  }
+
+  for (const attrs of tagsOf(block, "media:content")) {
+    const type = attrOf(attrs, "type")?.toLowerCase() ?? "";
+    const medium = attrOf(attrs, "medium")?.toLowerCase() ?? "";
+    if (medium !== "image" && !type.startsWith("image/")) continue;
+    const url = usableImage(attrOf(attrs, "url"), attrs);
+    if (url) return url;
+  }
+
+  for (const attrs of tagsOf(block, "media:thumbnail")) {
+    const url = usableImage(attrOf(attrs, "url"), attrs);
+    if (url) return url;
+  }
+
+  // The body, which is where a publisher that uses none of the above puts it.
+  // Decoded twice: a feed that escaped its HTML once has no <img> until that
+  // escaping is undone, and one that escaped it twice — the same defect
+  // [plainText] corrects for — has none until it is undone a second time.
+  const body = ["description", "content:encoded", "summary", "content"]
+    .map((tag) => rawText(block, tag) ?? "")
+    .join(" ");
+  for (const attrs of tagsOf(decode(decode(body)), "img")) {
+    const url = usableImage(attrOf(attrs, "src"), attrs);
+    if (url) return url;
+  }
+
+  return null;
+}
+
+/** The URL if it is worth fetching from a device, else null. */
+function usableImage(url: string | null, attrs: string): string | null {
+  if (!url) return null;
+
+  const cleaned = decode(url).trim();
+  if (!cleaned || cleaned.length > 500) return null;
+  // The device fetches this itself, so nothing but an ordinary URL is any use
+  // to it — no data: payloads, no protocol-relative addresses.
+  if (!/^https?:\/\//i.test(cleaned)) return null;
+  if (IMAGE_DENYLIST.some((host) => cleaned.toLowerCase().includes(host))) return null;
+
+  // A rewritten URL is a different picture from the one the attributes
+  // describe, so the size the feed declared no longer applies to it.
+  const bigger = enlarged(cleaned);
+  if (bigger) return bigger;
+
+  let declared = false;
+  for (const name of ["width", "height"]) {
+    const value = Number(attrOf(attrs, name));
+    if (Number.isFinite(value) && value > 0) {
+      declared = true;
+      if (value < MIN_IMAGE_PX) return null;
+    }
+  }
+
+  // The width/height attributes are optional, and on the CDNs this matters
+  // for they are frequently absent — some services state the size as
+  // width=/height= in the URL itself instead. Measured 2026-09-09: Hatena's
+  // OGP thumbnail proxy (cdn-ak-scissors.b.st-hatena.com) states
+  // "height=90;version=1;width=120" with no size attribute on the <img> at
+  // all, and 120 is too small for a panel that is 480 pixels across. The
+  // Register's image host is the reason this cannot just refuse anything
+  // that mentions a width: it states "?imageId=5295166&width=800", a
+  // perfectly usable picture. Only consulted when the attributes gave
+  // nothing, and only for these two keys — a URL that states neither is not
+  // evidence of a small image.
+  if (!declared) {
+    const width = /(?:^|[?&;/])width=(\d+)/i.exec(cleaned);
+    const height = /(?:^|[?&;/])height=(\d+)/i.exec(cleaned);
+    if (width && Number(width[1]) < MIN_IMAGE_PX) return null;
+    if (height && Number(height[1]) < MIN_IMAGE_PX) return null;
+  }
+
+  return cleaned;
+}
+
+/**
+ * Blogger states a thumbnail's size in its path, and the size it states is 72
+ * pixels — 7,251 bytes of a picture that has to fill 480. The same URL asked
+ * for s640 returned 135,810 bytes of the same image, measured against
+ * android-developers on 2026-09-09.
+ *
+ * Narrow on purpose. This is one publisher's URL scheme, not a general
+ * ability to resize other people's images by guessing at their addresses.
+ */
+function enlarged(url: string): string | null {
+  if (!url.includes("googleusercontent.com")) return null;
+  const rewritten = url.replace(/\/s\d+(-c)?\//, "/s640/").replace(/=s\d+(-c)?$/, "=s640");
+  return rewritten === url ? null : rewritten;
 }
 
 /**
