@@ -324,8 +324,13 @@ private class HeadlinesScreen : SignageScreen {
          * long after looking up you start. A headline that changes while you
          * are halfway through it is worse than one you have already finished.
          *
-         * Ten items makes the loop two and a half minutes, which is about how
-         * often the list is refetched anyway.
+         * Fifty items makes the loop twelve and a half minutes, which is long
+         * enough that the tail of the list is never reached by waiting. That
+         * is the intended arrangement rather than a cost of it: the rotation
+         * is what an unattended panel does, and a swipe is how somebody who
+         * wants a particular story gets to it. Shortening this to make the
+         * loop fit would trade the one number here that was arrived at by
+         * trying it against a number nobody reads.
          */
         const val DWELL_MS = 15_000L
 
