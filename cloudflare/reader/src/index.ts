@@ -21,7 +21,7 @@
  * Cloudflare Access and its own bearer.
  */
 
-import { parseFeed, parseFeedTitle, parseOpml, type Subscription } from "./feed";
+import { firstCodePoints, parseFeed, parseFeedTitle, parseOpml, type Subscription } from "./feed";
 
 interface Env {
   DB: D1Database;
@@ -196,9 +196,32 @@ async function crawl(env: Env, limit: number): Promise<CrawlSummary> {
   return summary;
 }
 
-/** Enough of a test: Japanese cannot be written without one of these. */
+/**
+ * Enough of a test: ordinary Japanese prose does not go far without hiragana
+ * or katakana, even when every content word in it is kanji.
+ *
+ * The ideograph range (\u4e00-\u9fff) used to be part of this test, and it was
+ * wrong in both directions. A single kanji in an English summary — a Japanese
+ * product or company name, which is common on this subscription list — made
+ * this false, so the English was copied verbatim into summary_ja and the row
+ * was never reconsidered for the rest of its life. The same range also made a
+ * Chinese summary read as Japanese, since Chinese text is ideographs with no
+ * kana at all. Requiring kana specifically (\u3040-\u309f is hiragana,
+ * \u30a0-\u30ff is katakana) fixes both.
+ *
+ * The cost is a summary written entirely in kanji, with no kana anywhere,
+ * being sent for translation it did not need. Summaries here are prose, not
+ * classical-style kanji-only text, so that does not happen in practice.
+ *
+ * Written as \u escapes rather than the literal characters on purpose: this
+ * exact substitution has silently reverted five times in this project, because
+ * U+3040 is unassigned and U+30A0 is a katakana double hyphen, so neither
+ * range boundary is visually distinguishable from the ideograph range in a
+ * diff. Verify mechanically instead of by eye:
+ * `grep -nP '[^\x00-\x7F]' src/index.ts` must not list this line.
+ */
 function foreign(text: string): boolean {
-  return !/[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]/.test(text);
+  return !/[\u3040-\u309f\u30a0-\u30ff]/.test(text);
 }
 
 /**
@@ -250,7 +273,9 @@ async function translate(env: Env, summary: string): Promise<string | null> {
     // that would mean never asking again.
     if (foreign(answer)) return null;
 
-    return answer.slice(0, 600);
+    // Code points, not [String.slice] — see [firstCodePoints] on the same
+    // surrogate-pair hazard this guards against for the English summary.
+    return firstCodePoints(answer, 600);
   } catch (error) {
     console.log("translate failed", String(error).slice(0, 200));
     return null;

@@ -74,6 +74,27 @@ object Thumbnails {
 
     private val inFlight = HashSet<String>()
 
+    /**
+     * How long a "may I fetch" answer from the metered gate is trusted before
+     * it is checked again.
+     *
+     * The screen calls [prefetch] for the current and next item on every
+     * one-second tick, so without this a gated link would re-read
+     * `UploadSettings` (a SharedPreferences hit) and re-ask
+     * `ConnectivityManager` (a Binder call) on the main thread twice a second
+     * for as long as the news screen is up. A memoized answer is paid for
+     * about once per this window instead of once per tick, which is chosen
+     * over a per-URL "don't retry this one" marker on purpose: marking a URL
+     * would make a picture deferred while metered permanently unfetchable,
+     * and moving onto Wi-Fi later has to still let it arrive. Five seconds is
+     * short enough that the gate reopens within one or two ticks of the
+     * network actually changing.
+     */
+    private const val METERED_RECHECK_MS = 5_000L
+
+    private var meteredGateCache: Boolean? = null
+    private var meteredGateCheckedAt = 0L
+
     /** What is already decoded, or null. Cheap enough to call every tick. */
     @Synchronized
     fun get(url: String?): Bitmap? = url?.let { cache[it] }
@@ -91,8 +112,9 @@ object Thumbnails {
 
         // The same rule the recordings follow. A standby screen quietly
         // spending a data plan on decoration is the thing to avoid, and the
-        // switch for it already exists.
-        if (UploadSettings(context).unmeteredOnly && !unmetered(context)) return
+        // switch for it already exists. See [METERED_RECHECK_MS] for why this
+        // is a cached answer rather than a fresh check on every call.
+        if (metered(context)) return
 
         inFlight.add(url)
         worker.execute {
@@ -105,6 +127,24 @@ object Thumbnails {
                 if (bitmap != null) cache[url] = bitmap else failed[url] = true
             }
         }
+    }
+
+    /**
+     * Whether the gate should refuse a fetch right now, cached for
+     * [METERED_RECHECK_MS] at a time.
+     *
+     * Called from inside [prefetch], which already holds this object's
+     * monitor, so the read-then-write below needs no synchronization of its
+     * own — Kotlin's lock is reentrant per thread.
+     */
+    private fun metered(context: Context): Boolean {
+        val now = System.currentTimeMillis()
+        meteredGateCache?.let { if (now - meteredGateCheckedAt < METERED_RECHECK_MS) return it }
+
+        val value = UploadSettings(context).unmeteredOnly && !unmetered(context)
+        meteredGateCache = value
+        meteredGateCheckedAt = now
+        return value
     }
 
     private fun unmetered(context: Context): Boolean = runCatching {

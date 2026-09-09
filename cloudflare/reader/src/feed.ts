@@ -28,10 +28,12 @@ export interface FeedItem {
 }
 
 /**
- * How much of an entry's body is kept.
+ * How much of an entry's body is kept, in Unicode code points rather than
+ * UTF-16 units — see the cut in [summaryOf], which counts by code point so a
+ * cut cannot land inside a surrogate pair.
  *
  * Bodies are not a fixed size and are not close to one: measured across the
- * subscription list on 2026-08-09, the median entry ran 88 characters at The
+ * subscription list on 2026-09-09, the median entry ran 88 characters at The
  * Register and 15,475 at android-developers, which ships the whole article.
  * The panel shows a few dozen characters at a time and scrolls, so this is
  * about what a person might read before moving on rather than about the page.
@@ -117,10 +119,14 @@ const MIN_IMAGE_PX = 200;
  * says it is. Gravatar is the author's face; mozillagfx offers it as
  * media:content on every entry.
  *
- * "favicon." rather than one CDN hostname: it anchors on a hostname label, so
- * a path segment that merely contains the word does not match, and the next
- * favicon CDN does not have to be discovered the same way. No article
- * picture has a URL with a favicon label in its host.
+ * "favicon." rather than one CDN hostname: there is no host parsing here, the
+ * check below is `cleaned.toLowerCase().includes(host)` over the whole URL, so
+ * this matches the word anywhere in it — path included — and the next favicon
+ * CDN does not have to be discovered the same way. That looseness is also the
+ * only reason `b.hatena.ne.jp/entry/image` below works at all: it names a path,
+ * not a host, and there is no hostname-anchored form of it. No article
+ * picture's URL has happened to contain "favicon." anywhere in it, so the
+ * substring match has not cost a false positive yet.
  *
  * `b.st-hatena.com` and `b.hatena.ne.jp/entry/image` are Hatena Bookmark, an
  * aggregator whose entry body is a quote card built out of interface images —
@@ -316,9 +322,29 @@ function summaryOf(block: string): string | null {
     // template. Falling through to the next element finds the real body.
     if (plain.length < SUMMARY_MIN) continue;
 
-    return plain.length > SUMMARY_MAX ? plain.slice(0, SUMMARY_MAX).trimEnd() + "…" : plain;
+    // Cut by code point, not by [plain.slice], which counts UTF-16 units and
+    // can land inside a surrogate pair — most emoji outside the BMP are two
+    // of them. A cut mid-pair leaves a lone high surrogate that reaches D1,
+    // then Android's JSONObject, and renders as a replacement glyph right
+    // before the ellipsis. Spreading the string walks it by code point, so
+    // this always lands on a whole character; see [firstCodePoints].
+    const cut = firstCodePoints(plain, SUMMARY_MAX);
+    return cut.length < plain.length ? cut.trimEnd() + "…" : plain;
   }
   return null;
+}
+
+/**
+ * The first `max` Unicode code points of a string.
+ *
+ * Not `text.slice(0, max)`, which counts UTF-16 units: a surrogate pair
+ * split across the boundary leaves a lone high surrogate behind. Spreading
+ * the string into an array walks it one code point at a time, so a cut here
+ * always falls on a whole character. `max` is therefore a code point count,
+ * not a UTF-16 length.
+ */
+export function firstCodePoints(text: string, max: number): string {
+  return [...text].slice(0, max).join("");
 }
 
 /**
@@ -338,11 +364,34 @@ function plainText(html: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Markup out, but only where it is shaped like a tag.
+ *
+ * The obvious pattern, /<[^>]+>/g, treats any "<" as a tag opener and eats
+ * everything up to the next ">" — and by the time this runs, [plainText] has
+ * already decoded entities, so a feed that escaped a comparison operator
+ * hands this a real "<". On this subscription list — android-developers,
+ * mozillagfx, The Register, Publickey — summaries with code and comparison
+ * operators in them are routine, and the naive pattern turned "a &lt; b and c
+ * &gt; d on every run" into "d on every run", silently dropping a clause
+ * rather than failing loudly. Requiring the character after "<" to be a
+ * letter (optionally after a "/") is enough to rule out a space, a digit or
+ * "$" as a tag opener, which covers the cases actually seen: "a < b", "<$5",
+ * "List<String>" (partially — see below). Comments are stripped separately
+ * because "<!--" does not start with a letter and would otherwise survive as
+ * plain text.
+ *
+ * `List<String>` is a genuine tie: `<String>` is shaped exactly like a tag and
+ * is still removed, taking the type parameter with it. That is accepted —
+ * losing one token is a much smaller failure than losing the clause around
+ * it, which is what the old pattern did to entries like this one.
+ */
 function strip(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ");
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<\/?[a-zA-Z][^>]*>/g, " ");
 }
 
 /**

@@ -280,8 +280,17 @@ class SignageActivity : Activity() {
         // way of this one. Hidden rather than destroyed: the page takes
         // seconds and nineteen megabytes to have a model on screen again, and
         // the wheel can come back here in a moment.
+        //
+        // Only touched once the page is ready. Before that, [StagePage.build]
+        // has already set it INVISIBLE on purpose — not GONE, because a view
+        // that is never laid out gives the renderer a buffer of zero by zero,
+        // which looks exactly like a model that failed to load (see the class
+        // doc on StagePage). Forcing GONE here for every screen, not just this
+        // one, during the whole page load would reintroduce that. Once
+        // [onPageState] sees "ready" it takes visibility over from here, so
+        // this only ever needs to hide or show an already-ready character.
         val whole = screen.fullBleed
-        stage?.visibility = if (whole || !stageReady) View.GONE else View.VISIBLE
+        if (stageReady) stage?.visibility = if (whole) View.GONE else View.VISIBLE
 
         content.layoutParams = contentLayout(screen)
         // Screens paint themselves black — see SignageStyle.column — which is

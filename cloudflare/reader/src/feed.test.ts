@@ -54,6 +54,44 @@ describe("summary", () => {
     );
     expect(item.summary).toBe("Gamma & Delta, and a good deal more text here.");
   });
+
+  it("keeps a clause built out of escaped comparison operators", () => {
+    // Once decoded, "&lt;" and "&gt;" become real "<" and ">", and the old
+    // /<[^>]+>/g pattern read the first as a tag opener and ate everything up
+    // to the next ">" — the whole clause in between. android-developers,
+    // mozillagfx, The Register and Publickey all run summaries with code and
+    // comparison operators in them, so this is routine, not a corner case.
+    const [item] = parseFeed(
+      rss(
+        `<item><title>T</title><description>The benchmark shows a &lt; b and c &gt; d on every ` +
+          `run we measured this week.</description></item>`,
+      ),
+    );
+    expect(item.summary).toBe("The benchmark shows a < b and c > d on every run we measured this week.");
+  });
+
+  it("keeps a clause with an escaped less-than before a dollar amount", () => {
+    const [item] = parseFeed(
+      rss(
+        `<item><title>T</title><description>Prices moved from &lt;$5 to &gt;$9 across the ` +
+          `quarter, which is a large jump indeed.</description></item>`,
+      ),
+    );
+    expect(item.summary).toBe("Prices moved from <$5 to >$9 across the quarter, which is a large jump indeed.");
+  });
+
+  it("loses only the type parameter in List<String>, not the sentence around it", () => {
+    // Unlike "a < b", "<String>" really is shaped like a tag once decoded, so
+    // it is still stripped — the accepted trade-off documented on [strip]:
+    // one lost token instead of a lost clause.
+    const [item] = parseFeed(
+      rss(
+        `<item><title>T</title><description>Use List&lt;String&gt; rather than a raw List when ` +
+          `you need type safety here.</description></item>`,
+      ),
+    );
+    expect(item.summary).toBe("Use List rather than a raw List when you need type safety here.");
+  });
 });
 
 describe("imageUrl", () => {
