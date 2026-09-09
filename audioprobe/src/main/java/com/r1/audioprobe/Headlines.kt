@@ -33,7 +33,17 @@ object Headlines {
      */
     private const val WANT = 10
 
-    data class Item(val title: String, val source: String)
+    /**
+     * [summary] is already in Japanese where the Worker could manage it, and in
+     * the publisher's own language where it could not. Which of the two it is
+     * is not this end's business.
+     */
+    data class Item(
+        val title: String,
+        val source: String,
+        val summary: String,
+        val imageUrl: String?,
+    )
 
     @Volatile
     var items: List<Item> = emptyList()
@@ -99,7 +109,14 @@ object Headlines {
             val row = array.optJSONObject(index) ?: return@mapNotNull null
             val title = row.optString("title").trim()
             if (title.isEmpty()) return@mapNotNull null
-            Item(title, row.optString("feed_title").trim())
+            Item(
+                title = title,
+                source = row.optString("feed_title").trim(),
+                summary = row.optString("summary").trim(),
+                // optString gives "" for a JSON null as well as for a missing
+                // key, and both mean the same thing here: nothing to fetch.
+                imageUrl = row.optString("image_url").trim().ifEmpty { null },
+            )
         }
     }
 }
