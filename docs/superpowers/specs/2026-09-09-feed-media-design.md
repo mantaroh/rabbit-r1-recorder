@@ -73,10 +73,15 @@ imageUrl: string | null;
 `summary_ja` はパーサの守備範囲外で、`index.ts` が翻訳して足す。
 
 **要約の抽出**は `description` → `summary` → `content:encoded` → `content` の順。
-CDATA解除 → タグ除去 → エンティティ復号 → もう一度タグ除去 → 空白圧縮 → 400字。
+CDATA解除のあと、**タグ除去とエンティティ復号を2巡**して空白圧縮、400字で切る。
 
-二度目のタグ除去は、`&lt;p&gt;` で二重エスケープされたフィードが実在するため。
-既存の `decode()` が数値実体を先に処理しているのと同じ理由で、順番に意味がある。
+2巡なのは、エスケープの回数がフィードによって違うため。
+CDATA に生の HTML を入れたフィードは1回目のタグ除去で消えるが、
+`&lt;p&gt;` と1回エスケープしたフィードは復号するまでタグが現れず、
+`&amp;lt;p&amp;gt;` と2回エスケープしたフィードは2回目の復号まで現れない。
+既存の `decode()` が数値実体を先に処理しているのと同じ話で、順番と回数に意味がある。
+
+20字未満の結果は「続きを読む」の類とみなして次の要素に落とす。
 
 **画像の抽出**は候補を上から順に見て、足切りに落ちたら次の候補へ落とす。
 
@@ -145,7 +150,11 @@ AI バインディングは音声アーカイブに手が届く類のもので�
 
 ### `/feeds/latest`
 
-`SELECT` に `i.summary`、`i.summary_ja`、`i.image_url` を足す。それだけ。
+`SELECT` に `COALESCE(i.summary_ja, i.summary) AS summary` と `i.image_url` を足す。
+
+**日本語を選ぶのはここ**で、端末ではない。
+下流にとって要約は1つで、それが訳されたものかどうかは Worker の事情でしかない。
+端末が知る形にすると、その判断を変えるたびに端末を焼き直すことになる。
 
 `/feeds/search` は触らない。あれは Hermes が本文検索に使う口で、画像は要らない。
 
@@ -157,24 +166,26 @@ AI バインディングは音声アーカイブに手が届く類のもので�
 
 | ファイル | 変更 |
 | --- | --- |
-| `Headlines.kt` | `Item` に `summary` / `imageUrl` を足し、パースを広げる。要約は `summary_ja ?: summary` で取る |
+| `Headlines.kt` | `Item` に `summary` / `imageUrl` を足し、パースを広げる |
 | `Thumbnails.kt` | 新規。画像の取得・デコード・LRU |
-| `Signage.kt` | `HeadlinesScreen` を作り替え、`SignageScreen` に `fullBleed` を足す |
-| `SignageActivity.kt` | `fullBleed` な画面のときキャラを隠して全面を渡す |
+| `Signage.kt` | `HeadlinesScreen` を作り替え、`SignageScreen` に `fullBleed` と `onTap` を足す |
+| `SignageActivity.kt` | `fullBleed` な画面のときキャラを隠して全面を渡し、タップ処理を画面に渡す |
 
 ### `Thumbnails.kt`（新規）
 
-OkHttp は `audioprobe` の既存依存なので、依存は増えない。
+HTTP は `java.net.HttpURLConnection`。隣の `Headlines.kt` と同じ形になる。
+OkHttp も既存依存なのでどちらでも依存は増えないが、同じディレクトリで2つの流儀を使う理由がない。
 
 - **デコードは2段**。`inJustDecodeBounds` で寸法を見て `inSampleSize` を決め、
   幅 480px を下回らない最小の間引きで読む
-- **実寸 240px 未満は捨てて画像なし扱い**。
-  サーバ側の足切りをすり抜けたアバターに対する最後の防波堤
+- **実寸が幅 240px 未満または高さ 120px 未満なら捨てて画像なし扱い**。
+  サーバ側の足切りをすり抜けたアバターに対する最後の防波堤。
+  幅だけで判定すると 1200×200 の横長バナーを落とすので、2つの閾値を分ける
 - **メモリ LRU は4枚**。480×288 ARGB_8888 で約 553KB、合計 2.2MB。
   1件ずつ表示で先読みは次の1枚だけなので4枚で足りる
 - **ディスクキャッシュは作らない**。10件が数分で回る画面で、再起動をまたいで残す価値がない
-- **従量制回線では取得しない**。`ConnectivityManager.isActiveNetworkMetered` を見る。
-  アップロードを非従量時のみにしている既存の判断と揃える
+- **`UploadSettings.unmeteredOnly` を尊重する**。既定は ON で、録音のアップロードと同じ switch。
+  同じ判断をする設定を2つ持たない
 - 1枚 2MB 上限、タイムアウト 8秒（`Headlines` と同じ）。実測の1枚は 100〜200KB
 
 ### `HeadlinesScreen` のレイアウト
@@ -213,8 +224,13 @@ R1 のキーはホイール（上下＝画面切替）と横のボタン（＝�
 パネルを叩いてキャラを動かす既存の実装とは衝突しない。
 この画面ではキャラが隠れているので、そもそも触る相手がいない。
 
-`ScrollView` の中で横スワイプを取るため、`GestureDetector` は `ScrollView` を包む
-親のコンテナに置き、横方向の移動量が縦を上回ったときだけ消費する。
+横スワイプは `ScrollView` を包む親のコンテナが `onInterceptTouchEvent` で横取りする。
+横方向の移動量が縦を上回り、かつ `scaledTouchSlop` を超えたときだけ奪う。
+
+> ⚠️ **タップは奪わない。** `ScrollView` はタップも飲むので、そのままだと
+> キャラが居ない設定のときの離脱手段（画面を叩くと `finish()`）が、この画面だけ消える。
+> `SignageScreen` に `fun onTap(action: () -> Unit)` を足し、
+> `SignageActivity` が自分のタップ処理を渡す。既定は何もしない実装なので他の画面は無変更。
 
 **自動送りは触ったら60秒止まる。** 普段は今までどおり15秒で送る。
 スワイプかスクロールがあった時刻を記録し、そこから60秒は `index` を進めない。
