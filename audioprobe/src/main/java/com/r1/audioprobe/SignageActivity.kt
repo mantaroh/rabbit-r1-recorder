@@ -275,13 +275,25 @@ class SignageActivity : Activity() {
     private fun show(next: Int) {
         index = next
         val screen = screens.getOrNull(index) ?: return
-        content.removeAllViews()
-        val view = screen.createView(this)
+
+        // The character is the frame around every other screen and is in the
+        // way of this one. Hidden rather than destroyed: the page takes
+        // seconds and nineteen megabytes to have a model on screen again, and
+        // the wheel can come back here in a moment.
+        val whole = screen.fullBleed
+        stage?.visibility = if (whole || !stageReady) View.GONE else View.VISIBLE
+
+        content.layoutParams = contentLayout(screen)
         // Screens paint themselves black — see SignageStyle.column — which is
         // right when they are the whole panel and wrong when there is a
         // character behind them. The scrim on [content] is what backs the text
         // instead, and it stops before the character does.
-        if (stageReady) view.setBackgroundColor(Color.TRANSPARENT)
+        content.background = if (stageReady && !whole) scrim() else null
+
+        content.removeAllViews()
+        val view = screen.createView(this)
+        if (stageReady && !whole) view.setBackgroundColor(Color.TRANSPARENT)
+        screen.onTap { handleTap() }
         content.addView(
             view,
             FrameLayout.LayoutParams(
@@ -295,12 +307,12 @@ class SignageActivity : Activity() {
     /**
      * How much of the panel the screens get, and what backs them.
      *
-     * With no character they get all of it on plain black, which is what this
-     * display has always been. With one they get the top half over a scrim
-     * that fades out before the figure starts.
+     * A screen that asked for the whole panel gets it, and the character is
+     * put away for as long as it is showing; see [show]. Everything else sits
+     * in the top half over the character, which is what [CONTENT_FRACTION] is.
      */
-    private fun contentLayout(): FrameLayout.LayoutParams {
-        if (!stageReady) {
+    private fun contentLayout(screen: SignageScreen? = null): FrameLayout.LayoutParams {
+        if (!stageReady || screen?.fullBleed == true) {
             return FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -349,15 +361,19 @@ class SignageActivity : Activity() {
         }
 
         stageReady = true
+        val whole = fullBleedShowing()
         stage?.let { page ->
-            page.visibility = View.VISIBLE
+            page.visibility = if (whole) View.GONE else View.VISIBLE
             StagePage.call(page, "window.stageStandby()", "standby")
         }
 
-        // The screens were laid out for a black panel a moment ago.
-        content.background = scrim()
-        content.layoutParams = contentLayout()
-        content.getChildAt(0)?.setBackgroundColor(Color.TRANSPARENT)
+        // The screens were laid out for a black panel a moment ago. Not the
+        // one asking for the whole panel, which wanted exactly that.
+        if (!whole) {
+            content.background = scrim()
+            content.layoutParams = contentLayout(screens.getOrNull(index))
+            content.getChildAt(0)?.setBackgroundColor(Color.TRANSPARENT)
+        }
         // Not now. The character has this second only just stood up, and the
         // first thing it does should not be to move.
         scheduleMove(System.currentTimeMillis())
@@ -495,20 +511,34 @@ class SignageActivity : Activity() {
      */
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         if (event?.action == MotionEvent.ACTION_DOWN) {
-            val page = stage
-            if (stageReady && page != null) {
-                // The clock starts again from the tap. Otherwise a motion
-                // asked for by hand could be followed a second later by one
-                // nobody asked for.
-                scheduleMove(System.currentTimeMillis())
-                StagePage.call(page, "window.stagePlay()", "play")
-            } else {
-                finish()
-            }
+            handleTap()
             return true
         }
         return super.onTouchEvent(event)
     }
+
+    /**
+     * What a tap on the standby display does.
+     *
+     * Pulled out of [onTouchEvent] because a screen with a scroller in it
+     * takes the gesture first, and hands it back here through
+     * [SignageScreen.onTap] rather than losing it.
+     */
+    private fun handleTap() {
+        val page = stage
+        if (stageReady && page != null && !fullBleedShowing()) {
+            // The clock starts again from the tap. Otherwise a motion
+            // asked for by hand could be followed a second later by one
+            // nobody asked for.
+            scheduleMove(System.currentTimeMillis())
+            StagePage.call(page, "window.stagePlay()", "play")
+        } else {
+            finish()
+        }
+    }
+
+    /** Whether the screen on show has asked for the whole panel. */
+    private fun fullBleedShowing(): Boolean = screens.getOrNull(index)?.fullBleed == true
 
     override fun onUserLeaveHint() {
         finish()
