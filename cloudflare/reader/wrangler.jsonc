@@ -12,12 +12,14 @@
   // the device to carry.
   "workers_dev": false,
 
-  // Deliberately the only binding. This Worker has no R2 bucket and no handle
-  // on the lifelog database, so a bug in a feed parser cannot reach the audio
-  // archive however badly it goes wrong. That separation is the reason this is
-  // a second Worker rather than another route on the first one — the lifelog
-  // Worker's own cron once deleted 327 recordings, and the cheapest guarantee
-  // that it cannot happen again is to not hand the binding over.
+  // Two bindings, and the list is the point. This Worker has no R2 bucket and
+  // no handle on the lifelog database, so a bug in a feed parser cannot reach
+  // the audio archive however badly it goes wrong. That separation is the
+  // reason this is a second Worker rather than another route on the first one
+  // — the lifelog Worker's own cron once deleted 327 recordings, and the
+  // cheapest guarantee that it cannot happen again is to not hand the binding
+  // over. Workers AI holds nothing and reaches nothing, so it does not spend
+  // any of that.
   "d1_databases": [
     {
       "binding": "DB",
@@ -26,6 +28,10 @@
       "migrations_dir": "./migrations"
     }
   ],
+
+  // Translating the summaries of feeds that publish in English. Runs against
+  // the real service in dev as well; there is no local Workers AI.
+  "ai": { "binding": "AI" },
 
   // Hourly. Feeds are not a real-time medium, most of these publish a few
   // times a day, and every fetch is conditional — a run where nothing has
