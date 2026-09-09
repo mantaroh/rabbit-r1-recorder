@@ -203,9 +203,14 @@ async function fetchOne(
   const seconds = Math.floor(now / 1000);
   const statements = items.map((item) =>
     env.DB.prepare(
-      `INSERT OR IGNORE INTO items
-         (item_id, xml_url, title, link, published_at, published_epoch, first_seen_epoch)
-       VALUES (?1,?2,?3,?4,?5,?6,?7)`,
+      `INSERT INTO items
+         (item_id, xml_url, title, link, published_at, published_epoch, first_seen_epoch,
+          summary, image_url)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+       ON CONFLICT(item_id) DO UPDATE SET
+         summary   = excluded.summary,
+         image_url = excluded.image_url
+       WHERE items.summary IS NULL AND items.image_url IS NULL`,
     ).bind(
       `${feed.xml_url}|${item.guid}`.slice(0, 900),
       feed.xml_url,
@@ -214,10 +219,18 @@ async function fetchOne(
       item.publishedAt,
       item.publishedAt ? Math.floor(Date.parse(item.publishedAt) / 1000) : null,
       seconds,
+      item.summary,
+      item.imageUrl,
     ),
   );
 
   const written = await env.DB.batch(statements);
+  // Counts the entries filled in as well as the ones that arrived, for the one
+  // pass after this ships: everything already in the table predates these two
+  // columns and gets them the next time its feed is read. Settles to zero for
+  // an item once either field is filled — an entry with neither a body nor a
+  // picture keeps matching the guard and stays in this count for as long as
+  // its feed carries it. Only ever reaches a log line either way.
   const newItems = written.reduce((total, r) => total + (r.meta?.changes ?? 0), 0);
 
   await env.DB.prepare(
@@ -273,6 +286,11 @@ async function recordFailure(
  * feed — the first crawl of this list returned eight consecutive headlines
  * from the same site, which is not what "latest" means. A burst from one
  * publisher does the same thing on any later run.
+ *
+ * The translation is chosen here rather than on the device. There is one
+ * summary as far as anything downstream is concerned, and whether it was
+ * translated is this Worker's business — a device that had to know would be a
+ * device that has to be redeployed when the answer changes.
  */
 async function latest(env: Env, url: URL): Promise<Response> {
   const limit = Math.min(intParam(url, "limit") ?? 20, 200);
@@ -280,6 +298,7 @@ async function latest(env: Env, url: URL): Promise<Response> {
 
   const rows = await env.DB.prepare(
     `SELECT i.title, i.link, i.published_at, i.first_seen_epoch,
+            COALESCE(i.summary_ja, i.summary) AS summary, i.image_url,
             f.title AS feed_title, f.category
        FROM items i
        JOIN feeds f ON f.xml_url = i.xml_url
