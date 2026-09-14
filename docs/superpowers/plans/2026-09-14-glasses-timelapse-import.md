@@ -607,25 +607,36 @@ import { captionPromptFor } from "./caption-prompt";
 
 - [ ] **Step 6: `captionPhoto` が出所を読むようにする**
 
-`captionPhoto` の中で、R2 からバイトを取る前に行を引く。`askAboutImage` の第3引数を差し替える。
+`src/index.ts` の `captionPhoto`（`/** Captions one photograph and records what it cost. */` の下）。
+R2 の object が取れたあと、`const bytes = new Uint8Array(...)` から `env.AI.run(...)` までを
+丸ごと次に置き換える。
 
 ```typescript
+  // どのカメラのフレームかで訊くことが変わる。行が無いのはキューが D1 の
+  // 書き込みを追い越した場合だけで、そのとき R1 の文面に落ちるのは安全側 --
+  // キャプションが付かないよりはよい。
   const row = await env.DB.prepare(
     `SELECT source FROM photos WHERE photo_id = ?1`,
   )
     .bind(message.segmentId)
     .first<{ source: string | null }>();
 
-  // 行が無いのは、キューが D1 の書き込みを追い越した場合だけ。R1 の文面に
-  // 落ちるのは安全側で、キャプションが付かないよりはよい。
-  const prompt = captionPromptFor(row?.source);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  const result: any = await env.AI.run(
+    "@cf/meta/llama-3.2-11b-vision-instruct" as any,
+    {
+      image: [...bytes],
+      prompt: captionPromptFor(row?.source),
+      max_tokens: CAPTION_MAX_TOKENS,
+    } as any,
+  );
 ```
 
-そのうえで既存の呼び出しを差し替える。
+その下の `const text = String(result?.response ?? "").trim();` 以降は変更しない。
 
-```typescript
-  const answer = await askAboutImage(env.AI, bytes, prompt, CAPTION_MAX_TOKENS, {
-```
+> このコードベースに `askAboutImage` のようなヘルパーは無い。`captionPhoto` は
+> `env.AI.run` を直接呼んでいる（`src/index.ts:1209`）。モデル名と `as any` の
+> 形はそのまま残すこと。
 
 - [ ] **Step 7: 型が通ることを確認する**
 
