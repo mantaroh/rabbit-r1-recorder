@@ -23,6 +23,7 @@ import { IMPORT_HTML } from "./import";
 import { captionPromptFor } from "./caption-prompt";
 import { groupPhotos } from "./day-group";
 import { retimeTargets } from "./retime";
+import { mergeResults, type SearchHit } from "./search-merge";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -1762,10 +1763,12 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
   // (敵, 駅, 予定) are ordinary things to search for. Measured: 負け犬 hits,
   // トモ does not. Scan for those instead of returning a confident zero.
   const useFts = [...term].length >= 3;
+  const quoted = `"${term.replace(/"/g, '""')}"`;
+  const liked = `%${term.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
 
-  const rows = useFts
+  const audioRows = useFts
     ? await env.DB.prepare(
-        `SELECT f.segment_id, f.started_at, s.transcript, s.speech_ratio
+        `SELECT f.segment_id, f.started_at, s.transcript
            FROM segments_fts f
            JOIN segments s ON s.segment_id = f.segment_id
           WHERE segments_fts MATCH ?1
@@ -1774,10 +1777,10 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
           ORDER BY s.started_epoch DESC
           LIMIT ?2`,
       )
-        .bind(`"${term.replace(/"/g, '""')}"`, limit, MIN_SPEECH_RATIO)
-        .all()
+        .bind(quoted, limit, MIN_SPEECH_RATIO)
+        .all<any>()
     : await env.DB.prepare(
-        `SELECT segment_id, started_at, transcript, speech_ratio
+        `SELECT segment_id, started_at, transcript
            FROM segments
           WHERE transcript LIKE ?1 ESCAPE '\\'
             AND stock_phrase = 0
@@ -1785,14 +1788,62 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
           ORDER BY started_epoch DESC
           LIMIT ?2`,
       )
-        .bind(`%${term.replace(/[\\%_]/g, (c) => "\\" + c)}%`, limit, MIN_SPEECH_RATIO)
-        .all();
+        .bind(liked, limit, MIN_SPEECH_RATIO)
+        .all<any>();
+
+  // 'captioned' and a non-empty caption both matter: a row can be 'failed'
+  // with an error and no caption, and one can be captioned with an empty
+  // string when the model returned nothing. Neither is a search result.
+  const photoRows = useFts
+    ? await env.DB.prepare(
+        `SELECT f.photo_id, f.taken_at, p.caption, p.source
+           FROM photos_fts f
+           JOIN photos p ON p.photo_id = f.photo_id
+          WHERE photos_fts MATCH ?1
+            AND p.status = 'captioned'
+            AND p.caption IS NOT NULL AND p.caption <> ''
+          ORDER BY p.taken_epoch DESC
+          LIMIT ?2`,
+      )
+        .bind(quoted, limit)
+        .all<any>()
+    : await env.DB.prepare(
+        `SELECT photo_id, taken_at, caption, source
+           FROM photos
+          WHERE caption LIKE ?1 ESCAPE '\\'
+            AND status = 'captioned'
+            AND caption IS NOT NULL AND caption <> ''
+          ORDER BY taken_epoch DESC
+          LIMIT ?2`,
+      )
+        .bind(liked, limit)
+        .all<any>();
+
+  const audio: SearchHit[] = (audioRows.results ?? []).map((r: any) => ({
+    kind: "audio",
+    id: r.segment_id,
+    at: r.started_at,
+    text: String(r.transcript ?? ""),
+    source: null,
+  }));
+
+  const photos: SearchHit[] = (photoRows.results ?? []).map((r: any) => ({
+    kind: "photo",
+    id: r.photo_id,
+    at: r.taken_at,
+    text: String(r.caption ?? ""),
+    source: r.source ?? "r1",
+  }));
+
+  const results = mergeResults(audio, photos, limit);
 
   return {
     q: term,
     mode: useFts ? "fts" : "scan",
-    count: rows.results?.length ?? 0,
-    results: rows.results ?? [],
+    count: results.length,
+    audio_matched: audio.length,
+    photo_matched: photos.length,
+    results,
   };
 }
 
