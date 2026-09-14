@@ -19,6 +19,40 @@ one line per gap. The detail lives here.
 
 ---
 
+## Agreed: what I was looking at, as a corpus
+
+**Designed 2026-09-14. Two specs, and the second one is the easy one to lose.**
+
+A camera clipped to a pair of glasses shoots a 30-second timelapse and hands
+back one `.mov`. The point of importing it is not to keep the video — it is to
+have a record of what was in front of me, in text, for a question I have not
+asked yet.
+
+That takes two pieces of work, and **the first one alone produces nothing
+readable**:
+
+- [Importing the frames](docs/superpowers/specs/2026-09-14-glasses-timelapse-import-design.md) —
+  the browser splits the `.mov` into frames and puts them through the existing
+  photo path, captions and all.
+- [Making the captions reachable](docs/superpowers/specs/2026-09-14-caption-corpus-design.md) —
+  `photos_fts`, captions in `/v1/search` and `/v1/context`, and the MCP tools
+  told that they are there.
+
+`photos.caption` is written by the queue and read by three places, all of which
+only display it. `searchData` and `contextData` read `segments` and nothing
+else. So the R1 timelapse has been captioning every frame since
+`0011_photo_captions.sql` and none of it has ever been searched.
+
+Import first, because a record not kept cannot be recovered later, while a
+read path added later reaches every row already stored. But shipping the import
+and stopping there just adds to the pile nobody reads.
+
+The daily summary is a third piece, and it waits for the second: writing a
+summariser against a corpus with no query surface means building both halves at
+once and testing neither.
+
+---
+
 ## Closed: privilege separation and the lost-device switch
 
 **Done 2026-08-17.** Kept here only as the record of what the answer was.
