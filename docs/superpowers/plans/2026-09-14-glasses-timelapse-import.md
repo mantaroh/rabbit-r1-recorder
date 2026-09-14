@@ -1624,6 +1624,189 @@ git commit -m "Show the glasses timelapse landing in the day view"
 
 ---
 
+## 実行結果
+
+Task 1〜9 を実装済み。ブランチ `feature/glasses-import` に14コミット。
+テストは23/23 PASS、型チェックは既存の1件を除いて新規エラーなし。
+ただし **ブラウザでの動作は一度も確認していない**（理由は後述）。
+
+### 作ったもの
+
+| Task | 内容 | コミット |
+| --- | --- | --- |
+| 1 | `photoIdFor` 純粋関数、vitest導入 | `753f2fd` |
+| 2 | `frameTimes` 純粋関数 | `c9c9624` |
+| 3 | migration 0017（`photos.source` / `source_file`） | `483dcba` |
+| 4 | `putPhoto` が出所を受け取る | `b5c5d4c` |
+| 5 | 出所別のキャプションプロンプト、typescript導入 | `ed6436b`, `46b2166`（修正: `adc9791`） |
+| 6 | `dayView` のグループ化を出所で分岐 | `3fb1eb8`（修正: `f4efccf`） |
+| 7 | `/v1/admin/photo-retime` | `65a6f74` |
+| 8 | `/import` 画面（読み取りのみ） | `a8c368b`（修正: `a06b167`） |
+| 9 | `/import` アップロード側 | `5f480e1`（修正: `4d92506`） |
+
+### テスト・型チェックの状態
+
+`cd cloudflare/lifelog && npm test`
+
+```
+Test Files  4 passed (4)
+     Tests  23 passed (23)
+```
+
+`cd cloudflare/lifelog && npm run typecheck`
+
+```
+src/index.ts(243,9): error TS2322: Type '(batch: MessageBatch<TranscribeMessage>, env: Env) => Promise<void>'
+  is not assignable to type 'ExportedHandlerQueueHandler<Env, unknown, unknown>'.
+```
+
+このエラーはキューハンドラの型で、この計画より前から存在する（Task 5 の時点で `src/index.ts:233`
+として確認済み。以降タスクが `import` を1行足すたびに行番号だけ動いている）。直していない。
+
+### 検証していないこと
+
+Task 8 Step 5、Task 9 Step 5〜7、Task 10 Step 1〜5 ―― ブラウザでの通し確認は**一度も実行していない**。
+
+ローカルの `wrangler dev` には Cloudflare Access が無く、`GET /import` はブラウザから 401 になって
+画面自体が開けない。本番は `authorise` が Access のアサーションで `admin` を返す前提（`src/index.ts:378`）
+なので、ローカルで再現するには開発用バイパスを足すかデプロイして実機確認するかの二択で、
+どちらもスキル規定の停止確認に該当する（Ruling 3）。利用者が「実装だけ進め、確認は自分でやる」を
+選んだため、Task 8・9 はコード＋型チェックまでで完了扱いとし、この Task 10 はデプロイ後に
+利用者が自分で回すチェックリストを書く作業に変わった。
+
+純粋関数（`photoIdFor` / `frameTimes` / `captionPromptFor` / `groupPhotos`）は単体テスト済みで、
+そこは自信がある。動いていないのは `import.ts` のブラウザ側コード（動画デコード・fps測定・
+canvas描画・アップロード）で、`node --check` による構文チェックと手計算でのトレースはしたが、
+実際の `.mov` を読ませたことは一度もない。
+
+### 実装を変えたルーリング
+
+| # | 何があったか | 実装への影響 |
+| --- | --- | --- |
+| 1 | ブリーフが `askAboutImage` という存在しないヘルパーへの編集を指示していた | Task 5 のブリーフを実在コード（`env.AI.run` 直呼び、`src/index.ts:1209`）に書き換えてから実装させた |
+| 3 | ブラウザでの取り込みはローカルで検証不能と判明 | Task 8/9 はコード＋型チェックまでで完了、Task 10 をチェックリスト作成に変更（このタスクの成立理由） |
+| 4 | `typescript` が devDependency に無く `tsc --noEmit` が毎回オフラインで失敗する | Task 5 の先頭に typescript 追加＋`typecheck` スクリプト作成を追加。以降のタスクは `npm run typecheck` を使用 |
+| 5 | レビュアーが「`captionPhoto` の D1 読み取りは不要」と指摘 | 却下し、読み取りを残した（理由3つ：source を持たない旧キューメッセージがある／モデル呼び出しの隣でコストにならない／source の権威は行にある） |
+| 6 | 「同じ分に入る眼鏡の2フレーム」テストの epoch が実際には同じ分をまたいでいた | テストデータのみ修正。実装コード（`day-group.ts`）は無罪 |
+| 7 | `measureFps` が rVFC の2回の呼び出しを常に連続フレームと仮定していた（1枚飛ばされると fps・枚数とも半分に出る） | `presentedFrames` の差で10フレーム分を平均する形に修正。あわせて失敗経路での `video.pause()` 漏れも修正 |
+| 8 | `importFile` に Important 3件（打ち切り境界の off-by-one、seek が settle しない経路、`videoWidth=0` の黒フレーム） | 全部修正。境界を `>` に、seek に10秒タイムアウト、ゼロ次元は例外＋canvas clear |
+| 9 | 1本の失敗が残り全部を巻き添えにするのは、設計書の「失敗の見え方」表（そのファイルだけ失敗、他は続行）への違反 | per-file isolation を追加。あわせて失敗時に `#progress` が空になる挙動も修正 |
+
+### 先送りにした minor（着手は任意）
+
+| Task | 内容 |
+| --- | --- |
+| 1 | `import-id.ts` の throw が素の `Error` のまま（レビュアー自身が「対応不要」と明記） |
+| 3 | migration 0017 の `ALTER TABLE` に `IF NOT EXISTS` が無い（SQLite 非対応。0011 と同じ既存の露出） |
+| 4 | `source_file` 正規表現の拒否パスに自動テストが無い（ブリーフは手動 curl のみ要求） |
+| 5 | レビュー報告の行番号ずれの説明が誤っていた（結論「既存エラー」自体は正しい） |
+| 5 | `tsconfig.json` の `"types"` が非標準の使い方（ambient型は実際には読めている） |
+| 6 | `day-group.ts` のフォールバックキー（`"glasses:" + 分`）が実在の `source_file` と名前空間を共有しうる |
+| 8 | 開始列のラベルは JST 表記だが値はローカル壁時計（非 JST 機では終了列と食い違う） |
+| 8 | `render()` が編集中の `input` を作り直すためフォーカスが落ちる |
+| 8 | `intervalSec()` が `max=3600` を無視し、不正値を黙って30に丸める |
+| 8 | 「取り込み済みは自動で飛ばす」という画面冒頭の文言は Task 8 時点では嘘だったが、Task 9 の完了で真になった（解消済み） |
+| 8 | `analysed` の JSDoc が「content hash でキー付け」と書いているが実体は配列 |
+| 8 | `loadVideo` の reject 経路で object URL が revoke されない |
+| 8 | 開始時刻を編集したあとに間隔を変えると override が残る（レビュアーも妥当と判断、未文書） |
+| 9 | 外側の `try` が `catch` を失い `try/finally` になった。内側の per-file `try` の外で投げられた例外は unhandled rejection になりログに出ない（`finally` は効くのでボタンは戻る） |
+
+## デプロイ後に確認すること
+
+`npm run deploy` のあと、`https://lifelog.mantaroh.org` に対して実機（Firefox、実際の眼鏡カメラの
+`.mov`）で確認する。以下は `MOVI0006.mov`（37フレーム、更新日時 `2026-09-14T20:19:02+09:00`、
+逆算した開始時刻 `2026-09-14T20:01:02+09:00`、1920×1080、2.5 MB）を基準にした期待値。
+実際のファイルはこれと違う可能性があるので、数値は目安として読む。
+
+**1. `/import` が開けることの確認**
+
+やること: Firefox で `https://lifelog.mantaroh.org/import` を開く。
+
+正しい結果: Cloudflare Access のログインを経て画面が開く。ローカルでは401になっていた経路なので、
+これが通ること自体がこのタスクで初めて確認される部分。
+
+**2. フォルダを選ぶ**
+
+やること: カメラを USB でつなぎ、「取り込み」画面の入力から `DCIM` フォルダを選ぶ。
+
+正しい結果: `MOVI0006.mov` の行に **37 枚**、fps は **25.12 前後**（「（仮定）」の表示が出ないのが理想）。
+開始時刻の編集欄が **2026-09-14 20:01:02** 前後、終了が **20:19:02**。サイズは **2.5 MB 前後**
+（2,618,880 バイト）。ハッシュが16桁の hex で出ている。
+
+**3. 取り込む**
+
+やること: 「取り込む」ボタンを押す。
+
+正しい結果: 進捗が `1 / 37` から `37 / 37` まで進み、ログに「取り込み 37 枚、既出 0 枚」と出る。
+
+> ⚠️ **ここで、レビューで直したが一度もブラウザで動いていない3箇所が関わる。実際の `.mov` が
+> 一番驚きをもたらしやすい場所。**
+>
+> - **フレームレート測定**（`measureFps`, Ruling 7）: 実機の `requestVideoFrameCallback` で正しく
+>   測れれば 25.12 fps 前後・37枚が出る。「（仮定）」と出て 25 fps にフォールバックした場合、
+>   枚数が `round(duration × 25)` になるため 37 から ±1 ずれることがある。ずれても記録は壊れない
+>   （手順6の `photo-retime` で直せる）が、まず「ずれたかどうか」を見る。
+> - **seek のタイムアウト**（`seekTo`, Ruling 8）: 1フレームのシークが10秒応答しなければ
+>   「シークに失敗しました」がログに出て中断する。実機でこの経路を一度も通っていないので、
+>   正常系で誤発火しないか（＝取り込みが途中で止まらないか）を確認する。
+> - **ゼロ次元ガード**（`importFile`, Ruling 8）: 動画のメタデータが読めず `videoWidth`/`videoHeight`
+>   が0のままだと例外で止まる（直す前は黒い JPEG がそのまま200で入っていた）。1920×1080が
+>   正しく取れていれば発火しないはずだが、これも実機初検証。
+
+**4. キャプションが付くのを待つ**
+
+やること:
+```bash
+npx wrangler d1 execute r1-lifelog --remote --command \
+  "SELECT status, COUNT(*) AS n FROM photos WHERE source = 'glasses' GROUP BY status"
+```
+
+正しい結果: `captioned` が増えていく。眼鏡カメラは1時間あたり120枚・キュー処理約10分の密度
+（設計書の実測値）なので、37枚なら数分で揃うはず。`failed` が出たら `error` 列を読む。
+
+続けて:
+```bash
+npx wrangler d1 execute r1-lifelog --remote --command \
+  "SELECT photo_id, taken_at, caption FROM photos WHERE source = 'glasses' ORDER BY photo_id LIMIT 3"
+```
+
+正しい結果: キャプションが「何を見ていたか」を述べている。R1 用の「場所の様子」調ではない。
+プロンプトは文字が読める場合はその内容を含めるよう指示しているので、画面や看板が写っていれば
+文字起こしが混じっているかも見る。
+
+**5. 日ビューで見え方を確認する**
+
+やること: `https://lifelog.mantaroh.org/ui` を開き、日付を取り込んだ日（`MOVI0006.mov` なら
+`2026-09-14`）にする。
+
+正しい結果:
+- 眼鏡カメラの37枚が **1つのエントリ** にまとまっている
+- R1 の写真と混ざって前後の対になっていない
+- 時刻が **20:01 から 20:19** の範囲に並んでいる
+
+**6. 開始時刻がずれていた場合の引き直し**
+
+`source_file` を調べる:
+```bash
+npx wrangler d1 execute r1-lifelog --remote --command \
+  "SELECT source_file, COUNT(*) AS n FROM photos WHERE source = 'glasses' GROUP BY source_file"
+```
+
+引き直す:
+```bash
+curl -s -X POST "https://lifelog.mantaroh.org/v1/admin/photo-retime?source_file=<16桁hex>&start=<正しい開始ISO8601>&interval_sec=30" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+正しい結果: `{"source_file":"...","frames":37,"interval_sec":30,"first":"...","last":"..."}` が
+返り、D1 の `taken_at` / `taken_epoch` が引き直される。
+
+> ⚠️ **このエンドポイントは admin 権限がいる。** ブラウザの Cloudflare Access セッションは
+> navigation にしか効かないため、curl から叩くには `ADMIN_TOKEN` を `Bearer` で渡す必要がある
+> （`src/index.ts` の `principalFor`）。本番 Worker にこのシークレットが設定済みか
+> `npx wrangler secret list` で確認し（値は出ない）、無ければ `npx wrangler secret put ADMIN_TOKEN`
+> で用意してから叩くこと。
+
 ## 次にやること
 
 **第2弾（`docs/superpowers/specs/2026-09-14-caption-corpus-design.md`）に必ず進むこと。**
@@ -1633,3 +1816,16 @@ git commit -m "Show the glasses timelapse landing in the day view"
 検索にもエージェントにも一切届かない。目的は半分しか果たされていない。
 
 `BACKLOG.md` の `## Agreed: what I was looking at, as a corpus` に同じことが書いてある。
+
+## ターン数
+
+- 実装: 予定 10タスク / 実際 10タスク、修正ラウンド 4回（Task 5, 6, 8, 9 各1回）
+
+修正ラウンドの内訳と、その原因が設計側にあったか実装側にあったか。
+
+| どこで | 何が | 原因 |
+| --- | --- | --- |
+| Task 5 | `npm add -D typescript` が `^7.0.2` の未固定バージョンで入った | 実装（バージョンを固定していなかった。レビュー指摘で `^5` に固定） |
+| Task 6 | 「同じ分に入る眼鏡の2フレーム」テストの epoch が実際には同じ分をまたいでいた | 設計（ブリーフのテストデータの誤り。実装コードは無罪） |
+| Task 8 | `measureFps` が rVFC の2回の呼び出しを常に連続フレームと仮定していた | 設計（ブリーフのコード） |
+| Task 9 | 打ち切り境界の off-by-one、seek が settle しない経路、`videoWidth=0` の黒フレーム、1本の失敗が他ファイルを巻き添えにする仕様違反 | 設計（ブリーフのコード3件）＋仕様（失敗の見え方表との不一致1件） |
