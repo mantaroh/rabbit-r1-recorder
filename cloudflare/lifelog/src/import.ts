@@ -78,7 +78,8 @@ const photoIdFor = ${photoIdFor.toString()};
 const $ = (id) => document.getElementById(id);
 const log = (s) => { $('log').textContent += s + '\\n'; };
 
-/** Files keyed by their content hash, as analysed. */
+// 表の行と同じ順序の配列。行の change ハンドラが dataset.i で引き当てるので、
+// 並び順が識別子を兼ねている。
 let analysed = [];
 
 $('pick').addEventListener('change', async (e) => {
@@ -107,8 +108,13 @@ $('interval').addEventListener('change', () => {
 });
 
 function intervalSec() {
-  const n = Number($('interval').value);
-  return Number.isFinite(n) && n >= 1 ? n : 30;
+  const n = Math.round(Number($('interval').value));
+  const clamped = Number.isFinite(n) ? Math.min(3600, Math.max(1, n)) : 30;
+  // 画面の数字と計算に使う数字を一致させる。黙って別の値で計算すると、
+  // あとで photo-retime に同じ interval_sec を渡しても再現しない取り込みが
+  // できてしまう。
+  if (String(clamped) !== $('interval').value) $('interval').value = String(clamped);
+  return clamped;
 }
 
 // 間隔はカメラ側の設定で、ファイルには入っていない。毎回入れ直すのは
@@ -213,6 +219,12 @@ async function analyse(file) {
   const measured = await measureFps(video);
   const fps = measured ?? 25;
   const count = Math.max(1, Math.round(video.duration * fps));
+  // photoIdFor はフレーム番号を4桁で持つので 9999 が上限。そこで落ちるより、
+  // 押す前に画面で止めたほうがいい。1万枚は 30 秒間隔なら 83 時間ぶんで、
+  // タイムラプスではない何かが紛れ込んだ合図でもある。
+  if (count > 10000) {
+    throw new Error(count + ' フレームは多すぎます（タイムラプスではない可能性）');
+  }
   const a = {
     file, video, fps, count,
     fpsAssumed: measured === null,

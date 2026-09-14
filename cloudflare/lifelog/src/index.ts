@@ -22,6 +22,7 @@ import { UI_HTML } from "./ui";
 import { IMPORT_HTML } from "./import";
 import { captionPromptFor } from "./caption-prompt";
 import { groupPhotos } from "./day-group";
+import { retimeTargets } from "./retime";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -713,10 +714,16 @@ async function dayView(env: Env, url: URL): Promise<Response> {
        FROM photos
       WHERE taken_epoch >= ?1 AND taken_epoch < ?2
       ORDER BY taken_epoch ASC
-      LIMIT 2000`,
+      LIMIT 2001`,
   )
     .bind(from, to)
     .all<any>();
+
+  // 上限に当たったことを黙って隠さない。音声は別クエリなので、写真だけ末尾が
+  // 落ちてもページは埋まって見える。両方のカメラを1日使うと 3456 枚になる。
+  const photoRows = photos.results ?? [];
+  const photosTruncated = photoRows.length > 2000;
+  const shownPhotos = photosTruncated ? photoRows.slice(0, 2000) : photoRows;
 
   const entries: any[] = [];
   let withText = 0;
@@ -739,7 +746,7 @@ async function dayView(env: Env, url: URL): Promise<Response> {
   // Grouping lives in day-group.ts because the rule is no longer one line:
   // the R1's pair-by-minute and the glasses camera's one-entry-per-import are
   // different rules that happen to produce the same kind of entry.
-  for (const group of groupPhotos(photos.results ?? [])) {
+  for (const group of groupPhotos(shownPhotos)) {
     entries.push({
       kind: "photo",
       at: group.at,
@@ -760,7 +767,8 @@ async function dayView(env: Env, url: URL): Promise<Response> {
     stats: {
       segments: segments.results?.length ?? 0,
       with_text: withText,
-      photos: photos.results?.length ?? 0,
+      photos: shownPhotos.length,
+      photos_truncated: photosTruncated,
     },
   });
 }
@@ -1395,21 +1403,29 @@ async function photoRetime(env: Env, url: URL): Promise<Response> {
   const ids = (rows.results ?? []).map((r) => r.photo_id);
   if (!ids.length) return json({ error: "no frames for that source_file" }, 404);
 
-  const startMs = Date.parse(start);
-  const statements = ids.map((id, i) => {
-    const at = new Date(startMs + i * intervalSec * 1000);
-    return env.DB.prepare(
-      `UPDATE photos SET taken_at = ?1, taken_epoch = ?2 WHERE photo_id = ?3`,
-    ).bind(at.toISOString(), Math.floor(at.getTime() / 1000), id);
-  });
-  await env.DB.batch(statements);
+  let targets;
+  try {
+    targets = retimeTargets(ids, Date.parse(start), intervalSec);
+  } catch (error) {
+    return json({ error: String(error instanceof Error ? error.message : error) }, 422);
+  }
 
+  await env.DB.batch(
+    targets.map((t) =>
+      env.DB.prepare(
+        `UPDATE photos SET taken_at = ?1, taken_epoch = ?2 WHERE photo_id = ?3`,
+      ).bind(t.takenAt, t.takenEpoch, t.photoId),
+    ),
+  );
+
+  // first/last は実際に存在するフレームの時刻。欠番があると start とは一致
+  // しないので、start をそのまま返すと直した結果を誤って報告することになる。
   return json({
     source_file: sourceFile,
-    frames: ids.length,
+    frames: targets.length,
     interval_sec: intervalSec,
-    first: new Date(startMs).toISOString(),
-    last: new Date(startMs + (ids.length - 1) * intervalSec * 1000).toISOString(),
+    first: targets[0].takenAt,
+    last: targets[targets.length - 1].takenAt,
   });
 }
 
