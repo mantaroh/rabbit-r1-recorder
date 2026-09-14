@@ -739,6 +739,118 @@ git commit -m "Write down what the corpus work needs to go live"
 
 ---
 
+## 実行結果
+
+Task 1〜7 を実装済み。ブランチ `feature/caption-corpus` に7コミット。
+テストは36/36 PASS、型チェックは既存の1件を除いて新規エラーなし。
+7タスクとも実装後のレビューが1回で clean（修正ラウンドなし）。
+
+### 作ったもの
+
+| Task | 内容 | コミット |
+| --- | --- | --- |
+| 1 | `mergeResults` 純粋関数（音声と写真を時刻でマージ） | `fa2b9dc` |
+| 2 | migration 0018（`photos_fts` とトリガ2つ、既存4,206件ぶんの投入） | `f92241a` |
+| 3 | `searchData` が写真も引くようになる | `600d268` |
+| 4 | `contextData` に `seen` / `photos` を追加 | `ffc5875` |
+| 5 | 検索結果の描画が `kind` に対応 | `0a471f4` |
+| 6 | MCP ツール説明文の更新 | `813f60d` |
+| 7 | 通し確認と本番手順の記録（このコミット） | — |
+
+### テスト・型チェックの状態
+
+`cd cloudflare/lifelog && npm test`
+
+```
+Test Files  6 passed (6)
+     Tests  36 passed (36)
+```
+
+`cd cloudflare/lifelog && npm run typecheck`
+
+```
+src/index.ts(245,9): error TS2322: Type '(batch: MessageBatch<TranscribeMessage>, env: Env) => Promise<void>'
+  is not assignable to type 'ExportedHandlerQueueHandler<Env, unknown, unknown>'.
+```
+
+このエラーはキューハンドラの型で、この計画より前から存在する。直していない。
+
+### ローカルでの通し確認
+
+`wrangler dev` をローカルで起動し確認した。ローカル D1 はほぼ空（キャプション無しの写真2件、
+segments 0件）だったため、まず素の状態で3経路を引いて `mode` の出し分けと0件時の挙動を確認し、
+そのあと Task 4 で懸念が残っていた `/v1/context` の実検証のために音声・写真を1件ずつ入れ、
+そのデータで検索3経路も引き直して実際にヒットすることまで確認した。詳細な全コマンド・全出力は
+[`task-7-report.md`](../../../.superpowers/sdd/2026-09-15-caption-corpus/task-7-report.md) に貼ってある。ここでは結論だけ書く。
+
+**検索3経路**（`/v1/search`）
+
+| 語 | 文字数 | `mode` | 結果 |
+| --- | --- | --- | --- |
+| キャプション | 6 | `fts` | 期待どおり。データを入れた後は写真1件ヒット |
+| テス | 2 | `scan` | 期待どおり。データを入れた後は音声1件・写真1件ヒット |
+| ありえない語句xyz | — | `fts` | `count: 0`（データの有無によらず） |
+
+**`/v1/context`（Task 4 の懸念を埋める確認）**
+
+Task 4 のレビューで「実行時確認は音声ゼロの窓だったので `text` に写真のキャプションが
+混ざっていないことを証明していない」という minor が繰り越されていた。今回、音声と写真が
+両方ある窓を自分でローカル D1 に作って確認した。
+
+- 挿入: `photos` に1行（`task7ctx-photo1`、`caption = "キャプションのテスト写真です"`、
+  `taken_at = 2026-09-14T11:10:00Z`）、`segments` に1行（`task7ctx-seg1`、
+  `transcript = "テスト用の音声記録です"`、`status = 'transcribed'`、
+  `started_at = 2026-09-14T11:15:00Z`）。どちらも `INSERT` してから対象カラムを
+  `UPDATE` してトリガを発火させた（写真は caption、音声は transcript）。
+  両方とも問い合わせ窓 `at=2026-09-14T12:30:00Z&before_sec=7200`（10:30〜12:30 UTC）の中。
+- 確認: `photos_fts` / `segments_fts` に索引されたことを先に確認してから `/v1/context` を叩いた。
+  `text` が `"テスト用の音声記録です"`（transcriptの語のみ）、`seen` が
+  `"キャプションのテスト写真です"`（captionの語のみ）と、一切混ざらず別々に返った。
+- 削除: 確認後に2行とも `DELETE` し、`segments` / `photos` / `segments_fts` / `photos_fts`
+  すべてから消えたことを `COUNT(*)` で確認、検索・`/v1/context` を再度引いて空に戻ったことも確認した。
+
+これで Task 4 の minor（実行時証拠が弱い）は解消。
+
+### `wrangler dev` の停止
+
+Task 6 の申し送りどおり、`workerd.exe` を直接殺さず、プロセスツリーを遡って見つけた
+トップレベルの `npx wrangler dev`（node.exe、`wrangler dev` 起動コマンド）を
+`taskkill /F /T /PID` で止めた。`netstat` で `127.0.0.1:8787` の `LISTENING` が
+消えたことを確認済み（`TIME_WAIT` の残骸のみ）。
+
+### 先送りのまま残っているもの（この計画では触らない）
+
+| Task | 内容 |
+| --- | --- |
+| 1 | `at` が不正な文字列だと comparator が NaN を返す（D1 の値は自前の ISO 文字列なので実害は薄いと Task 3 で確認済み） |
+| 1 | `limit=Infinity` が `[]` を返す（現状そういう呼び出しは無い） |
+| 2 | backfill の `INSERT` に重複ガードが無い（0002/0006 と同じ形。wrangler の migration 追跡で二重適用は起きない） |
+| 3 | `searchData` 自体の単体テストが無い（変更前から無い。統合確認は curl で実施済み） |
+| 4 | `photoRows.all<any>()` だけ型引数付き（兄弟の音声クエリは `.all()`）。機能差なし |
+| 6 | 音声結果の `source` が null であることが MCP の説明文に書かれていない（誤りではないが沈黙） |
+
+キャプション品質（眼鏡カメラの76%が文末で途切れる件）は索引の作りとは独立した別問題として、
+`## 次にやること` に書いたとおり完了後にユーザーへ提起する。
+
+## 本番に反映する手順
+
+**実行はしない。** 人間がこの通りに、本人の判断で叩く。
+
+```bash
+cd cloudflare/lifelog
+npx wrangler d1 migrations apply r1-lifelog --remote   # 0018。既存4,300件が索引に入る
+npm run deploy
+```
+
+- **マイグレーションが先、デプロイが後。** 新しい `searchData` は `photos_fts` を
+  クエリする。索引テーブルが無い状態で新しいコードだけ先に出すと、検索を叩くたびに
+  `no such table: photos_fts` で落ちる。第1弾（眼鏡タイムラプス取り込み）と同じ順序の理由。
+- **backfill の所要時間は本番では未測定。** migration 0018 の最後の `INSERT` は
+  「キャプション済みの写真ぜんぶ」を1文で `photos_fts` に入れる。Task 2 で検証したのは
+  ローカルのほぼ空の D1（対象行はテスト用の1〜数件）に対してで、本番の約4,300件に対して
+  同じ文がどれくらいの時間で終わるかは計測していない。一瞬で終わる想定で話を進めない。
+  必要なら本番反映のタイミングで実測し、長くかかるようなら分割 INSERT への変更を別途検討する。
+
 ## 次にやること
 
 **第3弾は1日のサマリー。** この計画が終われば材料（音声の transcript と写真のキャプション）が
@@ -748,3 +860,16 @@ git commit -m "Write down what the corpus work needs to go live"
 76% が文末で途切れ、15% に同一文の繰り返しがある（`CAPTION_MAX_TOKENS = 220` に対して
 中央値300文字）。索引の作りとは独立しているので、この計画では触らない。
 画像は残っているので付け直しはいつでもできる。
+
+## ターン数
+
+- 実装: 予定 7タスク / 実際 7タスク、修正ラウンド 0回
+
+7タスクとも実装 → レビューが1回で clean。コード上の修正ラウンドは無かった。
+ただし Task 4 のレビューで「実行時確認が音声ゼロの窓だった」という minor が
+Task 7 に繰り越されており、Task 7 の Step 3 でその検証をやり直して埋めている
+（コードの修正ではなく、検証のやり直し）。
+
+| どこで | 何が | 原因 |
+| --- | --- | --- |
+| Task 4 → Task 7 | `/v1/context` の実行時確認が音声ゼロの窓で行われており、`text` に写真のキャプションが混ざらないことを証明していなかった | 検証（コードの diff 自体は静的証拠として clean と Task 4 レビューで確認済み。Task 7 で音声・写真が両方ある窓を作って実測し、混ざっていないことを確認して解消） |
