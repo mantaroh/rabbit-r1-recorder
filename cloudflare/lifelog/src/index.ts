@@ -19,6 +19,7 @@ import { fetchMapAssets, serveMap } from "./map";
 import { interpretTargets, mintInterpretSession } from "./interpret";
 import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
 import { UI_HTML } from "./ui";
+import { captionPromptFor } from "./caption-prompt";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -1186,18 +1187,6 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
 }
 
 /**
- * What the vision model is asked for.
- *
- * Japanese, because the transcripts are and a search that has to work across
- * two languages works well in neither. Concrete and short: the caption exists
- * so a frame can be found later, not so it can be read for pleasure, and
- * every token is billed.
- */
-const CAPTION_PROMPT =
-  "この写真に写っているものを日本語で簡潔に説明してください。" +
-  "人物の有無、場所の様子、目立つ物を2〜3文で。推測は避け、見えるものだけを述べてください。";
-
-/**
  * Room for the answer, and a ceiling on what a runaway one can cost.
  *
  * The measurement that justified this feature came back truncated at 128, so
@@ -1219,10 +1208,23 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
     return;
   }
 
+  // どのカメラのフレームかで訊くことが変わる。行が無いのはキューが D1 の
+  // 書き込みを追い越した場合だけで、そのとき R1 の文面に落ちるのは安全側 --
+  // キャプションが付かないよりはよい。
+  const row = await env.DB.prepare(
+    `SELECT source FROM photos WHERE photo_id = ?1`,
+  )
+    .bind(message.segmentId)
+    .first<{ source: string | null }>();
+
   const bytes = new Uint8Array(await object.arrayBuffer());
   const result: any = await env.AI.run(
     "@cf/meta/llama-3.2-11b-vision-instruct" as any,
-    { image: [...bytes], prompt: CAPTION_PROMPT, max_tokens: CAPTION_MAX_TOKENS } as any,
+    {
+      image: [...bytes],
+      prompt: captionPromptFor(row?.source),
+      max_tokens: CAPTION_MAX_TOKENS,
+    } as any,
   );
 
   const text = String(result?.response ?? "").trim();
