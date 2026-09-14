@@ -33,9 +33,14 @@ describe("groupPhotos", () => {
   it("は同じ分に入る眼鏡の2フレームを対として扱わない", () => {
     // これが直したかった不具合。30秒間隔だと1分に2枚入るので、
     // 分でまとめると無関係な2フレームが前後の対になってしまう。
+
+    // このテストの前提そのもの。ここが崩れると、名前だけ残って
+    // 「同じ分」を検証しないテストになる。
+    expect(Math.floor(1_788_999_960 / 60)).toBe(Math.floor(1_788_999_990 / 60));
+
     const groups = groupPhotos([
-      row({ photo_id: "g-0", taken_epoch: 1_789_000_000, source: "glasses", source_file: "aaaaaaaaaaaaaaaa" }),
-      row({ photo_id: "g-1", taken_epoch: 1_789_000_030, source: "glasses", source_file: "aaaaaaaaaaaaaaaa" }),
+      row({ photo_id: "g-0", taken_epoch: 1_788_999_960, source: "glasses", source_file: "aaaaaaaaaaaaaaaa" }),
+      row({ photo_id: "g-1", taken_epoch: 1_788_999_990, source: "glasses", source_file: "aaaaaaaaaaaaaaaa" }),
     ]);
     expect(groups).toHaveLength(1);
     expect(groups[0].source).toBe("glasses");
