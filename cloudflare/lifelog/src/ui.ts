@@ -113,6 +113,7 @@ export const UI_HTML = `<!doctype html>
   </label>
   <button class="tab on" id="tabList">記録</button>
   <button class="tab" id="tabMap">地図</button>
+  <a class="tab" href="/import" style="text-decoration:none">取り込み</a>
   <button id="lost" title="端末の資格情報を停止／再開">端末</button>
 </header>
 <main>

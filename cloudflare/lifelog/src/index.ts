@@ -19,6 +19,7 @@ import { fetchMapAssets, serveMap } from "./map";
 import { interpretTargets, mintInterpretSession } from "./interpret";
 import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
 import { UI_HTML } from "./ui";
+import { IMPORT_HTML } from "./import";
 import { captionPromptFor } from "./caption-prompt";
 import { groupPhotos } from "./day-group";
 
@@ -120,6 +121,11 @@ export default {
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/ui")) {
       return new Response(UI_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    if (request.method === "GET" && url.pathname === "/import") {
+      return new Response(IMPORT_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }
