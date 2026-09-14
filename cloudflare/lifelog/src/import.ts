@@ -272,9 +272,18 @@ function render() {
 /** Seeks and waits, because drawImage before the seek lands gives the old frame. */
 function seekTo(video, t) {
   return new Promise((resolve, reject) => {
+    // seeked が来ない経路が実在する。currentTime に現在と同じ値を代入すると
+    // ブラウザがシーク自体を省くことがあり、待ち続けると取り込みが無言で
+    // 固まる。ボタンは無効のまま、画面には何も出ない。止まるなら、止まったと
+    // 見えるほうがよい。
+    const bail = setTimeout(() => {
+      cleanup();
+      reject(new Error('シークが ' + t.toFixed(3) + ' 秒で応答しませんでした'));
+    }, 10000);
     const ok = () => { cleanup(); resolve(); };
     const ng = () => { cleanup(); reject(new Error('シークに失敗しました')); };
     const cleanup = () => {
+      clearTimeout(bail);
       video.removeEventListener('seeked', ok);
       video.removeEventListener('error', ng);
     };
@@ -318,21 +327,35 @@ async function putFrame(blob, id, takenAt, sourceFile) {
  * part here, not the bottleneck.
  */
 async function importFile(a, onStep) {
+  // videoWidth が 0 のまま描くと、drawImage は例外も投げずに何も描かず、
+  // 真っ黒な JPEG が 200 で入り続ける。成功に見える失敗なので、ここで止める。
+  const width = a.video.videoWidth;
+  const height = a.video.videoHeight;
+  if (!width || !height) {
+    throw new Error('映像の大きさが取れませんでした（コーデック非対応の可能性）');
+  }
+
   const canvas = document.createElement('canvas');
-  canvas.width = a.video.videoWidth || 1920;
-  canvas.height = a.video.videoHeight || 1080;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
 
   let stored = 0;
   let skipped = 0;
 
   for (let i = 0; i < a.count; i++) {
-    // Aim at the middle of the frame so a rounding error in fps does not land
-    // on the boundary and give the neighbour.
-    const t = (i + 0.5) / a.fps;
-    if (t >= a.video.duration) break;
+    // フレームの境目を踏まないよう中央を狙う。
+    const raw = (i + 0.5) / a.fps;
+    if (raw > a.video.duration) break;
+    // count は duration × fps の四捨五入なので、最後の1枚の中央が duration に
+    // ちょうど重なることがある。そのまま渡すとブラウザが末尾にクランプし、
+    // 現在位置と同じ値になって seeked が飛ばない。わずかに内側を狙う。
+    const t = Math.min(raw, Math.max(0, a.video.duration - 0.001));
 
     await seekTo(a.video, t);
+    // 前のフレームを消してから描く。drawImage が何も描かなかったとき、
+    // 残像が次の id でアップロードされるのを防ぐ。
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(a.video, 0, 0, canvas.width, canvas.height);
     const blob = await toJpeg(canvas);
     const answer = await putFrame(blob, photoIdFor(a.hash, i), a.times[i], a.hash);
@@ -347,20 +370,27 @@ async function importFile(a, onStep) {
 $('go').addEventListener('click', async () => {
   $('go').disabled = true;
   $('pick').disabled = true;
+  let failed = 0;
   try {
     for (const a of analysed) {
       if (a.error) { log(a.file.name + ' — 飛ばしました（' + a.error + '）'); continue; }
       log(a.file.name + ' — ' + a.count + ' 枚');
-      const r = await importFile(a, (n, total) => {
-        $('progress').textContent = a.file.name + ' ' + n + ' / ' + total;
-      });
-      log('  取り込み ' + r.stored + ' 枚、既出 ' + r.skipped + ' 枚');
+      try {
+        const r = await importFile(a, (n, total) => {
+          $('progress').textContent = a.file.name + ' ' + n + ' / ' + total;
+        });
+        log('  取り込み ' + r.stored + ' 枚、既出 ' + r.skipped + ' 枚');
+      } catch (err) {
+        // 1本の失敗で残りを巻き添えにしない。カード1枚に記録が何本も入って
+        // いて、そのうち1本だけ壊れている、というのは普通に起きる。
+        failed += 1;
+        log('  中断: ' + String((err && err.message) || err));
+        log('  もう一度押せば、入っているぶんは飛ばして続きから入ります。');
+      }
     }
-    $('progress').textContent = '完了';
-  } catch (err) {
-    log('中断: ' + String(err && err.message || err));
-    log('もう一度押せば、入っているぶんは飛ばして続きから入ります。');
-    $('progress').textContent = '';
+    $('progress').textContent = failed
+      ? failed + ' 本が途中で止まりました'
+      : '完了';
   } finally {
     $('go').disabled = false;
     $('pick').disabled = false;
