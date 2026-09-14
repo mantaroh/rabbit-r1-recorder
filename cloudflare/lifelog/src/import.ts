@@ -135,29 +135,58 @@ async function hash16(file) {
 /**
  * How many frames a second the file plays at.
  *
- * duration alone cannot give the frame count, so two consecutive frame
- * callbacks are timed instead. Firefox has requestVideoFrameCallback from 132.
- * If it is missing or the video refuses to play, 25 is assumed and the screen
- * says so.
+ * duration alone cannot give the frame count, so playback is sampled. The
+ * divisor is the presentedFrames delta, not the number of callbacks: two
+ * consecutive rVFC calls are NOT guaranteed to be consecutive frames, and
+ * dividing by an assumed 1 makes a skipped frame read as half the true rate.
+ * Half the rate means half the frames imported, with nothing on screen to say
+ * so — the one failure here that looks like success.
+ *
+ * Averaged over ten frames rather than two, so a single irregular callback
+ * cannot set the answer. Short clips end before ten: the ended handler settles
+ * from whatever was gathered. If nothing usable was gathered, null, and the
+ * caller assumes 25 and says so on screen.
  */
 function measureFps(video) {
   return new Promise((resolve) => {
     if (!video.requestVideoFrameCallback) return resolve(null);
-    const bail = setTimeout(() => resolve(null), 4000);
+
     let first = null;
+    let last = null;
+
+    const fromSamples = () => {
+      if (!first || !last) return null;
+      const frames = last.frames - first.frames;
+      const seconds = last.at - first.at;
+      if (!(frames > 0) || !(seconds > 0)) return null;
+      const fps = frames / seconds;
+      return Number.isFinite(fps) && fps > 0 ? fps : null;
+    };
+
+    const finish = (value) => {
+      clearTimeout(bail);
+      video.removeEventListener('ended', onEnded);
+      video.pause();
+      resolve(value);
+    };
+
+    const onEnded = () => finish(fromSamples());
+    const bail = setTimeout(() => finish(fromSamples()), 4000);
+
     const tick = (_now, meta) => {
       if (first === null) {
-        first = meta.mediaTime;
+        first = { at: meta.mediaTime, frames: meta.presentedFrames };
         video.requestVideoFrameCallback(tick);
         return;
       }
-      const delta = meta.mediaTime - first;
-      clearTimeout(bail);
-      video.pause();
-      resolve(delta > 0 ? 1 / delta : null);
+      last = { at: meta.mediaTime, frames: meta.presentedFrames };
+      if (last.frames - first.frames >= 10) return finish(fromSamples());
+      video.requestVideoFrameCallback(tick);
     };
+
+    video.addEventListener('ended', onEnded);
     video.requestVideoFrameCallback(tick);
-    video.play().catch(() => { clearTimeout(bail); resolve(null); });
+    video.play().catch(() => finish(null));
   });
 }
 
