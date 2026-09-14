@@ -61,6 +61,12 @@ export const IMPORT_HTML = `<!doctype html>
 </p>
 
 <div id="files"></div>
+
+<p>
+  <button id="go" disabled>取り込む</button>
+  <span id="progress" class="muted"></span>
+</p>
+
 <div id="log"></div>
 
 <script>
@@ -259,7 +265,107 @@ function render() {
       render();
     });
   }
+
+  $('go').disabled = !analysed.some((a) => !a.error);
 }
+
+/** Seeks and waits, because drawImage before the seek lands gives the old frame. */
+function seekTo(video, t) {
+  return new Promise((resolve, reject) => {
+    const ok = () => { cleanup(); resolve(); };
+    const ng = () => { cleanup(); reject(new Error('シークに失敗しました')); };
+    const cleanup = () => {
+      video.removeEventListener('seeked', ok);
+      video.removeEventListener('error', ng);
+    };
+    video.addEventListener('seeked', ok);
+    video.addEventListener('error', ng);
+    video.currentTime = t;
+  });
+}
+
+function toJpeg(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('JPEG に変換できませんでした'))),
+      'image/jpeg',
+      0.85,
+    );
+  });
+}
+
+async function putFrame(blob, id, takenAt, sourceFile) {
+  const q = new URLSearchParams({
+    taken_at: takenAt,
+    device_id: 'glasses',
+    facing: 'rear',
+    source: 'glasses',
+    source_file: sourceFile,
+  });
+  const r = await fetch('/v1/photos/' + id + '?' + q.toString(), {
+    method: 'PUT',
+    body: blob,
+  });
+  if (!r.ok) throw new Error('PUT ' + id + ' が ' + r.status + ' を返しました');
+  return r.json();
+}
+
+/**
+ * One file, frame by frame.
+ *
+ * Sequential rather than parallel. The video element has one playback
+ * position, so two seeks at once would race for it; the upload is the fast
+ * part here, not the bottleneck.
+ */
+async function importFile(a, onStep) {
+  const canvas = document.createElement('canvas');
+  canvas.width = a.video.videoWidth || 1920;
+  canvas.height = a.video.videoHeight || 1080;
+  const ctx = canvas.getContext('2d');
+
+  let stored = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < a.count; i++) {
+    // Aim at the middle of the frame so a rounding error in fps does not land
+    // on the boundary and give the neighbour.
+    const t = (i + 0.5) / a.fps;
+    if (t >= a.video.duration) break;
+
+    await seekTo(a.video, t);
+    ctx.drawImage(a.video, 0, 0, canvas.width, canvas.height);
+    const blob = await toJpeg(canvas);
+    const answer = await putFrame(blob, photoIdFor(a.hash, i), a.times[i], a.hash);
+    if (answer.duplicate) skipped += 1;
+    else stored += 1;
+    onStep(i + 1, a.count);
+  }
+
+  return { stored, skipped };
+}
+
+$('go').addEventListener('click', async () => {
+  $('go').disabled = true;
+  $('pick').disabled = true;
+  try {
+    for (const a of analysed) {
+      if (a.error) { log(a.file.name + ' — 飛ばしました（' + a.error + '）'); continue; }
+      log(a.file.name + ' — ' + a.count + ' 枚');
+      const r = await importFile(a, (n, total) => {
+        $('progress').textContent = a.file.name + ' ' + n + ' / ' + total;
+      });
+      log('  取り込み ' + r.stored + ' 枚、既出 ' + r.skipped + ' 枚');
+    }
+    $('progress').textContent = '完了';
+  } catch (err) {
+    log('中断: ' + String(err && err.message || err));
+    log('もう一度押せば、入っているぶんは飛ばして続きから入ります。');
+    $('progress').textContent = '';
+  } finally {
+    $('go').disabled = false;
+    $('pick').disabled = false;
+  }
+});
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) =>
