@@ -33,6 +33,12 @@ BEGIN
   DELETE FROM photos_fts WHERE photo_id = old.photo_id;
 END;
 
+-- 二度目の適用に耐えるようにする。テーブルもトリガも IF NOT EXISTS で守って
+-- あるのに、この INSERT だけ無条件だった。本番の 4,300 行を1文で入れる適用が
+-- 途中で落ちて migration 記録が残らなかった場合、再実行で全キャプションが
+-- 二重に索引され、検索結果が二重に出る。空の状態から作り直すほうが安い。
+DELETE FROM photos_fts;
+
 -- 溜まっているぶんを全部入れる。この計画の主目的のひとつ。
 INSERT INTO photos_fts(caption, photo_id, taken_at)
 SELECT caption, photo_id, taken_at

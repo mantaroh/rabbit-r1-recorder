@@ -838,10 +838,16 @@ Task 6 の申し送りどおり、`workerd.exe` を直接殺さず、プロセ�
 
 ```bash
 cd cloudflare/lifelog
+npx wrangler d1 migrations list r1-lifelog --remote     # まず未適用を確認する
 npx wrangler d1 migrations apply r1-lifelog --remote   # 0018。既存4,300件が索引に入る
+npx wrangler d1 execute r1-lifelog --remote --command "SELECT COUNT(*) FROM photos_fts"
+npx wrangler d1 execute r1-lifelog --remote --command "SELECT COUNT(*) FROM photos WHERE caption IS NOT NULL AND caption <> ''"
 npm run deploy
 ```
 
+- **先に `migrations list` で未適用を確認する。** `migrations apply` は指定した1件だけ
+  でなく未適用のマイグレーションを全部まとめて当てる。今回のつもりが0018だけでも、
+  ほかに未適用のものが残っていれば一緒に流れる。何が当たるかを先に見てから叩く。
 - **マイグレーションが先、デプロイが後。** 新しい `searchData` は `photos_fts` を
   クエリする。索引テーブルが無い状態で新しいコードだけ先に出すと、検索を叩くたびに
   `no such table: photos_fts` で落ちる。第1弾（眼鏡タイムラプス取り込み）と同じ順序の理由。
@@ -850,6 +856,14 @@ npm run deploy
   ローカルのほぼ空の D1（対象行はテスト用の1〜数件）に対してで、本番の約4,300件に対して
   同じ文がどれくらいの時間で終わるかは計測していない。一瞬で終わる想定で話を進めない。
   必要なら本番反映のタイミングで実測し、長くかかるようなら分割 INSERT への変更を別途検討する。
+- **適用後に件数を突き合わせる。** `photos_fts` の行数と、`photos` のうちキャプションが
+  非空の行数を数えて、一致することを確認する。一致しなければ backfill が途中で
+  止まっている。
+- **backfill 中も R1 とキューは止まらない。** R1 は5分おきに写真をアップロードし、
+  キャプションを付けるキューは `UPDATE photos SET caption = ...` を継続的に書き続けている。
+  backfill と重なるぶん、途中のキャプション `UPDATE` が失敗してキューに再試行される
+  ことがありうる。キューはリトライするので実害は無い想定だが、気づかず驚くより先に
+  書いておく。
 
 ## 次にやること
 

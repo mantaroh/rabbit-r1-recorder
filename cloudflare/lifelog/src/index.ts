@@ -1817,7 +1817,12 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
   // string when the model returned nothing. Neither is a search result.
   const photoRows = useFts
     ? await env.DB.prepare(
-        `SELECT f.photo_id, f.taken_at, p.caption, p.source
+        // taken_at comes from the table, not from the index. photo-retime corrects
+        // an import's timestamps without touching its captions, so the trigger —
+        // which fires on caption — never runs and the copy inside photos_fts keeps
+        // the uncorrected time. The row is the authority; the index is only there to
+        // be matched against.
+        `SELECT f.photo_id, p.taken_at, p.caption, p.source
            FROM photos_fts f
            JOIN photos p ON p.photo_id = f.photo_id
           WHERE photos_fts MATCH ?1
