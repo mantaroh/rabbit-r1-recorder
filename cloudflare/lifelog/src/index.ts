@@ -115,6 +115,9 @@ export default {
     if (request.method === "POST" && url.pathname === "/v1/admin/caption-backfill") {
       return captionBackfill(env, url);
     }
+    if (request.method === "POST" && url.pathname === "/v1/admin/photo-retime") {
+      return photoRetime(env, url);
+    }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/ui")) {
       return new Response(UI_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -1339,6 +1342,69 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
   ).first<{ n: number }>();
 
   return json({ queued: todo.length, remaining: remaining?.n ?? 0 });
+}
+
+/**
+ * Re-dates a whole import.
+ *
+ * The import screen derives the start time from the file's modification time,
+ * which is when the camera finished writing rather than when it started. That
+ * is right to within a few seconds, but the interval is a camera setting the
+ * file does not carry, so getting it wrong shifts every frame.
+ *
+ * Without this endpoint that mistake is permanent. photo_id is derived from
+ * the file's content and not from the time, so re-importing with a corrected
+ * start hits `duplicate: true` and leaves the old timestamps in place. Putting
+ * the time into the id instead would mean a fresh set of rows on every
+ * correction. The correction belongs in its own door.
+ *
+ * The R2 object keeps its key, which still carries the old date. The key is a
+ * name, not a fact — serveMedia reads r2_key off the row — so moving the bytes
+ * would buy nothing and could lose them.
+ */
+async function photoRetime(env: Env, url: URL): Promise<Response> {
+  const sourceFile = url.searchParams.get("source_file");
+  if (!sourceFile || !/^[0-9a-f]{16}$/.test(sourceFile)) {
+    return json({ error: "source_file must be 16 lowercase hex characters" }, 400);
+  }
+
+  const start = url.searchParams.get("start");
+  if (!start || Number.isNaN(Date.parse(start))) {
+    return json({ error: "start must be an ISO 8601 timestamp" }, 400);
+  }
+
+  const intervalSec = intParam(url, "interval_sec") ?? 30;
+  if (intervalSec < 1 || intervalSec > 3600) {
+    return json({ error: "interval_sec must be 1..3600" }, 400);
+  }
+
+  // Ordering by photo_id is ordering by frame, because photoIdFor pads the
+  // index to four digits. That is what the padding is for.
+  const rows = await env.DB.prepare(
+    `SELECT photo_id FROM photos WHERE source_file = ?1 ORDER BY photo_id ASC`,
+  )
+    .bind(sourceFile)
+    .all<{ photo_id: string }>();
+
+  const ids = (rows.results ?? []).map((r) => r.photo_id);
+  if (!ids.length) return json({ error: "no frames for that source_file" }, 404);
+
+  const startMs = Date.parse(start);
+  const statements = ids.map((id, i) => {
+    const at = new Date(startMs + i * intervalSec * 1000);
+    return env.DB.prepare(
+      `UPDATE photos SET taken_at = ?1, taken_epoch = ?2 WHERE photo_id = ?3`,
+    ).bind(at.toISOString(), Math.floor(at.getTime() / 1000), id);
+  });
+  await env.DB.batch(statements);
+
+  return json({
+    source_file: sourceFile,
+    frames: ids.length,
+    interval_sec: intervalSec,
+    first: new Date(startMs).toISOString(),
+    last: new Date(startMs + (ids.length - 1) * intervalSec * 1000).toISOString(),
+  });
 }
 
 // ----------------------------------------------------------- transcribe ---
