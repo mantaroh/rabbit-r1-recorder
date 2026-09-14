@@ -20,6 +20,7 @@ import { interpretTargets, mintInterpretSession } from "./interpret";
 import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
 import { UI_HTML } from "./ui";
 import { captionPromptFor } from "./caption-prompt";
+import { groupPhotos } from "./day-group";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -699,11 +700,11 @@ async function dayView(env: Env, url: URL): Promise<Response> {
     .all<any>();
 
   const photos = await env.DB.prepare(
-    `SELECT photo_id, taken_at, taken_epoch, facing, caption
+    `SELECT photo_id, taken_at, taken_epoch, facing, caption, source, source_file
        FROM photos
       WHERE taken_epoch >= ?1 AND taken_epoch < ?2
       ORDER BY taken_epoch ASC
-      LIMIT 1000`,
+      LIMIT 2000`,
   )
     .bind(from, to)
     .all<any>();
@@ -726,18 +727,15 @@ async function dayView(env: Env, url: URL): Promise<Response> {
     });
   }
 
-  // Group the pair that was taken together.
-  const byMinute = new Map<number, any[]>();
-  for (const row of photos.results ?? []) {
-    const minute = Math.floor(row.taken_epoch / 60);
-    if (!byMinute.has(minute)) byMinute.set(minute, []);
-    byMinute.get(minute)!.push(row);
-  }
-  for (const [, shots] of byMinute) {
+  // Grouping lives in day-group.ts because the rule is no longer one line:
+  // the R1's pair-by-minute and the glasses camera's one-entry-per-import are
+  // different rules that happen to produce the same kind of entry.
+  for (const group of groupPhotos(photos.results ?? [])) {
     entries.push({
       kind: "photo",
-      at: shots[0].taken_at,
-      shots: shots.map((s: any) => ({
+      at: group.at,
+      source: group.source,
+      shots: group.shots.map((s) => ({
         id: s.photo_id,
         facing: s.facing,
         caption: s.caption ?? "",
