@@ -824,7 +824,7 @@ Task 6 の申し送りどおり、`workerd.exe` を直接殺さず、プロセ�
 | --- | --- |
 | 1 | `at` が不正な文字列だと comparator が NaN を返す（D1 の値は自前の ISO 文字列なので実害は薄いと Task 3 で確認済み） |
 | 1 | `limit=Infinity` が `[]` を返す（現状そういう呼び出しは無い） |
-| 2 | backfill の `INSERT` に重複ガードが無い（0002/0006 と同じ形。wrangler の migration 追跡で二重適用は起きない） |
+| 2 | ~~backfill の `INSERT` に重複ガードが無い~~ → **解消済み。**最終レビューで「4,300行の適用が途中で落ちて migration 記録が残らなければ再実行で二重索引になる」と格上げされ、backfill の直前に `DELETE FROM photos_fts;` を追加した（`b7f66ce`） |
 | 3 | `searchData` 自体の単体テストが無い（変更前から無い。統合確認は curl で実施済み） |
 | 4 | `photoRows.all<any>()` だけ型引数付き（兄弟の音声クエリは `.all()`）。機能差なし |
 | 6 | 音声結果の `source` が null であることが MCP の説明文に書かれていない（誤りではないが沈黙） |
