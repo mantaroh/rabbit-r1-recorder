@@ -1735,7 +1735,22 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
     .bind(fromEpoch, atEpoch, floor)
     .all();
 
+  // status と非空を両方見る。'failed' の行はエラーだけ持っていてキャプションが
+  // 無く、'captioned' でも空文字のことがある。どちらもエージェントに渡す中身ではない。
+  const photoRows = await env.DB.prepare(
+    `SELECT photo_id, taken_at, caption, source
+       FROM photos
+      WHERE status = 'captioned'
+        AND caption IS NOT NULL AND caption <> ''
+        AND taken_epoch >= ?1 AND taken_epoch <= ?2
+      ORDER BY taken_epoch ASC
+      LIMIT 200`,
+  )
+    .bind(fromEpoch, atEpoch)
+    .all<any>();
+
   const segments = rows.results ?? [];
+  const photos = photoRows.results ?? [];
   return {
     at,
     before_sec: beforeSec,
@@ -1745,6 +1760,12 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
     // A single blob is what an agent actually wants to read.
     text: segments.map((r: any) => r.transcript).join(" ").trim(),
     segments,
+    // Kept apart from `text` on purpose. nudge.ts and interpret.ts read that
+    // blob to decide whether to speak; folding captions into it would change
+    // those judgements silently. And an agent that cannot tell what was said
+    // from what was seen will attribute one to the other.
+    seen: photos.map((r: any) => r.caption).join(" ").trim(),
+    photos,
   };
 }
 
