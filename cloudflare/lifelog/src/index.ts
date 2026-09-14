@@ -1113,6 +1113,18 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
   const facing = url.searchParams.get("facing") === "rear" ? "rear" : "front";
   const deviceId = url.searchParams.get("device_id") ?? "unknown";
 
+  // 出所。既定が r1 なのは、R1 端末を変更せずに済ませるため。
+  const source = url.searchParams.get("source") === "glasses" ? "glasses" : "r1";
+
+  // 取り込み元の動画。眼鏡カメラのフレームには必須で、これが日ビューの
+  // グループ化と photo-retime の単位になる。
+  const sourceFile = url.searchParams.get("source_file");
+  if (source === "glasses") {
+    if (!sourceFile || !/^[0-9a-f]{16}$/.test(sourceFile)) {
+      return json({ error: "source_file must be 16 lowercase hex characters" }, 400);
+    }
+  }
+
   const existing = await env.DB.prepare(
     `SELECT r2_key FROM photos WHERE photo_id = ?1`,
   )
@@ -1146,8 +1158,8 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
   await env.DB.prepare(
     `INSERT INTO photos
        (photo_id, device_id, r2_key, facing, taken_at, taken_epoch, bytes,
-        sha256, received_at)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+        sha256, received_at, source, source_file)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
      ON CONFLICT(photo_id) DO NOTHING`,
   )
     .bind(
@@ -1160,6 +1172,8 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       object?.size ?? null,
       sha256,
       new Date().toISOString(),
+      source,
+      source === "glasses" ? sourceFile : null,
     )
     .run();
 
@@ -1168,7 +1182,7 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
   // durable, which is the part that cannot be retried later.
   await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key, kind: "photo" });
 
-  return json({ photo_id: photoId, key, bytes: object?.size ?? null }, 201);
+  return json({ photo_id: photoId, key, bytes: object?.size ?? null, source }, 201);
 }
 
 /**
