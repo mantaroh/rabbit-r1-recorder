@@ -25,10 +25,12 @@ const TOOLS = [
   {
     name: "lifelog_recent",
     description:
-      "Read what was said out loud near a moment in time, from the always-on " +
-      "recording on the user's Rabbit R1. Use this to resolve references to " +
-      "recent speech — 'さっきの話', 'これ', 'the thing we just discussed' — " +
-      "before answering. Defaults to the two minutes before now.",
+      "Read what the user was doing near a moment in time, from the always-on " +
+      "recording on their Rabbit R1 and from the cameras. Use this to resolve " +
+      "references to recent moments — 'さっきの話', 'これ', 'the thing we just " +
+      "discussed' — before answering. Returns `text` (what was said out loud) " +
+      "and `seen` (captions of what the cameras recorded) as separate fields: " +
+      "do not treat one as the other. Defaults to the two minutes before now.",
     inputSchema: {
       type: "object",
       properties: {
@@ -47,9 +49,13 @@ const TOOLS = [
   {
     name: "lifelog_search",
     description:
-      "Full-text search over everything the user has been recorded saying. " +
-      "Use for 'when did I talk about X' or to recover a detail from an " +
-      "earlier conversation. Returns matching passages with timestamps.",
+      "Full-text search over everything the user has been recorded saying and " +
+      "everything the cameras recorded seeing. Use for 'when did I talk about " +
+      "X', 'when did I last see X', or to recover a detail from an earlier " +
+      "moment. Each result carries `kind`: 'audio' is a passage of speech, " +
+      "'photo' is a caption of a frame. A photo result also carries `source`: " +
+      "'r1' is the room the user was in, 'glasses' is what they were looking " +
+      "at. Those are different claims — do not conflate them.",
     inputSchema: {
       type: "object",
       properties: {

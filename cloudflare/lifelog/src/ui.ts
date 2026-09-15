@@ -155,7 +155,7 @@ function renderEntry(e) {
         <img loading="lazy" decoding="async" width="480" height="640"
              src="/v1/media/photo/\${encodeURIComponent(s.id)}"
              data-full="/v1/media/photo/\${encodeURIComponent(s.id)}" alt="">
-        <div class="facing">\${s.facing === 'front' ? '前' : '後'}</div>
+        <div class="facing">\${s.label ?? (s.facing === 'front' ? '前' : '後')}</div>
         <div class="cap">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
       </div>\`).join('');
     return \`<div class="entry"><div class="time">\${timeOf(e.at)}</div>
@@ -194,11 +194,17 @@ async function runSearch(q) {
   const r = await fetch('/v1/search?q=' + encodeURIComponent(q) + '&limit=100');
   if (!r.ok) { $('stats').textContent = '検索失敗 (' + r.status + ')'; return; }
   const d = await r.json();
-  const entries = (d.results || []).map((x) => ({
-    kind: 'audio', at: x.started_at, id: x.segment_id, text: x.transcript, status: 'transcribed',
-  }));
+  const entries = (d.results || []).map((x) =>
+    x.kind === 'photo'
+      ? {
+          kind: 'photo', at: x.at,
+          // 検索結果では前後の別より、どちらのカメラかのほうが意味がある。
+          // R1 は周囲の様子、眼鏡は見ていたもので、同じ主張ではない。
+          shots: [{ id: x.id, label: x.source === 'glasses' ? '眼鏡' : 'R1', caption: x.text }],
+        }
+      : { kind: 'audio', at: x.at, id: x.id, text: x.text, status: 'transcribed' });
   window.__entries = entries;
-  draw(entries, \`「\${q}」: \${entries.length} 件\`);
+  draw(entries, \`「\${q}」: \${entries.length} 件（音声 \${d.audio_matched} · 写真 \${d.photo_matched}）\`);
 }
 
 $('date').value = todayJst();

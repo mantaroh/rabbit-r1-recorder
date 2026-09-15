@@ -24,6 +24,7 @@ import { captionPromptFor } from "./caption-prompt";
 import { CAPTION_MODEL, captionInput, captionTextOf } from "./caption-model";
 import { groupPhotos } from "./day-group";
 import { retimeTargets } from "./retime";
+import { mergeResults, type SearchHit } from "./search-merge";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -1738,7 +1739,22 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
     .bind(fromEpoch, atEpoch, floor)
     .all();
 
+  // status と非空を両方見る。'failed' の行はエラーだけ持っていてキャプションが
+  // 無く、'captioned' でも空文字のことがある。どちらもエージェントに渡す中身ではない。
+  const photoRows = await env.DB.prepare(
+    `SELECT photo_id, taken_at, caption, source
+       FROM photos
+      WHERE status = 'captioned'
+        AND caption IS NOT NULL AND caption <> ''
+        AND taken_epoch >= ?1 AND taken_epoch <= ?2
+      ORDER BY taken_epoch ASC
+      LIMIT 200`,
+  )
+    .bind(fromEpoch, atEpoch)
+    .all<any>();
+
   const segments = rows.results ?? [];
+  const photos = photoRows.results ?? [];
   return {
     at,
     before_sec: beforeSec,
@@ -1748,6 +1764,12 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
     // A single blob is what an agent actually wants to read.
     text: segments.map((r: any) => r.transcript).join(" ").trim(),
     segments,
+    // Kept apart from `text` on purpose. nudge.ts and interpret.ts read that
+    // blob to decide whether to speak; folding captions into it would change
+    // those judgements silently. And an agent that cannot tell what was said
+    // from what was seen will attribute one to the other.
+    seen: photos.map((r: any) => r.caption).join(" ").trim(),
+    photos,
   };
 }
 
@@ -1766,10 +1788,12 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
   // (敵, 駅, 予定) are ordinary things to search for. Measured: 負け犬 hits,
   // トモ does not. Scan for those instead of returning a confident zero.
   const useFts = [...term].length >= 3;
+  const quoted = `"${term.replace(/"/g, '""')}"`;
+  const liked = `%${term.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
 
-  const rows = useFts
+  const audioRows = useFts
     ? await env.DB.prepare(
-        `SELECT f.segment_id, f.started_at, s.transcript, s.speech_ratio
+        `SELECT f.segment_id, f.started_at, s.transcript
            FROM segments_fts f
            JOIN segments s ON s.segment_id = f.segment_id
           WHERE segments_fts MATCH ?1
@@ -1778,10 +1802,10 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
           ORDER BY s.started_epoch DESC
           LIMIT ?2`,
       )
-        .bind(`"${term.replace(/"/g, '""')}"`, limit, MIN_SPEECH_RATIO)
-        .all()
+        .bind(quoted, limit, MIN_SPEECH_RATIO)
+        .all<any>()
     : await env.DB.prepare(
-        `SELECT segment_id, started_at, transcript, speech_ratio
+        `SELECT segment_id, started_at, transcript
            FROM segments
           WHERE transcript LIKE ?1 ESCAPE '\\'
             AND stock_phrase = 0
@@ -1789,14 +1813,67 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
           ORDER BY started_epoch DESC
           LIMIT ?2`,
       )
-        .bind(`%${term.replace(/[\\%_]/g, (c) => "\\" + c)}%`, limit, MIN_SPEECH_RATIO)
-        .all();
+        .bind(liked, limit, MIN_SPEECH_RATIO)
+        .all<any>();
+
+  // 'captioned' and a non-empty caption both matter: a row can be 'failed'
+  // with an error and no caption, and one can be captioned with an empty
+  // string when the model returned nothing. Neither is a search result.
+  const photoRows = useFts
+    ? await env.DB.prepare(
+        // taken_at comes from the table, not from the index. photo-retime corrects
+        // an import's timestamps without touching its captions, so the trigger —
+        // which fires on caption — never runs and the copy inside photos_fts keeps
+        // the uncorrected time. The row is the authority; the index is only there to
+        // be matched against.
+        `SELECT f.photo_id, p.taken_at, p.caption, p.source
+           FROM photos_fts f
+           JOIN photos p ON p.photo_id = f.photo_id
+          WHERE photos_fts MATCH ?1
+            AND p.status = 'captioned'
+            AND p.caption IS NOT NULL AND p.caption <> ''
+          ORDER BY p.taken_epoch DESC
+          LIMIT ?2`,
+      )
+        .bind(quoted, limit)
+        .all<any>()
+    : await env.DB.prepare(
+        `SELECT photo_id, taken_at, caption, source
+           FROM photos
+          WHERE caption LIKE ?1 ESCAPE '\\'
+            AND status = 'captioned'
+            AND caption IS NOT NULL AND caption <> ''
+          ORDER BY taken_epoch DESC
+          LIMIT ?2`,
+      )
+        .bind(liked, limit)
+        .all<any>();
+
+  const audio: SearchHit[] = (audioRows.results ?? []).map((r: any) => ({
+    kind: "audio",
+    id: r.segment_id,
+    at: r.started_at,
+    text: String(r.transcript ?? ""),
+    source: null,
+  }));
+
+  const photos: SearchHit[] = (photoRows.results ?? []).map((r: any) => ({
+    kind: "photo",
+    id: r.photo_id,
+    at: r.taken_at,
+    text: String(r.caption ?? ""),
+    source: r.source ?? "r1",
+  }));
+
+  const results = mergeResults(audio, photos, limit);
 
   return {
     q: term,
     mode: useFts ? "fts" : "scan",
-    count: rows.results?.length ?? 0,
-    results: rows.results ?? [],
+    count: results.length,
+    audio_matched: audio.length,
+    photo_matched: photos.length,
+    results,
   };
 }
 
