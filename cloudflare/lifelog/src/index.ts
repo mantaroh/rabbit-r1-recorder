@@ -22,6 +22,7 @@ import { UI_HTML } from "./ui";
 import { IMPORT_HTML } from "./import";
 import { captionPromptFor } from "./caption-prompt";
 import { CAPTION_MODEL, captionInput, captionTextOf } from "./caption-model";
+import { recaptionBatches, recaptionCutoff } from "./recaption";
 import { groupPhotos } from "./day-group";
 import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
@@ -121,6 +122,9 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/admin/photo-retime") {
       return photoRetime(env, url);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/recaption") {
+      return recaptionPhotos(env, url);
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/ui")) {
       return new Response(UI_HTML, {
@@ -1361,6 +1365,53 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
   ).first<{ n: number }>();
 
   return json({ queued: todo.length, remaining: remaining?.n ?? 0 });
+}
+
+/**
+ * Queues photographs captioned before `before` to be captioned again.
+ *
+ * For when the caption model changes. The work is captionPhoto's, reached
+ * through the ordinary queue, so a re-caption behaves exactly like a first
+ * caption: same model, same prompt by source, same neuron accounting, and the
+ * photos_fts trigger picks the new text up. Nothing is cleared first -- the old
+ * caption stands until the new one overwrites it.
+ *
+ * A re-captioned row gets a fresh caption_at and falls out of the selection, so
+ * repeated calls walk forward through the archive. That only holds once the
+ * previous batch has been consumed: calling again while it is still queued
+ * selects the same rows and pays for them twice. `remaining` counts rows still
+ * on the old model, queued ones included, so it is the number to watch fall
+ * before calling again.
+ *
+ * The queue is shared with audio transcription. A few hundred at a time keeps
+ * a re-caption from holding up the recordings behind it.
+ */
+async function recaptionPhotos(env: Env, url: URL): Promise<Response> {
+  const before = recaptionCutoff(url.searchParams.get("before"));
+  if (!before) return json({ error: "before must be an ISO 8601 timestamp" }, 400);
+  const limit = Math.min(Math.max(intParam(url, "limit") ?? 200, 1), 1000);
+
+  const rows = await env.DB.prepare(
+    `SELECT photo_id, r2_key FROM photos
+      WHERE status = 'captioned' AND caption_at < ?1
+      ORDER BY caption_at ASC
+      LIMIT ?2`,
+  )
+    .bind(before, limit)
+    .all<{ photo_id: string; r2_key: string }>();
+
+  const todo = rows.results ?? [];
+  for (const batch of recaptionBatches(todo)) {
+    await env.TRANSCRIBE_QUEUE.sendBatch(batch);
+  }
+
+  const remaining = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM photos WHERE status = 'captioned' AND caption_at < ?1`,
+  )
+    .bind(before)
+    .first<{ n: number }>();
+
+  return json({ before, queued: todo.length, remaining: remaining?.n ?? 0 });
 }
 
 /**
