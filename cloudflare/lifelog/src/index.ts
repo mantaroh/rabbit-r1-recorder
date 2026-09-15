@@ -21,6 +21,7 @@ import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
 import { UI_HTML } from "./ui";
 import { IMPORT_HTML } from "./import";
 import { captionPromptFor } from "./caption-prompt";
+import { CAPTION_MODEL, captionInput, captionTextOf } from "./caption-model";
 import { groupPhotos } from "./day-group";
 import { retimeTargets } from "./retime";
 
@@ -1205,8 +1206,12 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
  * Room for the answer, and a ceiling on what a runaway one can cost.
  *
  * The measurement that justified this feature came back truncated at 128, so
- * this is higher; output is 14x the price of input per token, which is why it
- * is not higher still.
+ * this is higher. It was set when output cost 14x input per token; under
+ * llama-4-scout the ratio is about 3x (0.077 against 0.025 neurons per token,
+ * derived from two live calls), so the ceiling now guards length more than
+ * price. It stays where it is because scout answers in 40-80 tokens and the
+ * reason for a ceiling has not changed: a caption that runs long is a caption
+ * nobody asked for.
  */
 const CAPTION_MAX_TOKENS = 220;
 
@@ -1234,15 +1239,11 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
 
   const bytes = new Uint8Array(await object.arrayBuffer());
   const result: any = await env.AI.run(
-    "@cf/meta/llama-3.2-11b-vision-instruct" as any,
-    {
-      image: [...bytes],
-      prompt: captionPromptFor(row?.source),
-      max_tokens: CAPTION_MAX_TOKENS,
-    } as any,
+    CAPTION_MODEL as any,
+    captionInput(bytes, captionPromptFor(row?.source), CAPTION_MAX_TOKENS) as any,
   );
 
-  const text = String(result?.response ?? "").trim();
+  const text = captionTextOf(result);
   await env.DB.prepare(
     `UPDATE photos
         SET caption = ?1, caption_at = ?2, caption_neurons = ?3,
@@ -1285,11 +1286,14 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
   const prompt = url.searchParams.get("prompt") ??
     "この写真に写っているものを日本語で簡潔に説明してください。";
 
+  // The same model and request shape as captionPhoto. A debug endpoint that
+  // measures the price of captioning is only worth anything if it measures the
+  // model production actually runs.
   const started = Date.now();
   try {
     const result: any = await env.AI.run(
-      "@cf/meta/llama-3.2-11b-vision-instruct" as any,
-      { image: [...bytes], prompt, max_tokens: 128 } as any,
+      CAPTION_MODEL as any,
+      captionInput(bytes, prompt, 128) as any,
     );
     return json({
       photo_id: photoId,
