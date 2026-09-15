@@ -19,6 +19,8 @@
  * until the free checks have already passed.
  */
 
+import { CAPTION_MODEL, captionInput, captionTextOf } from "./caption-model";
+
 interface NudgeEnv {
   DB: D1Database;
   BUCKET: R2Bucket;
@@ -148,8 +150,17 @@ const MAX_SESSION_SECONDS = 180;
 const MODEL = "gpt-realtime-2.1-mini";
 const CLIENT_SECRETS = "https://api.openai.com/v1/realtime/client_secrets";
 
-/** The vision model already captioning every frame in this archive. */
-const PRESENCE_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
+/*
+ * The presence check asks the same vision model that writes the captions
+ * (CAPTION_MODEL), spoken to the same way.
+ *
+ * Until 2026-09-15 it asked llama-3.2-11b-vision, which answered はい to every
+ * one of the 29 frames the log had judged -- an empty chair included -- so the
+ * check never once refused. Put to scout, the same 29 came back with the
+ * verdict on line 1 every time, and scout said いいえ to eight that had been
+ * let through: seven of an empty chair, one of someone cooking with their back
+ * turned across the kitchen. Looked at by eye, scout was right on all eight.
+ */
 
 /**
  * Asked for a verdict, not a caption.
@@ -465,8 +476,8 @@ async function lookForSomeone(
   let result: any;
   try {
     result = await env.AI.run(
-      PRESENCE_MODEL as any,
-      { image: [...bytes], prompt: PRESENCE_PROMPT, max_tokens: PRESENCE_MAX_TOKENS } as any,
+      CAPTION_MODEL as any,
+      captionInput(bytes, PRESENCE_PROMPT, PRESENCE_MAX_TOKENS) as any,
     );
   } catch (error) {
     return {
@@ -477,7 +488,7 @@ async function lookForSomeone(
     };
   }
 
-  const text = String(result?.response ?? "").trim();
+  const text = captionTextOf(result);
   const neurons = Number(result?.usage?.neurons) || null;
 
   // The first line is the verdict. Anything that is not a yes is a no,
