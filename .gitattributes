@@ -1,0 +1,11 @@
+# SQL is always checked out with LF, whatever core.autocrlf says.
+#
+# D1's server-side statement splitting does not recognise a trigger body when
+# BEGIN is followed by \r\n: it cuts the trigger at its first inner semicolon
+# and answers "incomplete input". With core.autocrlf=true on Windows, any
+# migration git writes out becomes CRLF, so the first migration to be both
+# freshly checked out and to contain a trigger (0018) failed in production
+# while passing locally, where real SQLite treats \r as whitespace. Found on
+# 2026-09-15 by reproducing on a throwaway D1: the same file passes as LF and
+# fails as CRLF, every time.
+*.sql text eol=lf
