@@ -681,8 +681,10 @@ class RecorderService : Service() {
 
             // Returns immediately; the cycle itself runs on its own thread.
             // Skipped entirely while a question is in flight — the camera and
-            // the arm have no business moving mid-question.
-            if (photosEnabled && query.state == QueryController.State.LIFELOG) {
+            // the arm have no business moving mid-question. Also skipped while
+            // recording is off: "stop for today" means the camera too, and the
+            // first version kept photographing the night it had been told to end.
+            if (photosEnabled && writeAudio && query.state == QueryController.State.LIFELOG) {
                 if (vad.isSpeaking) timelapse?.noteSpeech()
                 timelapse?.tick(now, vad.isSpeaking)
             }
