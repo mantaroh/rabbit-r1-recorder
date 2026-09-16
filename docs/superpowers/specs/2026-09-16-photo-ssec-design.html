@@ -1,0 +1,259 @@
+<title>写真の SSE-C 暗号化</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap">
+<style>
+:root {
+  --ground: #f3f5f4;
+  --panel: #ffffff;
+  --ink: #1b2327;
+  --muted: #5d6b70;
+  --rule: #d5dcdb;
+  --accent: #0e6b66;
+  --accent-soft: #dcefed;
+  --sealed: #b4541a;
+  --sealed-soft: #f7e7dc;
+  --warn-ground: #fff4e0;
+  --warn-edge: #d99a2b;
+  --code-ground: #e8eceb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #131a1c;
+    --panel: #1a2326;
+    --ink: #e3eaea;
+    --muted: #93a3a6;
+    --rule: #2e3b3e;
+    --accent: #5cc3bb;
+    --accent-soft: #173634;
+    --sealed: #f0935a;
+    --sealed-soft: #3a261a;
+    --warn-ground: #2e2514;
+    --warn-edge: #c58a26;
+    --code-ground: #222d30;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #131a1c;
+  --panel: #1a2326;
+  --ink: #e3eaea;
+  --muted: #93a3a6;
+  --rule: #2e3b3e;
+  --accent: #5cc3bb;
+  --accent-soft: #173634;
+  --sealed: #f0935a;
+  --sealed-soft: #3a261a;
+  --warn-ground: #2e2514;
+  --warn-edge: #c58a26;
+  --code-ground: #222d30;
+}
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.8;
+  padding-inline: 20px;
+}
+.page { max-width: 820px; margin: 0 auto; padding-block: 48px 72px; }
+h1, h2 { font-family: "Zen Kaku Gothic New", "IBM Plex Sans JP", sans-serif; text-wrap: balance; line-height: 1.35; }
+h1 { font-size: 30px; font-weight: 900; margin: 6px 0 12px; }
+h2 { font-size: 20px; font-weight: 700; margin: 44px 0 12px; padding-top: 18px; border-top: 1px solid var(--rule); }
+p { margin: 0 0 12px; max-width: 64ch; }
+code, .mono { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; font-size: 0.88em; }
+code { background: var(--code-ground); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--accent); }
+.eyebrow { font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 13px; }
+.status { color: var(--accent); font-weight: 700; }
+
+.flow { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px; margin: 20px 0 8px; overflow-x: auto; }
+.flow svg { display: block; min-width: 640px; width: 100%; height: auto; }
+.flow text { font-family: "IBM Plex Sans JP", sans-serif; font-size: 13px; fill: var(--ink); }
+.flow .small { font-size: 11px; fill: var(--muted); }
+.flow .box { fill: var(--ground); stroke: var(--rule); stroke-width: 1.5; }
+.flow .worker { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.flow .vault { fill: var(--sealed-soft); stroke: var(--sealed); stroke-width: 1.5; }
+.flow .line { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.flow .keyline { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 4 3; }
+.flow .head { fill: var(--muted); }
+.flow .blocked { stroke: var(--sealed); stroke-width: 2; fill: none; }
+.caption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+.table-wrap { overflow-x: auto; margin: 12px 0 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--panel); }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-size: 12px; letter-spacing: 0.04em; color: var(--muted); font-weight: 500; background: var(--ground); }
+td:first-child { white-space: nowrap; font-weight: 500; }
+.pill { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; font-weight: 700; }
+.pill.yes { background: var(--accent-soft); color: var(--accent); }
+.pill.no { background: var(--code-ground); color: var(--muted); }
+
+.warn { background: var(--warn-ground); border-left: 4px solid var(--warn-edge); padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+.warn p { margin: 0; }
+
+ol.steps { padding-left: 1.4em; margin: 8px 0; }
+ol.steps li { margin-bottom: 6px; padding-left: 4px; }
+ul.plain { padding-left: 1.2em; margin: 8px 0; }
+ul.plain li { margin-bottom: 4px; }
+footer { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+</style>
+
+<div class="page">
+  <div class="eyebrow">lifelog · 設計書</div>
+  <h1>R2 に置く写真を SSE-C で暗号化する</h1>
+  <div class="meta">
+    <span>作成日 2026-09-16 (JST)</span>
+    <span class="status">設計承認済み・実装前</span>
+    <span class="mono">docs/superpowers/specs/2026-09-16-photo-ssec-design.md</span>
+  </div>
+
+  <h2>目的</h2>
+  <p><strong>R2 のダッシュボード</strong>、R2 の API トークン、バケットの設定ミス。<br>
+  このどれかで R2 を直接見られても、写真を画像として開けないようにする。</p>
+  <p><strong>Web で見る</strong>ときは、今までどおり Worker が復号した JPEG を返す。<br>
+  Web 画面の側は何も変えない。</p>
+  <p><strong>守る相手</strong>は「R2 を直接見る人」だけにする。<br>
+  Worker にも鍵を持たせない形（ブラウザ側で復号する）は検討したが、採らない。<br>
+  キャプション生成と声かけの在室判定は Worker が画像を読むので、どちらも動かなくなる。</p>
+
+  <div class="flow">
+    <svg viewBox="0 0 700 250" role="img" aria-label="写真の流れ。端末と PC から Worker を経て、鍵付きで R2 に置く。Web とキャプション生成は Worker 経由で読む。R2 を直接見ても鍵がないので開けない。">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" class="head"/>
+        </marker>
+      </defs>
+      <rect class="box" x="10" y="30" width="150" height="56" rx="8"/>
+      <text x="85" y="54" text-anchor="middle">R1・眼鏡・PC</text>
+      <text x="85" y="73" text-anchor="middle" class="small">写真のアップロード</text>
+
+      <rect class="box" x="10" y="150" width="150" height="56" rx="8"/>
+      <text x="85" y="174" text-anchor="middle">Web の日ビュー</text>
+      <text x="85" y="193" text-anchor="middle" class="small">Access 経由・変更なし</text>
+
+      <rect class="worker" x="250" y="60" width="180" height="120" rx="10"/>
+      <text x="340" y="92" text-anchor="middle">lifelog Worker</text>
+      <text x="340" y="114" text-anchor="middle" class="small">secret PHOTO_SSEC_KEY</text>
+      <text x="340" y="136" text-anchor="middle" class="small">photo-store.ts</text>
+      <text x="340" y="158" text-anchor="middle" class="small">キャプション・在室判定もここ</text>
+
+      <rect class="vault" x="520" y="60" width="170" height="120" rx="10"/>
+      <text x="605" y="96" text-anchor="middle">R2 バケット</text>
+      <text x="605" y="118" text-anchor="middle" class="small">sealed = 1 の写真は</text>
+      <text x="605" y="136" text-anchor="middle" class="small">SSE-C で暗号化</text>
+
+      <path class="line" d="M160,58 L248,90" marker-end="url(#arrow)"/>
+      <path class="line" d="M248,150 L160,178" marker-end="url(#arrow)"/>
+      <text x="200" y="192" text-anchor="middle" class="small">JPEG</text>
+      <path class="keyline" d="M430,100 L518,100" marker-end="url(#arrow)"/>
+      <path class="keyline" d="M518,140 L432,140" marker-end="url(#arrow)"/>
+      <text x="474" y="92" text-anchor="middle" class="small">put + 鍵</text>
+      <text x="474" y="158" text-anchor="middle" class="small">get + 鍵</text>
+
+      <text x="605" y="222" text-anchor="middle" class="small">ダッシュボード / API トークン</text>
+      <path class="blocked" d="M605,208 L605,184"/>
+      <path class="blocked" d="M595,192 L615,202 M615,192 L595,202"/>
+    </svg>
+  </div>
+  <p class="caption">点線が鍵を付けた出し入れ。R2 を直接見ても、鍵がないので中身は取り出せない。</p>
+
+  <h2>方式</h2>
+  <p><strong>R2 の SSE-C</strong>（Server-Side Encryption with Customer-Provided Keys）を使う。<br>
+  Worker バインディングの <code>put</code> / <code>get</code> に <code>ssecKey</code> を渡すだけで済む。<br>
+  鍵は 32 バイトで、hex 文字列でも渡せる。</p>
+  <p class="caption">参照: <a href="https://developers.cloudflare.com/r2/examples/ssec/">Use SSE-C</a>、<a href="https://developers.cloudflare.com/r2/api/workers/workers-api-reference/">Workers API reference</a></p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>案</th><th>採否</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr><td>R2 の SSE-C</td><td><span class="pill yes">採用</span></td><td>変更が小さい。Range 付きの取得とストリーミングがそのまま残る</td></tr>
+        <tr><td>Worker で AES-GCM</td><td><span class="pill no">不採用</span></td><td>アップロードを全部メモリに読むことになる。写真の Range 取得も捨てることになる。暗号文の形式も自分で持つことになる。今回の目的に対して、抱えるものが多い</td></tr>
+        <tr><td>ブラウザで復号</td><td><span class="pill no">不採用</span></td><td>Worker が画像を読む処理（キャプション・在室判定）が動かなくなる</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>決めたこと</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>項目</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td>鍵</td><td>Worker の secret <code>PHOTO_SSEC_KEY</code>。64 桁の hex</td></tr>
+        <tr><td>鍵の控え</td><td>利用者が手元のパスワード管理に置く</td></tr>
+        <tr><td>対象</td><td>写真の原寸（<code>photos.r2_key</code>）と、PC が送る縮小版（<code>photos.caption_r2_key</code>）。R1、眼鏡、PC のどれから来た写真も同じ扱い</td></tr>
+        <tr><td>対象外</td><td>音声、地図タイル</td></tr>
+        <tr><td>既存の写真</td><td>平文のまま残す。今回暗号化するのは、反映後に入る写真だけ</td></tr>
+        <tr><td>判定</td><td><code>photos</code> に <code>sealed INTEGER NOT NULL DEFAULT 0</code> を足す。1 の行は、原寸も縮小版も SSE-C で置いてある</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="warn"><p>⚠️ <strong>鍵をなくすと</strong>、それ以降の写真は Cloudflare でも戻せない。</p></div>
+  <p><strong>判定を D1 に持つ</strong>のは、S3 と同じなら、平文のオブジェクトに鍵を渡した取得はエラーになるからだ。<br>
+  「鍵を付けて取ってみて、だめなら鍵なしで取り直す」形は、1 回の取得が 2 回になるのでやめた。</p>
+
+  <h2>変更箇所</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ファイル</th><th>変更</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">migrations/0021_photo_sealed.sql</td><td><code>photos.sealed</code> を追加。改行は LF</td></tr>
+        <tr><td class="mono">src/photo-store.ts（新規）</td><td><code>photoPutOptions(env)</code> と <code>getPhoto(env, key, sealed, options)</code> を置く。鍵の有無と <code>sealed</code> の見分けはここに閉じ込める</td></tr>
+        <tr><td class="mono">src/index.ts 写真の受け取り</td><td>1329 行目付近。原寸と縮小版を <code>ssecKey</code> 付きで置き、行に <code>sealed = 1</code> を書く</td></tr>
+        <tr><td class="mono">src/index.ts 写真の配信</td><td>1179 行目付近。<code>photos.sealed</code> を読み、<code>getPhoto</code> 経由で取る。音声の配信は変えない</td></tr>
+        <tr><td class="mono">src/index.ts captionPhoto</td><td>1414 行目付近。同上</td></tr>
+        <tr><td class="mono">src/index.ts キャプションのデバッグ</td><td>1470 行目付近。同上</td></tr>
+        <tr><td class="mono">src/nudge.ts 在室判定</td><td>472 行目付近。同上</td></tr>
+        <tr><td class="mono">src/index.ts Env / nudge.ts NudgeEnv</td><td><code>PHOTO_SSEC_KEY?: string</code> を足す。ほかの secret（<code>INGEST_TOKEN</code> など）と同じ書き方にする</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">パスはすべて <span class="mono">cloudflare/lifelog/</span> から。</p>
+
+  <h2>鍵がないとき</h2>
+  <p><strong>書き込み</strong>：<code>PHOTO_SSEC_KEY</code> が設定されていなければ、今までどおり平文で置き、<code>sealed = 0</code> にする。<br>
+  ローカル開発と、secret を登録する前のデプロイで、受け取りが止まらないようにするためだ。</p>
+  <p><strong>読み出し</strong>：<code>sealed = 1</code> の行を読むときに鍵がなければ、エラーにする。<br>
+  配信は 500、キャプション生成は <code>failed</code> にして理由を残す。<br>
+  鍵なしで取りにいっても、失敗するだけだからだ。</p>
+
+  <h2>実装前に確かめること</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>項目</th><th>確かめ方</th><th>だめだったとき</th></tr></thead>
+      <tbody>
+        <tr><td><code>sha256</code> と <code>ssecKey</code> の併用</td><td>preview で実際に置く</td><td>Worker で平文のハッシュを計算して照合してから置く</td></tr>
+        <tr><td>鍵なしの <code>get</code> が失敗するか</td><td>preview で鍵を付けずに取る</td><td>目的を満たさないので、方式から見直す</td></tr>
+        <tr><td>Range と <code>ssecKey</code> の併用</td><td>preview で Range 付きで取る</td><td>写真だけ Range を無視して全体を返す</td></tr>
+        <tr><td>miniflare の対応</td><td>ローカルテストで確認</td><td>単体テストでは「<code>ssecKey</code> が渡っていること」だけを見て、暗号化そのものは preview で確認する</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>テスト</h2>
+  <ul class="plain">
+    <li><strong>photo-store.ts</strong>：鍵あり・鍵なし・<code>sealed</code> の組み合わせで、渡すオプションとエラーを確かめる。</li>
+    <li><strong>受け取り</strong>：鍵ありなら <code>sealed = 1</code> になり、鍵なしなら <code>sealed = 0</code> になる。</li>
+    <li><strong>配信</strong>：<code>sealed = 1</code> と <code>sealed = 0</code> の写真が、どちらも同じ JPEG で返る。</li>
+    <li><strong>本番反映後</strong>：新しい写真を日ビューで開けること。同じオブジェクトを鍵なしで取ると失敗すること。</li>
+  </ul>
+
+  <h2>反映の手順</h2>
+  <p>どれも実行前に、対象アカウントを確かめたうえで承認をもらう。</p>
+  <ol class="steps">
+    <li><strong>鍵の登録</strong>：鍵を作り、利用者が控える。<code>wrangler secret put PHOTO_SSEC_KEY</code> で登録する。</li>
+    <li><strong>D1</strong>：本番 D1 に migration 0021 を適用する。</li>
+    <li><strong>デプロイ</strong>：Worker をデプロイする。</li>
+    <li><strong>表示の確認</strong>：新しく入った写真が Web で表示でき、キャプションも付くことを確かめる。</li>
+    <li><strong>暗号化の確認</strong>：同じ写真を鍵なしで R2 から取ろうとして、失敗することを確かめる。</li>
+  </ol>
+
+  <h2>今回やらないこと</h2>
+  <ul class="plain">
+    <li><strong>既存の写真</strong>の暗号化（置き直し）。やるなら別の作業にする。</li>
+    <li><strong>鍵の入れ替え</strong>。SSE-C は鍵を変えるとオブジェクトの置き直しが要る。必要になったら、<code>sealed</code> を鍵の世代番号として使う形で広げる。</li>
+    <li><strong>音声</strong>の暗号化。</li>
+  </ul>
+
+  <footer>ターン数（予定 / 実際）: 設計 4 / 4（実装は未着手）</footer>
+</div>
