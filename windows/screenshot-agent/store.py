@@ -22,6 +22,11 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS captures_retry ON captures(retry_at, created);
             """)
+            # Outboxes written before the caption copy existed are upgraded in
+            # place; their rows are sent with the original only.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
+            if "caption_jpeg" not in columns:
+                db.execute("ALTER TABLE captures ADD COLUMN caption_jpeg BLOB")
 
     @contextmanager
     def connect(self):
@@ -47,9 +52,10 @@ class Store:
             return db.execute("SELECT * FROM captures WHERE retry_at<=? ORDER BY created LIMIT 1",
                               (time.time(),)).fetchone()
 
-    def prepared(self, record_id, text, jpeg):
+    def prepared(self, record_id, text, jpeg, caption_jpeg=None):
         with self.connect() as db:
-            db.execute("UPDATE captures SET ocr_text=?, jpeg=?, png=NULL WHERE id=?", (text, jpeg, record_id))
+            db.execute("UPDATE captures SET ocr_text=?, jpeg=?, caption_jpeg=?, png=NULL WHERE id=?",
+                       (text, jpeg, caption_jpeg, record_id))
 
     def get(self, record_id):
         with self.connect() as db:
@@ -67,7 +73,7 @@ class Store:
 
     def stats(self):
         with self.connect() as db:
-            row = db.execute("SELECT COUNT(*) AS pending, COALESCE(SUM(LENGTH(png)),0)+COALESCE(SUM(LENGTH(jpeg)),0) AS bytes, SUM(error IS NOT NULL) AS errors FROM captures").fetchone()
+            row = db.execute("SELECT COUNT(*) AS pending, COALESCE(SUM(LENGTH(png)),0)+COALESCE(SUM(LENGTH(jpeg)),0)+COALESCE(SUM(LENGTH(caption_jpeg)),0) AS bytes, SUM(error IS NOT NULL) AS errors FROM captures").fetchone()
             return dict(row)
 
     def retry_now(self):

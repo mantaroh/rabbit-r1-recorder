@@ -11,7 +11,7 @@ from config import defaults
 
 with tempfile.TemporaryDirectory(prefix="lifelog-schedule-") as directory:
     enable_dpi()
-    service = agent.Agent(Path(directory), {**defaults(), "endpoint": "http://127.0.0.1:8799", "token": "desktop-test-ingest"})
+    service = agent.Agent(Path(directory), {**defaults(), "interval_seconds": 30, "endpoint": "http://127.0.0.1:8799", "token": "desktop-test-ingest"})
     calls = []
 
     def observed(*args):

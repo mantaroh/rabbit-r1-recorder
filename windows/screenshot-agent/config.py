@@ -37,7 +37,7 @@ def protect(value: bytes, decrypt=False) -> bytes:
 
 
 def defaults():
-    return dict(endpoint="https://lifelog.mantaroh.org", interval_seconds=30,
+    return dict(endpoint="https://lifelog.mantaroh.org", interval_seconds=60,
                 device_id="pc-" + uuid.uuid4().hex[:16], access_id="", access_secret="", token="")
 
 

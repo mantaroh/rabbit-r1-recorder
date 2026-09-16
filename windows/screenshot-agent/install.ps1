@@ -12,7 +12,7 @@ $agentShortcut = $agentShell.CreateShortcut((Join-Path ([Environment]::GetFolder
 $agentShortcut.TargetPath = Join-Path $agentRoot '.venv/Scripts/pythonw.exe'
 $agentShortcut.Arguments = '"' + (Join-Path $agentRoot 'agent.py') + '"'
 $agentShortcut.WorkingDirectory = $agentRoot
-$agentShortcut.Description = 'PCの画面を30秒ごとに記録'
+$agentShortcut.Description = 'PCの画面を定期的に記録'
 $agentShortcut.Save()
 & $agentPython (Join-Path $agentRoot 'agent.py') --doctor
 Write-Output 'デスクトップの Lifelog PC から起動してください。自動起動はアプリの設定で有効にできます。'

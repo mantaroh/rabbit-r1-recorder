@@ -10,12 +10,18 @@ class NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
-def multipart(jpeg, metadata):
+def multipart(jpeg, metadata, caption_jpeg=None):
     boundary = "lifelog-" + uuid.uuid4().hex
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="metadata"\r\nContent-Type: application/json\r\n\r\n'.encode()
             + json.dumps(metadata, ensure_ascii=False).encode("utf-8")
             + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="screen.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'.encode()
-            + jpeg + f'\r\n--{boundary}--\r\n'.encode())
+            + jpeg)
+    # The smaller copy the server captions from. Rows from before it existed
+    # have none, and the server falls back to the original.
+    if caption_jpeg is not None:
+        body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="caption_image"; filename="caption.jpg"\r\nContent-Type: image/jpeg\r\n\r\n'.encode()
+                 + caption_jpeg)
+    body += f'\r\n--{boundary}--\r\n'.encode()
     if len(body) > 20 * 1024 * 1024:
         raise RuntimeError("画像が送信上限20MiBを超えています")
     return body, "multipart/form-data; boundary=" + boundary
@@ -24,7 +30,7 @@ def multipart(jpeg, metadata):
 def upload(config, row, opener=None):
     metadata = json.loads(row["metadata"])
     metadata["ocr_text"] = row["ocr_text"]
-    body, content_type = multipart(row["jpeg"], metadata)
+    body, content_type = multipart(row["jpeg"], metadata, row["caption_jpeg"])
     query = parse.urlencode(dict(source="desktop", taken_at=row["taken_at"],
                                  device_id=metadata["device_id"], sha256=hashlib.sha256(row["jpeg"]).hexdigest()))
     headers = {"Authorization": "Bearer " + config["token"], "Content-Type": content_type}

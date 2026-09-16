@@ -1,6 +1,6 @@
 # Lifelog PC
 
-Windowsの各画面を30秒ごとに記録し、日本語OCRと画像をlifelogへ送る常駐アプリです。
+Windowsの各画面を60秒ごと（設定で変更可）に記録し、日本語OCRと画像をlifelogへ送る常駐アプリです。
 画面が変化しなくても毎回撮影します。
 
 設計: [Windowsスクリーンショットのコーパス化](../../docs/superpowers/specs/2026-09-16-windows-screenshot-corpus-design.md)
@@ -31,7 +31,7 @@ python -m venv .venv
 Python単体のexe配布ではなく、このフォルダと仮想環境を使う構成です。配置場所を移した場合は再インストールしてください。
 
 設定画面で接続先、Cloudflare Access Client ID / Secret、PC専用トークン（Workerの `DESKTOP_TOKEN`）を入力し、
-「設定を保存」→「記録を開始」。既定間隔は30秒です。管理者トークンは必要ありません。
+「設定を保存」→「記録を開始」。既定間隔は60秒です。管理者トークンは必要ありません。
 設定済みなら次回の起動から記録を開始します。
 
 - 「一時停止」で新しい撮影と送信を停止。「記録を開始」で再開。
@@ -53,6 +53,7 @@ PCの記録は「PC · 画面名」として各周期の画面がまとまり、
 
 PCのUTC時刻とR1の日本時間が混在して順序が崩れる問題は、2026-09-16に修正・本番反映済みです。
 検索ではキャプションとOCRを対象に探せます。OCRがあれば、AIキャプションの生成待ちでも検索できます。
+AIキャプションは、長辺960pxに縮小した画像から作ります（原寸の画像は保存と表示に使います）。1920×1080のままだと1枚約66 Neurons、960×540では約33 Neuronsでした。
 
 ## 環境診断・テスト
 
@@ -88,7 +89,7 @@ npx wrangler dev --local --config wrangler.desktop-test.jsonc --port 8799
 ./.venv/Scripts/python.exe verify_local.py
 # 実際の画面でも検証するときだけ指定。画像はローカルR2に残ります。
 ./.venv/Scripts/python.exe verify_local.py --real-displays
-# 30秒周期と停止・再開を約37秒かけて検証（実画面をローカルへ送信）。
+# 30秒周期（検証用に固定）と停止・再開を約37秒かけて検証（実画面をローカルへ送信）。
 ./.venv/Scripts/python.exe verify_schedule.py
 ```
 

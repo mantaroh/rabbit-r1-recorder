@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 import capture
 import config
 from store import Store
-from transport import upload
+from transport import multipart, upload
 
 
 class OutboxTests(unittest.TestCase):
@@ -48,6 +48,32 @@ class OutboxTests(unittest.TestCase):
         self.assertIsNone(row["png"])
         self.store.acknowledge(record_id)
         self.assertEqual(self.store.stats()["pending"], 0)
+
+    def test_caption_copy_is_kept_until_receipt(self):
+        record_id = self.add()
+        self.store.prepared(record_id, "文字", b"jpeg", b"small")
+        self.assertEqual(Store(self.directory).get(record_id)["caption_jpeg"], b"small")
+        self.assertEqual(self.store.stats()["bytes"], len(b"jpeg") + len(b"small"))
+
+    def test_outbox_from_before_the_caption_copy_still_opens(self):
+        import sqlite3
+        older = self.directory / "older"
+        older.mkdir()
+        db = sqlite3.connect(older / "outbox.sqlite3")
+        db.executescript("""
+            CREATE TABLE captures (
+                id TEXT PRIMARY KEY, taken_at TEXT NOT NULL, metadata TEXT NOT NULL,
+                png BLOB, jpeg BLOB, ocr_text TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
+                error TEXT, created REAL NOT NULL);
+            INSERT INTO captures(id,taken_at,metadata,jpeg,ocr_text,created)
+            VALUES('pc_old','2026-09-16T00:00:00Z','{}',x'ffd8','文字',1);
+        """)
+        db.commit()
+        db.close()
+        store = Store(older)
+        self.assertIsNone(store.get("pc_old")["caption_jpeg"])
+        Store(older)  # Opening twice must not try to add the column again.
 
     def test_two_screens_every_time_even_without_change(self):
         screens = [("left", (-1920, 0, 0, 1080)), ("right", (0, 0, 2560, 1440))]
@@ -100,6 +126,37 @@ class OutboxTests(unittest.TestCase):
             upload(dict(endpoint="http://localhost:8787", access_id="", token="test"), self.store.get(record_id), Opener())
         self.assertEqual(methods, ["GET"])
 
+    def test_caption_copy_travels_as_its_own_part(self):
+        body, _ = multipart(b"ORIGINAL", {"ocr_text": ""}, b"SMALL")
+        self.assertIn(b'name="caption_image"; filename="caption.jpg"\r\nContent-Type: image/jpeg\r\n\r\nSMALL\r\n', body)
+        self.assertIn(b'name="image"; filename="screen.jpg"\r\nContent-Type: image/jpeg\r\n\r\nORIGINAL\r\n', body)
+        body, _ = multipart(b"ORIGINAL", {"ocr_text": ""}, None)
+        self.assertNotIn(b"caption_image", body)
+
+    def test_upload_sends_the_caption_copy_it_has(self):
+        record_id = self.add()
+        self.store.prepared(record_id, "画面", b"jpeg", b"small")
+        sent = []
+        class Response:
+            status = 201
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, *args): return json.dumps({"photo_id": record_id, "source": "desktop"}).encode()
+        class Opener:
+            def open(self, req, **kwargs):
+                response = Response()
+                if req.get_method() == "GET":
+                    response.status = 200
+                    response.read = lambda *args: b'{"ok":true,"desktop_upload":1}'
+                else:
+                    sent.append(req.data)
+                return response
+        upload(dict(endpoint="http://localhost:8787", access_id="", token="test"), self.store.get(record_id), Opener())
+        self.assertIn(b'name="caption_image"', sent[0])
+
+    def test_default_interval_is_one_minute(self):
+        self.assertEqual(config.defaults()["interval_seconds"], 60)
+
     def test_resume_wake_does_not_capture_twice_immediately(self):
         from agent import Agent
         service = Agent(self.directory, {**config.defaults(), "token": "test", "interval_seconds": 0.2})
@@ -141,10 +198,20 @@ class WindowsOcrTests(unittest.TestCase):
         ImageDraw.Draw(image).text((80, 80), "画面記録 動作確認 12345", font=font, fill="black")
         data = io.BytesIO()
         image.save(data, "PNG")
-        text, jpeg = asyncio.run(recognize(data.getvalue()))
+        text, jpeg, small = asyncio.run(recognize(data.getvalue()))
         self.assertIn("12345", text)
         self.assertIn("画面", text.replace(" ", ""))
         self.assertEqual(Image.open(io.BytesIO(jpeg)).size, (1920, 1080))
+        self.assertEqual(Image.open(io.BytesIO(small)).size, (960, 540))
+
+
+class CaptionCopyTests(unittest.TestCase):
+    def test_long_edge_becomes_960(self):
+        from ocr import caption_copy
+        for size, expected in [((2560, 1440), (960, 540)), ((1080, 1920), (540, 960)), ((800, 600), (800, 600))]:
+            small = Image.open(io.BytesIO(caption_copy(Image.new("RGB", size, "white"))))
+            self.assertEqual(small.format, "JPEG")
+            self.assertEqual(small.size, expected)
 
 
 if __name__ == "__main__":

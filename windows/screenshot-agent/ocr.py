@@ -2,6 +2,22 @@
 import io
 from PIL import Image
 
+# The vision model is billed by the image it reads, not by the answer:
+# 1920x1080 cost 65.9 neurons and 960x540 cost 32.5 on the same frames. The
+# text is read here at full size, so the caption only has to say what is on
+# screen, and 960 on the long edge is enough for that. At 640 the model began
+# inventing titles it could no longer read.
+CAPTION_EDGE = 960
+
+
+def caption_copy(image, edge=CAPTION_EDGE):
+    """A JPEG no larger than `edge` on its long side, for the vision model only."""
+    small = image.copy()
+    small.thumbnail((edge, edge), Image.LANCZOS)
+    data = io.BytesIO()
+    small.save(data, format="JPEG", quality=85)
+    return data.getvalue()
+
 
 async def recognize(png):
     from winrt.windows.globalization import Language
@@ -42,4 +58,4 @@ async def recognize(png):
         raise RuntimeError("OCR結果が128KiBを超えました。記録は未送信キューに保持しています")
     jpeg = io.BytesIO()
     original.save(jpeg, format="JPEG", quality=90, subsampling=0)
-    return text, jpeg.getvalue()
+    return text, jpeg.getvalue(), caption_copy(original)

@@ -50,8 +50,8 @@ class Agent:
                 self.send_status = "画面の文字を読み取り中"
                 async def read():
                     return await asyncio.wait_for(recognize(row["png"]), timeout=60)
-                text, jpeg = asyncio.run(read())
-                self.store.prepared(row["id"], text, jpeg)
+                text, jpeg, caption_jpeg = asyncio.run(read())
+                self.store.prepared(row["id"], text, jpeg, caption_jpeg)
                 row = self.store.get(row["id"])
             if self.stop.is_set() or self.paused.is_set():
                 return False
