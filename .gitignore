@@ -41,3 +41,9 @@ openai_key_for_hermes.txt
 # Opens the destructive endpoints; never on the device, never committed.
 .admin-token
 .agent-token
+
+# Windows screenshot agent: runtime, build output and local recordings.
+windows/screenshot-agent/.venv/
+windows/screenshot-agent/dist/
+__pycache__/
+*.pyc
