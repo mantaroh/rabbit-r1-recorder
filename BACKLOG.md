@@ -98,6 +98,11 @@ In order:
    is opened in the viewer. Search keeps returning the text. With pages of
    at most 100 entries this is at most about 500 KB, so it is less urgent
    than it was.
+   **Built 2026-09-16 on `feature/day-view-paging`:** a page carries
+   `has_ocr` instead of the text, and the viewer fetches caption and screen
+   text from `GET /v1/photos/<id>/text` (browser only) when a picture is
+   opened. The viewer now closes on the picture, the background, a close
+   button or Esc, so the text can be selected.
 4. **The R1 still downloads the whole day.** `LifelogSummary.kt` calls
    `/v1/day` without `page` and uses only the counts and the latest words,
    but the answer carries every caption and OCR text of the day, several MB
