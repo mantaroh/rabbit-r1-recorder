@@ -12,7 +12,7 @@ export interface SearchHit {
   id: string;
   at: string;
   text: string;
-  /** `r1` | `glasses` for photographs; null for audio, which has no camera. */
+  /** `r1` | `glasses` | `desktop` for images; null for audio. */
   source: string | null;
 }
 

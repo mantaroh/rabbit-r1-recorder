@@ -19,6 +19,9 @@ export interface PhotoRow {
   caption: string | null;
   source: string;
   source_file: string | null;
+  capture_id?: string | null;
+  monitor_id?: string | null;
+  ocr_text?: string | null;
 }
 
 export interface PhotoGroup {
@@ -36,7 +39,9 @@ export function groupPhotos(rows: PhotoRow[]): PhotoGroup[] {
     // it — but if one ever does, falling back to the minute keeps it visible
     // rather than collapsing every stray into a single bucket.
     const key =
-      row.source === "glasses" && row.source_file
+      row.source === "desktop"
+        ? "desktop:" + (row.capture_id ?? row.photo_id)
+        : row.source === "glasses" && row.source_file
         ? "glasses:" + row.source_file
         : row.source + ":" + Math.floor(row.taken_epoch / 60);
 

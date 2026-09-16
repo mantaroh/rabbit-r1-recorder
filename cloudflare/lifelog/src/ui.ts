@@ -155,8 +155,9 @@ function renderEntry(e) {
         <img loading="lazy" decoding="async" width="480" height="640"
              src="/v1/media/photo/\${encodeURIComponent(s.id)}"
              data-full="/v1/media/photo/\${encodeURIComponent(s.id)}" alt="">
-        <div class="facing">\${s.label ?? (s.facing === 'front' ? '前' : '後')}</div>
+        <div class="facing">\${escapeHtml(s.label ?? (s.facing === 'front' ? '前' : '後'))}</div>
         <div class="cap">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
+        \${s.ocr_text ? '<details><summary>画面の文字</summary><div class="cap">' + escapeHtml(s.ocr_text) + '</div></details>' : ''}
       </div>\`).join('');
     return \`<div class="entry"><div class="time">\${timeOf(e.at)}</div>
       <div><div class="shots">\${shots}</div></div></div>\`;
@@ -200,7 +201,7 @@ async function runSearch(q) {
           kind: 'photo', at: x.at,
           // 検索結果では前後の別より、どちらのカメラかのほうが意味がある。
           // R1 は周囲の様子、眼鏡は見ていたもので、同じ主張ではない。
-          shots: [{ id: x.id, label: x.source === 'glasses' ? '眼鏡' : 'R1', caption: x.text }],
+          shots: [{ id: x.id, label: x.source === 'desktop' ? 'PC' : x.source === 'glasses' ? '眼鏡' : 'R1', caption: x.text }],
         }
       : { kind: 'audio', at: x.at, id: x.id, text: x.text, status: 'transcribed' });
   window.__entries = entries;

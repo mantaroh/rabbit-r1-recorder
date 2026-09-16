@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "lifelog-desktop-local-test",
+  "main": "test/desktop-local-worker.ts",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": false,
+  "vars": { "INGEST_TOKEN": "desktop-test-ingest", "ADMIN_TOKEN": "desktop-test-admin" },
+  "d1_databases": [{ "binding": "DB", "database_name": "desktop-local-test", "database_id": "00000000-0000-0000-0000-000000000019", "migrations_dir": "./migrations" }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "desktop-local-test" }],
+  "queues": {
+    "producers": [{ "binding": "TRANSCRIBE_QUEUE", "queue": "desktop-local-test" }],
+    "consumers": [{ "queue": "desktop-local-test", "max_batch_size": 1, "max_batch_timeout": 1 }]
+  }
+}

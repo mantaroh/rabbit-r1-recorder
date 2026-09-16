@@ -26,6 +26,7 @@ import { recaptionBatches, recaptionCutoff } from "./recaption";
 import { groupPhotos } from "./day-group";
 import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
+import { readDesktopPhoto, photoText } from "./desktop-photo";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -41,6 +42,8 @@ interface Env {
   ADMIN_TOKEN?: string;
   /** Reaches /mcp and nothing else; lives on the Hermes gateway. */
   AGENT_TOKEN?: string;
+  /** PC screenshot uploads only; independent of the R1 device credential. */
+  DESKTOP_TOKEN?: string;
   /** The feed reader Worker; see the note on /v1/feeds below. */
   READER: Fetcher;
   /** Held so the device never has to; see interpret.ts. */
@@ -96,7 +99,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return json({ ok: true });
+      return json({ ok: true, desktop_upload: 1 });
     }
 
     const denied = await authorise(request, env, url);
@@ -285,7 +288,7 @@ export default {
  * twenty-nine, including rewriting objects in R2 and spending money on Whisper.
  * Losing the R1 meant losing the archive, not just losing a recorder.
  */
-type Principal = "admin" | "device" | "agent";
+type Principal = "admin" | "device" | "agent" | "desktop";
 
 /**
  * Whether the R1 has been reported lost — read fresh, and only when it matters.
@@ -368,6 +371,9 @@ function principalFor(request: Request, env: Env): Principal | null {
   if (env.AGENT_TOKEN && presented && timingSafeEqual(presented, env.AGENT_TOKEN)) {
     return "agent";
   }
+  if (env.DESKTOP_TOKEN && presented && timingSafeEqual(presented, env.DESKTOP_TOKEN)) {
+    return "desktop";
+  }
 
   // A browser cannot attach a bearer to a navigation, so a human at the web UI
   // is admitted on the strength of the assertion alone — but *only* a human.
@@ -414,6 +420,12 @@ async function authorise(request: Request, env: Env, url: URL): Promise<Response
 
   const who = principalFor(request, env);
   if (who === "admin") return null;
+
+  if (who === "desktop") {
+    if (request.method === "PUT" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}$/.test(url.pathname)
+        && url.searchParams.get("source") === "desktop") return null;
+    return json({ error: "forbidden for this credential", path: url.pathname }, 403);
+  }
 
   // The agent reads the archive through its tools and writes nothing. It runs
   // on a server rather than in a pocket, so losing it is a different kind of
@@ -716,7 +728,8 @@ async function dayView(env: Env, url: URL): Promise<Response> {
     .all<any>();
 
   const photos = await env.DB.prepare(
-    `SELECT photo_id, taken_at, taken_epoch, facing, caption, source, source_file
+    `SELECT photo_id, taken_at, taken_epoch, facing, caption, source, source_file,
+            ocr_text, capture_id, monitor_id
        FROM photos
       WHERE taken_epoch >= ?1 AND taken_epoch < ?2
       ORDER BY taken_epoch ASC
@@ -761,11 +774,15 @@ async function dayView(env: Env, url: URL): Promise<Response> {
         id: s.photo_id,
         facing: s.facing,
         caption: s.caption ?? "",
+        ocr_text: s.ocr_text ?? "",
+        label: s.source === "desktop" ? "PC · " + s.monitor_id : undefined,
       })),
     });
   }
 
-  entries.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  // R1 stamps +09:00 while desktop captures use Z. String order would place
+  // a 17:00 JST desktop capture (08:00Z) before a 09:00 JST camera frame.
+  entries.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 
   return json({
     date,
@@ -1136,7 +1153,9 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
   const deviceId = url.searchParams.get("device_id") ?? "unknown";
 
   // 出所。既定が r1 なのは、R1 端末を変更せずに済ませるため。
-  const source = url.searchParams.get("source") === "glasses" ? "glasses" : "r1";
+  const requestedSource = url.searchParams.get("source") ?? "r1";
+  if (!["r1", "glasses", "desktop"].includes(requestedSource)) return json({ error: "invalid source" }, 400);
+  const source = requestedSource;
 
   // 取り込み元の動画。眼鏡カメラのフレームには必須で、これが日ビューの
   // グループ化と photo-retime の単位になる。
@@ -1148,15 +1167,26 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
   }
 
   const existing = await env.DB.prepare(
-    `SELECT r2_key FROM photos WHERE photo_id = ?1`,
+    `SELECT r2_key, status, source FROM photos WHERE photo_id = ?1`,
   )
     .bind(photoId)
-    .first<{ r2_key: string }>();
+    .first<{ r2_key: string; status: string; source: string }>();
   if (existing) {
-    return json({ photo_id: photoId, key: existing.r2_key, duplicate: true });
+    if (existing.source !== source) return json({ error: "photo source mismatch" }, 409);
+    // A previous request may have committed D1 and failed before enqueueing.
+    if (source === "desktop" && existing.status === "pending") {
+      await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key: existing.r2_key, kind: "photo" });
+    }
+    return json({ photo_id: photoId, key: existing.r2_key, duplicate: true, source });
   }
 
   if (!request.body) return json({ error: "empty body" }, 400);
+
+  let desktop: Awaited<ReturnType<typeof readDesktopPhoto>> | null = null;
+  if (source === "desktop") {
+    try { desktop = await readDesktopPhoto(request); }
+    catch (error) { return json({ error: error instanceof Error ? error.message : "invalid desktop upload" }, 400); }
+  }
 
   const sha256 = url.searchParams.get("sha256")?.toLowerCase() ?? null;
   if (sha256 !== null && !/^[0-9a-f]{64}$/.test(sha256)) {
@@ -1168,7 +1198,7 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
 
   let object: R2Object | null;
   try {
-    object = await env.BUCKET.put(key, request.body, {
+    object = await env.BUCKET.put(key, desktop ? desktop.bytes : request.body, {
       httpMetadata: { contentType: "image/jpeg" },
       customMetadata: { photoId, deviceId, facing, takenAt },
       ...(sha256 ? { sha256 } : {}),
@@ -1180,8 +1210,8 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
   await env.DB.prepare(
     `INSERT INTO photos
        (photo_id, device_id, r2_key, facing, taken_at, taken_epoch, bytes,
-        sha256, received_at, source, source_file)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+        sha256, received_at, source, source_file, ocr_text, capture_id, monitor_id, width, height)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
      ON CONFLICT(photo_id) DO NOTHING`,
   )
     .bind(
@@ -1196,6 +1226,11 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       new Date().toISOString(),
       source,
       source === "glasses" ? sourceFile : null,
+      desktop?.ocrText ?? null,
+      desktop?.captureId ?? null,
+      desktop?.monitorId ?? null,
+      desktop?.width ?? null,
+      desktop?.height ?? null,
     )
     .run();
 
@@ -1790,13 +1825,13 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
     .bind(fromEpoch, atEpoch, floor)
     .all();
 
-  // status と非空を両方見る。'failed' の行はエラーだけ持っていてキャプションが
-  // 無く、'captioned' でも空文字のことがある。どちらもエージェントに渡す中身ではない。
+  // Camera captions still need a successful, non-empty result. Desktop OCR
+  // is independently useful even while vision captioning is pending/failed.
   const photoRows = await env.DB.prepare(
-    `SELECT photo_id, taken_at, caption, source
+    `SELECT photo_id, taken_at, caption, ocr_text, source, capture_id, monitor_id
        FROM photos
-      WHERE status = 'captioned'
-        AND caption IS NOT NULL AND caption <> ''
+      WHERE ((status = 'captioned' AND caption IS NOT NULL AND caption <> '')
+             OR (source = 'desktop' AND COALESCE(ocr_text, '') <> ''))
         AND taken_epoch >= ?1 AND taken_epoch <= ?2
       ORDER BY taken_epoch ASC
       LIMIT 200`,
@@ -1819,7 +1854,7 @@ export async function contextData(env: Env, at: string, beforeSec: number, minRa
     // blob to decide whether to speak; folding captions into it would change
     // those judgements silently. And an agent that cannot tell what was said
     // from what was seen will attribute one to the other.
-    seen: photos.map((r: any) => r.caption).join(" ").trim(),
+    seen: photos.map(photoText).join(" ").trim(),
     photos,
   };
 }
@@ -1867,9 +1902,8 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
         .bind(liked, limit, MIN_SPEECH_RATIO)
         .all<any>();
 
-  // 'captioned' and a non-empty caption both matter: a row can be 'failed'
-  // with an error and no caption, and one can be captioned with an empty
-  // string when the model returned nothing. Neither is a search result.
+  // Desktop OCR can match before the asynchronous vision caption arrives.
+  // Cameras retain their existing successful-caption quality gate.
   const photoRows = useFts
     ? await env.DB.prepare(
         // taken_at comes from the table, not from the index. photo-retime corrects
@@ -1877,23 +1911,23 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
         // which fires on caption — never runs and the copy inside photos_fts keeps
         // the uncorrected time. The row is the authority; the index is only there to
         // be matched against.
-        `SELECT f.photo_id, p.taken_at, p.caption, p.source
+        `SELECT f.photo_id, p.taken_at, p.caption, p.ocr_text, p.source
            FROM photos_fts f
            JOIN photos p ON p.photo_id = f.photo_id
           WHERE photos_fts MATCH ?1
-            AND p.status = 'captioned'
-            AND p.caption IS NOT NULL AND p.caption <> ''
+            AND ((p.status = 'captioned' AND p.caption IS NOT NULL AND p.caption <> '')
+                 OR (p.source = 'desktop' AND COALESCE(p.ocr_text, '') <> ''))
           ORDER BY p.taken_epoch DESC
           LIMIT ?2`,
       )
         .bind(quoted, limit)
         .all<any>()
     : await env.DB.prepare(
-        `SELECT photo_id, taken_at, caption, source
+        `SELECT photo_id, taken_at, caption, ocr_text, source
            FROM photos
-          WHERE caption LIKE ?1 ESCAPE '\\'
-            AND status = 'captioned'
-            AND caption IS NOT NULL AND caption <> ''
+          WHERE (caption LIKE ?1 ESCAPE '\\' OR ocr_text LIKE ?1 ESCAPE '\\')
+            AND ((status = 'captioned' AND caption IS NOT NULL AND caption <> '')
+                 OR (source = 'desktop' AND COALESCE(ocr_text, '') <> ''))
           ORDER BY taken_epoch DESC
           LIMIT ?2`,
       )
@@ -1912,7 +1946,7 @@ export async function searchData(env: Env, q: string, rawLimit: number) {
     kind: "photo",
     id: r.photo_id,
     at: r.taken_at,
-    text: String(r.caption ?? ""),
+    text: photoText(r),
     source: r.source ?? "r1",
   }));
 
