@@ -165,9 +165,14 @@ let mode = 'day';
 // latest request may draw.
 let loadSeq = 0;
 
+// Always shown in JST. Reading the hour out of the text was right for the
+// R1, which stamps +09:00, and wrong for the PC, which stamps Z: a capture at
+// 17:24 JST was listed at 08:24.
 function timeOf(iso) {
-  const m = /T(\\d{2}):(\\d{2})/.exec(iso || '');
-  return m ? m[1] + ':' + m[2] : '';
+  const ms = Date.parse(iso || '');
+  if (Number.isNaN(ms)) return '';
+  const jst = new Date(ms + 9 * 3600e3);
+  return pad(jst.getUTCHours()) + ':' + pad(jst.getUTCMinutes());
 }
 
 function escapeHtml(s) {

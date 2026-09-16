@@ -106,6 +106,8 @@ In order:
 5. **PC times show in UTC on the web page.** `timeOf` in `ui.ts` takes the
    hour from the text, which is right for the R1's `+09:00` and wrong for the
    PC's `Z`: a capture at 17:24 JST is listed at 08:24.
+   **Fixed 2026-09-16** on `feature/day-view-paging`: the time is parsed and
+   shown in JST.
 
 ---
 
