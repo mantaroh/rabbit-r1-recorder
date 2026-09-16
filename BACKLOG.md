@@ -53,6 +53,41 @@ once and testing neither.
 
 ---
 
+## Agreed: PC screenshots, three fixes, one at a time
+
+**Listed 2026-09-16, after the PC recorder went live. Each one gets its own
+design and its own approval; do not fold them together.**
+
+The Windows recorder ([design](docs/superpowers/specs/2026-09-16-windows-screenshot-corpus-design.md))
+takes both screens every 30 seconds, changed or not. Measured on the first
+hour in production (238 images, 17:35-18:34 JST): 64.9 neurons, 622 KB in R2
+and about 22 KB in D1 per image, and 2,457 characters of OCR on average.
+
+In order:
+
+1. **Spend fewer neurons.** At 30 seconds for 15 hours a day that is 3,600
+   images and about 234k neurons a day, roughly $2.5. Two levers, to be
+   measured before either is chosen:
+   - capture every 60 seconds instead of 30 -- a setting in the app, halves
+     everything;
+   - send the vision model a smaller image. Neurons follow the image, not the
+     answer: 1920x1080 and 2560x1440 both cost about 65, the R1's 480x640
+     about 23. The OCR is read on the PC at full size, so the text does not
+     depend on the image the caption is written from.
+   Capturing only between 08:00 and 23:00 is not in the app; it would be a
+   feature of its own.
+2. **The day view stops at 2,000 photos, oldest first.** The PC alone adds
+   about 240 an hour, so a working day hides its own latest records, and the
+   page does not say so (`photos_truncated` is in the API only). Proposed:
+   pages of 500 with a "load more" button, never splitting one capture across
+   two pages.
+3. **The day view carries every OCR text.** 2,000 images at about 2,500
+   characters is several MB per load. Proposed: return only whether a photo
+   has OCR, and fetch the text from `GET /v1/photos/<id>/text` when the image
+   is opened in the viewer. Search keeps returning the text.
+
+---
+
 ## Closed: privilege separation and the lost-device switch
 
 **Done 2026-08-17.** Kept here only as the record of what the answer was.
