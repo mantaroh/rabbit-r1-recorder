@@ -253,7 +253,7 @@ describe("day view, a page at a time", () => {
     expect(d.entries.map((e: any) => e.kind === "audio" ? e.id : e.shots[0].id)).toEqual(["spoken", photoId, "camera123"]);
     expect(d.entries[0].text).toBe("こんにちは");
     expect(d.entries[1].shots[0]).toMatchObject({
-      caption: "PC の説明", ocr_text: "スクリーン文書 特別検索語 駅", label: "PC · DISPLAY1",
+      caption: "PC の説明", ocr_text: "スクリーン文書 特別検索語 駅", label: "DISPLAY1",
     });
     expect(d.stats).toMatchObject({ segments: 2, with_text: 1, photos: 2, rows_truncated: false });
   });

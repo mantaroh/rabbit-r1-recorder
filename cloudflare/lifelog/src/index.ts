@@ -885,7 +885,8 @@ function photoEntry(group: PhotoGroup, details?: Map<string, PhotoDetail>) {
         facing: s.facing,
         caption: text.caption ?? "",
         ocr_text: text.ocr_text ?? "",
-        label: s.source === "desktop" ? "PC · " + s.monitor_id : undefined,
+        // Windows names a screen \\.\DISPLAY1; the card already says PC.
+        label: s.source === "desktop" ? String(s.monitor_id ?? "").replace(/^\\\\\.\\/, "") : undefined,
       };
     }),
   };

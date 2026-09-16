@@ -66,26 +66,44 @@ export const UI_HTML = `<!doctype html>
   button { cursor: pointer; }
   button:hover { border-color: var(--accent); }
   #search { flex: 1; min-width: 160px; }
-  main { padding: 14px; max-width: 900px; margin: 0 auto; }
+  main { padding: 14px; }
   .stats { color: var(--dim); font-size: 13px; margin-bottom: 12px; }
-  .entry {
-    display: grid; grid-template-columns: 62px 1fr; gap: 12px;
-    padding: 10px 0; border-bottom: 1px solid var(--line);
+  /* One card per entry, as many columns as the window holds, newest at the
+     top left. A card is sized for two 160 px screenshots side by side. */
+  #list {
+    display: grid; gap: 10px; align-items: start;
+    grid-template-columns: repeat(auto-fill, minmax(min(350px, 100%), 1fr));
   }
+  .entry {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; min-width: 0;
+  }
+  /* A glasses import is one entry with many frames; it takes the whole row. */
+  .entry.wide { grid-column: 1 / -1; }
+  .head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
   .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 13px; }
-  .text { white-space: pre-wrap; word-break: break-word; }
+  .kind { font-size: 11px; color: var(--accent); letter-spacing: .04em; }
+  .text { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
   .muted { color: var(--dim); font-style: italic; }
-  .shots { display: flex; flex-wrap: wrap; gap: 10px; }
-  .shot { width: 210px; }
+  .shots { display: flex; flex-wrap: wrap; gap: 6px; }
+  .shot { width: 160px; min-width: 0; }
   .shot img {
-    width: 100%; aspect-ratio: 3 / 4;
-    border-radius: 6px; border: 1px solid var(--line);
+    /* height:auto, or the height attribute (kept for lazy loading) wins over
+       aspect-ratio and stretches the picture to 640 or 1080 px. */
+    width: 100%; height: auto; aspect-ratio: 3 / 4;
+    border-radius: 4px; border: 1px solid var(--line);
     display: block; background: #000; cursor: zoom-in; object-fit: cover;
   }
-  .shot .cap { font-size: 12px; color: var(--dim); margin-top: 4px; }
-  .facing { font-size: 11px; color: var(--warn); }
-  audio { width: 100%; max-width: 340px; height: 32px; margin-top: 6px; }
-  .empty { color: var(--dim); padding: 30px 0; text-align: center; }
+  .shot.wide img { aspect-ratio: 16 / 9; }
+  .shot .cap {
+    font-size: 12px; color: var(--dim); margin-top: 3px; line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .shot details .cap { display: block; max-height: 12em; overflow: auto; white-space: pre-wrap; }
+  .shot summary { font-size: 12px; color: var(--dim); cursor: pointer; }
+  .facing { font-size: 11px; color: var(--warn); margin-top: 2px; }
+  audio { width: 100%; height: 32px; margin-top: 6px; }
+  .empty { color: var(--dim); padding: 30px 0; text-align: center; grid-column: 1 / -1; }
   .pager {
     display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
     margin: 4px 0 12px; font-variant-numeric: tabular-nums;
@@ -109,7 +127,11 @@ export const UI_HTML = `<!doctype html>
   dialog {
     border: none; background: transparent; max-width: 96vw; max-height: 96vh; padding: 0;
   }
-  dialog img { max-width: 96vw; max-height: 96vh; border-radius: 8px; }
+  dialog img { max-width: 96vw; max-height: 86vh; border-radius: 8px; display: block; margin: 0 auto; }
+  #viewerCap {
+    max-width: min(96vw, 900px); margin: 8px auto 0; color: var(--text);
+    font-size: 14px; white-space: pre-wrap; text-align: left;
+  }
   dialog::backdrop { background: rgba(0,0,0,.85); }
 </style>
 </head>
@@ -135,7 +157,7 @@ export const UI_HTML = `<!doctype html>
   <nav class="pager" id="pagerBottom" aria-label="ページ" hidden></nav>
   <div id="map" hidden></div>
 </main>
-<dialog id="viewer"><img id="viewerImg" alt=""></dialog>
+<dialog id="viewer"><img id="viewerImg" alt=""><p id="viewerCap"></p></dialog>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -180,32 +202,44 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+const SOURCE_NAMES = { desktop: 'PC', glasses: '眼鏡', r1: 'R1' };
+
+function renderHead(e, kind) {
+  return '<div class="head"><span class="time">' + timeOf(e.at) + '</span>' +
+    '<span class="kind">' + escapeHtml(kind) + '</span></div>';
+}
+
 function renderEntry(e) {
   if (e.kind === 'photo') {
+    // The PC and the glasses camera are landscape, the R1 portrait; each is
+    // shown at its own shape rather than all cut to the R1's.
+    const wide = e.source === 'desktop' || e.source === 'glasses';
     // width/height and the matching aspect-ratio in CSS are what make
     // loading="lazy" work: without them the browser lays every image out at
     // zero height, decides the whole day is above the fold, and fetches all
     // 160 frames at once. Measured doing exactly that.
+    const size = wide ? 'width="1920" height="1080"' : 'width="480" height="640"';
     const shots = e.shots.map((s) => \`
-      <div class="shot">
-        <img loading="lazy" decoding="async" width="480" height="640"
+      <div class="shot\${wide ? ' wide' : ''}">
+        <img loading="lazy" decoding="async" \${size}
              src="/v1/media/photo/\${encodeURIComponent(s.id)}"
-             data-full="/v1/media/photo/\${encodeURIComponent(s.id)}" alt="">
+             data-full="/v1/media/photo/\${encodeURIComponent(s.id)}"
+             data-caption="\${escapeHtml(s.caption)}" alt="">
         <div class="facing">\${escapeHtml(s.label ?? (s.facing === 'front' ? '前' : '後'))}</div>
-        <div class="cap">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
+        <div class="cap" title="\${escapeHtml(s.caption)}">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
         \${s.ocr_text ? '<details><summary>画面の文字</summary><div class="cap">' + escapeHtml(s.ocr_text) + '</div></details>' : ''}
       </div>\`).join('');
-    return \`<div class="entry"><div class="time">\${timeOf(e.at)}</div>
-      <div><div class="shots">\${shots}</div></div></div>\`;
+    const many = e.shots.length > 2 ? ' wide' : '';
+    return \`<div class="entry\${many}">\${renderHead(e, SOURCE_NAMES[e.source] || 'R1')}
+      <div class="shots">\${shots}</div></div>\`;
   }
 
   const body = e.text
     ? \`<div class="text">\${escapeHtml(e.text)}</div>\`
     : \`<div class="muted">\${e.status === 'silent' ? '無音（文字起こしなし）' : '発話なし'}</div>\`;
-  return \`<div class="entry"><div class="time">\${timeOf(e.at)}</div>
-    <div>\${body}
-      <audio preload="none" controls src="/v1/media/audio/\${encodeURIComponent(e.id)}"></audio>
-    </div></div>\`;
+  return \`<div class="entry">\${renderHead(e, '音声')}
+    \${body}
+    <audio preload="none" controls src="/v1/media/audio/\${encodeURIComponent(e.id)}"></audio></div>\`;
 }
 
 function draw(entries, statsText) {
@@ -286,7 +320,7 @@ async function runSearch(q) {
   const entries = (d.results || []).map((x) =>
     x.kind === 'photo'
       ? {
-          kind: 'photo', at: x.at,
+          kind: 'photo', at: x.at, source: x.source,
           // 検索結果では前後の別より、どちらのカメラかのほうが意味がある。
           // R1 は周囲の様子、眼鏡は見ていたもので、同じ主張ではない。
           shots: [{ id: x.id, label: x.source === 'desktop' ? 'PC' : x.source === 'glasses' ? '眼鏡' : 'R1', caption: x.text }],
@@ -470,6 +504,8 @@ document.addEventListener('click', (e) => {
   const img = e.target.closest('.shot img');
   if (!img) return;
   $('viewerImg').src = img.dataset.full;
+  // The card cuts the caption at two lines; the whole of it is here.
+  $('viewerCap').textContent = img.dataset.caption || '';
   $('viewer').showModal();
 });
 $('viewer').addEventListener('click', () => $('viewer').close());
