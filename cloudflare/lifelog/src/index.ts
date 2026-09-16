@@ -715,6 +715,11 @@ async function getSegment(env: Env, url: URL): Promise<Response> {
  * With `page`, the answer is one page, newest first; see dayPage. Without it,
  * the whole day as it always was, oldest first — the R1's summary screen reads
  * that shape and walks it backwards for the latest words.
+ *
+ * The whole-day answer carries no screen text. The R1 fetches it every two
+ * minutes while its standby screen is up and uses only the counts and the
+ * latest words, and with the PC recording, the OCR was most of the answer:
+ * 1.3 MB of 1.5 MB after three hours of one evening.
  */
 async function dayView(env: Env, url: URL): Promise<Response> {
   const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
@@ -739,7 +744,7 @@ async function dayView(env: Env, url: URL): Promise<Response> {
 
   const photos = await env.DB.prepare(
     `SELECT photo_id, taken_at, taken_epoch, facing, caption, source, source_file,
-            ocr_text, capture_id, monitor_id
+            capture_id, monitor_id
        FROM photos
       WHERE taken_epoch >= ?1 AND taken_epoch < ?2
       ORDER BY taken_epoch ASC
@@ -895,8 +900,8 @@ function audioEntry(row: SegmentHead) {
 
 /**
  * `details` is dayPage's second read: the caption and whether there is screen
- * text, but not the text. The whole-day view has read everything already and
- * passes the text through, as it always has.
+ * text. The whole-day view read the caption with everything else. Neither
+ * carries the text itself; photoTextView does.
  */
 function photoEntry(group: PhotoGroup, details?: Map<string, PhotoDetail>) {
   return {
@@ -907,7 +912,7 @@ function photoEntry(group: PhotoGroup, details?: Map<string, PhotoDetail>) {
       const detail = details?.get(s.photo_id);
       const text = details
         ? { caption: detail?.caption ?? "", has_ocr: Boolean(detail?.has_ocr) }
-        : { caption: s.caption ?? "", ocr_text: s.ocr_text ?? "" };
+        : { caption: s.caption ?? "" };
       return {
         id: s.photo_id,
         facing: s.facing,

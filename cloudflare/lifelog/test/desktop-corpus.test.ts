@@ -317,10 +317,15 @@ describe("day view, a page at a time", () => {
     expect((await ask(photoId, "ingest")).status).toBe(403);
   });
 
-  it("keeps the screen text in the whole-day answer the R1 reads", async () => {
+  it("leaves the screen text out of the whole-day answer the R1 downloads every two minutes", async () => {
     const d = await day("");
-    expect(d.entries.find((e: any) => e.kind === "photo" && e.shots[0].id === photoId).shots[0])
-      .toMatchObject({ ocr_text: "スクリーン文書 特別検索語 駅" });
+    const shot = d.entries.find((e: any) => e.kind === "photo" && e.shots[0].id === photoId).shots[0];
+    expect(shot).toMatchObject({ caption: "PC の説明", label: "DISPLAY1" });
+    expect(shot).not.toHaveProperty("ocr_text");
+    expect(JSON.stringify(d)).not.toContain("特別検索語");
+    // What the R1's standby screen reads is all still there.
+    expect(d.stats).toMatchObject({ segments: 2, with_text: 1, photos: 2 });
+    expect(d.entries.at(-1)).toMatchObject({ kind: "audio", text: "こんにちは" });
   });
 
   it("falls back to 50 a page for a size the page does not offer", async () => {

@@ -108,6 +108,10 @@ In order:
    but the answer carries every caption and OCR text of the day, several MB
    with the PC recording. It wants an endpoint of its own, or `page=1` and a
    change on the device.
+   **Built 2026-09-16 on `feature/day-without-ocr`:** the whole-day answer
+   no longer carries `ocr_text`, which was 1.3 MB of about 1.5 MB after three
+   hours of PC recording. Captions remain, a few hundred KB a day; an endpoint
+   of its own for the standby screen can wait until the R1 app is next built.
 5. **PC times show in UTC on the web page.** `timeOf` in `ui.ts` takes the
    hour from the text, which is right for the R1's `+09:00` and wrong for the
    PC's `Z`: a capture at 17:24 JST is listed at 08:24.
