@@ -23,7 +23,8 @@ import { IMPORT_HTML } from "./import";
 import { captionPromptFor } from "./caption-prompt";
 import { CAPTION_MODEL, captionInput, captionTextOf } from "./caption-model";
 import { recaptionBatches, recaptionCutoff } from "./recaption";
-import { groupPhotos } from "./day-group";
+import { groupPhotos, type PhotoGroup, type PhotoRow } from "./day-group";
+import { dayEntries, pageOf, perPageOf, segmentText, type SegmentHead } from "./day-page";
 import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
 import { readDesktopPhoto, photoText } from "./desktop-photo";
@@ -707,6 +708,10 @@ async function getSegment(env: Env, url: URL): Promise<Response> {
  * Silent segments are included. They carry no transcript, but the recording
  * exists and is the thing being archived — leaving them out would make the
  * page disagree with the bucket. The UI hides them by default.
+ *
+ * With `page`, the answer is one page, newest first; see dayPage. Without it,
+ * the whole day as it always was, oldest first — the R1's summary screen reads
+ * that shape and walks it backwards for the latest words.
  */
 async function dayView(env: Env, url: URL): Promise<Response> {
   const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
@@ -716,6 +721,8 @@ async function dayView(env: Env, url: URL): Promise<Response> {
   // local one, so the window is shifted rather than the timestamps.
   const from = Math.floor(Date.parse(`${date}T00:00:00+09:00`) / 1000);
   const to = from + 86_400;
+
+  if (url.searchParams.has("page")) return dayPage(env, url, date, from, to);
 
   const segments = await env.DB.prepare(
     `SELECT segment_id, started_at, status, transcript, stock_phrase, voiced_ratio
@@ -748,36 +755,16 @@ async function dayView(env: Env, url: URL): Promise<Response> {
   let withText = 0;
 
   for (const row of segments.results ?? []) {
-    // A stock phrase is Whisper talking to itself; the recording stays, the
-    // text does not get shown.
-    const text = row.stock_phrase ? "" : String(row.transcript ?? "").trim();
-    if (text) withText += 1;
-    entries.push({
-      kind: "audio",
-      at: row.started_at,
-      id: row.segment_id,
-      status: row.status,
-      voiced: row.voiced_ratio,
-      text,
-    });
+    const entry = audioEntry(row);
+    if (entry.text) withText += 1;
+    entries.push(entry);
   }
 
   // Grouping lives in day-group.ts because the rule is no longer one line:
   // the R1's pair-by-minute and the glasses camera's one-entry-per-import are
   // different rules that happen to produce the same kind of entry.
   for (const group of groupPhotos(shownPhotos)) {
-    entries.push({
-      kind: "photo",
-      at: group.at,
-      source: group.source,
-      shots: group.shots.map((s) => ({
-        id: s.photo_id,
-        facing: s.facing,
-        caption: s.caption ?? "",
-        ocr_text: s.ocr_text ?? "",
-        label: s.source === "desktop" ? "PC · " + s.monitor_id : undefined,
-      })),
-    });
+    entries.push(photoEntry(group));
   }
 
   // R1 stamps +09:00 while desktop captures use Z. String order would place
@@ -794,6 +781,114 @@ async function dayView(env: Env, url: URL): Promise<Response> {
       photos_truncated: photosTruncated,
     },
   });
+}
+
+/**
+ * A ceiling on how much of one day dayPage lays out. A day of the R1 on both
+ * cameras and the PC every minute is about 5,000 photos and 1,440 segments;
+ * this is ten times that, there so a runaway import cannot take the Worker's
+ * memory with it. Reaching it is reported, not hidden.
+ */
+const DAY_ROW_LIMIT = 50_000;
+
+/**
+ * One page of a day, newest first; the layout rules are in day-page.ts.
+ *
+ * The whole day is read, but only the light columns. Captions and OCR are the
+ * heavy ones — a PC screenshot carries about 2,500 characters — and are read
+ * for the page's own photos only.
+ */
+async function dayPage(env: Env, url: URL, date: string, from: number, to: number): Promise<Response> {
+  const perPage = perPageOf(intParam(url, "per_page"));
+  const quiet = url.searchParams.get("quiet") === "1";
+
+  const segments = await env.DB.prepare(
+    `SELECT segment_id, started_at, status, transcript, stock_phrase, voiced_ratio
+       FROM segments
+      WHERE started_epoch >= ?1 AND started_epoch < ?2 AND kind = 'lifelog'
+      ORDER BY started_epoch ASC
+      LIMIT ?3`,
+  )
+    .bind(from, to, DAY_ROW_LIMIT)
+    .all<SegmentHead>();
+
+  const photos = await env.DB.prepare(
+    `SELECT photo_id, taken_at, taken_epoch, facing, source, source_file, capture_id, monitor_id
+       FROM photos
+      WHERE taken_epoch >= ?1 AND taken_epoch < ?2
+      ORDER BY taken_epoch ASC
+      LIMIT ?3`,
+  )
+    .bind(from, to, DAY_ROW_LIMIT)
+    .all<Omit<PhotoRow, "caption">>();
+
+  const segmentRows = segments.results ?? [];
+  const photoRows: PhotoRow[] = (photos.results ?? []).map((row) => ({ ...row, caption: null }));
+  const page = pageOf(dayEntries(segmentRows, photoRows, quiet), intParam(url, "page") ?? 1, perPage);
+
+  // One bound parameter however many ids: a glasses import on the page can be
+  // hundreds of frames, and D1 allows 100 parameters a statement.
+  const ids = page.items.flatMap((e) => (e.kind === "photo" ? e.group.shots.map((s) => s.photo_id) : []));
+  const details = new Map<string, PhotoDetail>();
+  if (ids.length) {
+    const rows = await env.DB.prepare(
+      `SELECT photo_id, caption, ocr_text FROM photos
+        WHERE photo_id IN (SELECT value FROM json_each(?1))`,
+    )
+      .bind(JSON.stringify(ids))
+      .all<PhotoDetail & { photo_id: string }>();
+    for (const row of rows.results ?? []) details.set(row.photo_id, row);
+  }
+
+  return json({
+    date,
+    page: page.page,
+    per_page: page.perPage,
+    total_entries: page.totalEntries,
+    total_pages: page.totalPages,
+    entries: page.items.map((e) => (e.kind === "audio" ? audioEntry(e.segment) : photoEntry(e.group, details))),
+    stats: {
+      segments: segmentRows.length,
+      with_text: segmentRows.filter((row) => segmentText(row)).length,
+      photos: photoRows.length,
+      rows_truncated: segmentRows.length >= DAY_ROW_LIMIT || photoRows.length >= DAY_ROW_LIMIT,
+    },
+  });
+}
+
+interface PhotoDetail {
+  caption: string | null;
+  ocr_text?: string | null;
+}
+
+function audioEntry(row: SegmentHead) {
+  return {
+    kind: "audio",
+    at: row.started_at,
+    id: row.segment_id,
+    status: row.status,
+    voiced: row.voiced_ratio,
+    text: segmentText(row),
+  };
+}
+
+/** `details` fills in what dayPage left out of its first read; the whole-day view already has it. */
+function photoEntry(group: PhotoGroup, details?: Map<string, PhotoDetail>) {
+  return {
+    kind: "photo",
+    at: group.at,
+    source: group.source,
+    shots: group.shots.map((s) => {
+      const text: PhotoDetail = details?.get(s.photo_id) ?? s;
+      return {
+        id: s.photo_id,
+        facing: s.facing,
+        caption: text.caption ?? "",
+        ocr_text: text.ocr_text ?? "",
+        label: s.source === "desktop" ? "PC · " + s.monitor_id : undefined,
+      };
+    }),
+  };
 }
 
 // ------------------------------------------------------------- positions ---

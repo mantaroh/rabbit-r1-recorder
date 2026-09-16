@@ -220,3 +220,86 @@ describe("desktop ingestion through real SQLite migrations", () => {
     expect(db.prepare("SELECT photo_id FROM photos_fts WHERE photos_fts MATCH 'キャプション'").all()).toEqual([{ photo_id: "oldphoto" }]);
   });
 });
+
+describe("day view, a page at a time", () => {
+  function segment(id: string, startedAt: string, transcript: string) {
+    db.prepare(`INSERT INTO segments(segment_id, device_id, r2_key, started_at, started_epoch, received_at, status, transcript)
+      VALUES (?, 'r1', ?, ?, ?, ?, 'transcribed', ?)`)
+      .run(id, "audio/" + id, startedAt, Math.floor(Date.parse(startedAt) / 1000), startedAt, transcript);
+  }
+
+  async function day(query: string) {
+    const response = await worker.fetch(new Request("https://test/v1/day?date=2026-09-16" + query, {
+      headers: { authorization: "Bearer admin" },
+    }), env);
+    expect(response.status).toBe(200);
+    return response.json() as Promise<any>;
+  }
+
+  beforeEach(async () => {
+    await worker.fetch(request(), env); // PC, 10:00 JST, with OCR
+    db.exec("UPDATE photos SET caption='PC の説明'");
+    const camera = new Request(`https://test/v1/photos/camera123?taken_at=${encodeURIComponent("2026-09-16T09:00:00+09:00")}`, {
+      method: "PUT", headers: { authorization: "Bearer ingest" }, body: "jpeg",
+    });
+    await worker.fetch(camera, env);
+    segment("spoken", "2026-09-16T11:00:00+09:00", "こんにちは");
+    segment("silent", "2026-09-16T08:00:00+09:00", "");
+  });
+
+  it("returns the newest first, with the text of the page's own photos", async () => {
+    const d = await day("&page=1&per_page=20");
+    expect(d).toMatchObject({ page: 1, per_page: 20, total_entries: 3, total_pages: 1 });
+    expect(d.entries.map((e: any) => e.kind === "audio" ? e.id : e.shots[0].id)).toEqual(["spoken", photoId, "camera123"]);
+    expect(d.entries[0].text).toBe("こんにちは");
+    expect(d.entries[1].shots[0]).toMatchObject({
+      caption: "PC の説明", ocr_text: "スクリーン文書 特別検索語 駅", label: "PC · DISPLAY1",
+    });
+    expect(d.stats).toMatchObject({ segments: 2, with_text: 1, photos: 2, rows_truncated: false });
+  });
+
+  it("leaves silent segments out unless asked, so a page is never mostly hidden", async () => {
+    expect((await day("&page=1")).total_entries).toBe(3);
+    const d = await day("&page=1&quiet=1");
+    expect(d.total_entries).toBe(4);
+    expect(d.entries.at(-1).id).toBe("silent");
+  });
+
+  it("keeps the whole-day answer the R1 reads when no page is asked for", async () => {
+    const d = await day("");
+    expect(d.page).toBeUndefined();
+    expect(d.entries.map((e: any) => e.kind === "audio" ? e.id : e.shots[0].id))
+      .toEqual(["silent", "camera123", photoId, "spoken"]);
+    expect(d.stats).toMatchObject({ segments: 2, with_text: 1, photos: 2, photos_truncated: false });
+  });
+
+  it("reaches every photo of a day past the old 2,000 limit, without repeats", async () => {
+    const insert = db.prepare(`INSERT INTO photos(photo_id, device_id, r2_key, facing, taken_at, taken_epoch, received_at,
+      caption, status, source, capture_id, monitor_id) VALUES (?, 'pc', ?, 'front', ?, ?, ?, ?, 'captioned', 'desktop', ?, 'D1')`);
+    const base = Date.parse("2026-09-16T00:00:00+09:00") + 12 * 3600e3; // noon JST onwards
+    db.exec("BEGIN");
+    for (let i = 0; i < 2050; i++) {
+      const takenAt = new Date(base + i * 20_000).toISOString();
+      insert.run(`bulk${i}`, `p/bulk${i}`, takenAt, Math.floor((base + i * 20_000) / 1000), takenAt, `c${i}`, i.toString(16).padStart(32, "0"));
+    }
+    db.exec("COMMIT");
+
+    const first = await day("&page=1&per_page=100");
+    expect(first).toMatchObject({ total_entries: 2053, total_pages: 21 });
+    expect(first.entries[0].shots[0]).toMatchObject({ id: "bulk2049", caption: "c2049" });
+
+    const seen: string[] = [];
+    for (let p = 1; p <= first.total_pages; p++) {
+      for (const e of (await day(`&page=${p}&per_page=100`)).entries) seen.push(e.kind === "audio" ? e.id : e.shots[0].id);
+    }
+    expect(seen).toHaveLength(2053);
+    expect(new Set(seen).size).toBe(2053);
+    expect(seen.at(-1)).toBe("camera123");
+    expect((await day("&page=22&per_page=100")).entries).toEqual([]);
+  });
+
+  it("falls back to 50 a page for a size the page does not offer", async () => {
+    expect((await day("&page=1&per_page=5000")).per_page).toBe(50);
+    expect((await day("&page=abc")).page).toBe(1);
+  });
+});

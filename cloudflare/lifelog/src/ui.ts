@@ -86,6 +86,18 @@ export const UI_HTML = `<!doctype html>
   .facing { font-size: 11px; color: var(--warn); }
   audio { width: 100%; max-width: 340px; height: 32px; margin-top: 6px; }
   .empty { color: var(--dim); padding: 30px 0; text-align: center; }
+  .pager {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin: 4px 0 12px; font-variant-numeric: tabular-nums;
+  }
+  .pager button { min-width: 38px; padding: 4px 10px; }
+  .pager button.on { border-color: var(--accent); color: var(--accent); }
+  .pager button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+  .pager button:focus-visible, .pager select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .pager .gap { color: var(--dim); padding: 0 2px; }
+  .pager .size { margin-left: auto; color: var(--dim); font-size: 13px; }
+  .pager select { padding: 3px 6px; }
+  #pagerBottom { margin: 16px 0 4px; }
   .tab.on { border-color: var(--accent); color: var(--accent); }
   /* Loud on purpose. This is the control you want to find while flustered. */
   #lost.armed { border-color: #b4443c; color: #ff6b5e; }
@@ -118,7 +130,9 @@ export const UI_HTML = `<!doctype html>
 </header>
 <main>
   <div class="stats" id="stats">読み込み中…</div>
+  <nav class="pager" id="pagerTop" aria-label="ページ" hidden></nav>
   <div id="list"></div>
+  <nav class="pager" id="pagerBottom" aria-label="ページ" hidden></nav>
   <div id="map" hidden></div>
 </main>
 <dialog id="viewer"><img id="viewerImg" alt=""></dialog>
@@ -133,6 +147,23 @@ const todayJst = () => {
 };
 
 let showQuiet = false;
+
+// A day is shown a page at a time, newest first. The server lays the day out;
+// the page only says which slice it wants. The size is remembered per browser,
+// the page number is not: a new day starts at its latest entries.
+const PAGE_SIZES = [20, 50, 100];
+let page = 1;
+let perPage = 50;
+try {
+  const saved = Number(localStorage.getItem('perPage'));
+  if (PAGE_SIZES.includes(saved)) perPage = saved;
+} catch (e) { /* storage blocked: keep the default */ }
+// 'day' or 'search'. Search results are not paged and keep the old local
+// filter for silent entries.
+let mode = 'day';
+// Responses can arrive out of order when pages are clicked quickly; only the
+// latest request may draw.
+let loadSeq = 0;
 
 function timeOf(iso) {
   const m = /T(\\d{2}):(\\d{2})/.exec(iso || '');
@@ -180,17 +211,69 @@ function draw(entries, statsText) {
     : '<div class="empty">この日の記録はありません</div>';
 }
 
+function pageNumbers(current, total) {
+  const out = [];
+  for (let p = 1; p <= total; p++) {
+    if (p === 1 || p === total || Math.abs(p - current) <= 2) out.push(p);
+    else if (out[out.length - 1] !== '…') out.push('…');
+  }
+  return out;
+}
+
+function renderPager(d) {
+  const total = d.total_pages;
+  const button = (target, label, attrs) =>
+    '<button type="button" data-page="' + target + '"' + (attrs || '') + '>' + label + '</button>';
+  const nav = total > 1
+    ? button(d.page - 1, '« 前へ', d.page <= 1 ? ' disabled' : '') +
+      pageNumbers(d.page, total).map((p) => p === '…'
+        ? '<span class="gap">…</span>'
+        : button(p, String(p), p === d.page ? ' class="on" aria-current="page"' : '')).join('') +
+      button(d.page + 1, '次へ »', d.page >= total ? ' disabled' : '')
+    : '';
+  const size = '<label class="size">表示件数 <select data-per-page>' +
+    PAGE_SIZES.map((n) => '<option value="' + n + '"' + (n === perPage ? ' selected' : '') + '>' + n + '件</option>').join('') +
+    '</select></label>';
+  $('pagerTop').innerHTML = nav + size;
+  $('pagerBottom').innerHTML = nav;
+  $('pagerTop').hidden = false;
+  $('pagerBottom').hidden = total <= 1;
+}
+
+function hidePager() {
+  $('pagerTop').hidden = true;
+  $('pagerBottom').hidden = true;
+}
+
 async function loadDay(date) {
+  mode = 'day';
+  const seq = ++loadSeq;
   $('stats').textContent = '読み込み中…';
-  const r = await fetch('/v1/day?date=' + encodeURIComponent(date));
-  if (!r.ok) { $('stats').textContent = '読み込み失敗 (' + r.status + ')'; return; }
+  const r = await fetch('/v1/day?date=' + encodeURIComponent(date) +
+    '&page=' + page + '&per_page=' + perPage + (showQuiet ? '&quiet=1' : ''));
+  if (seq !== loadSeq) return;
+  if (!r.ok) { $('stats').textContent = '読み込み失敗 (' + r.status + ')'; hidePager(); return; }
   const d = await r.json();
+  if (seq !== loadSeq) return;
+  // A page past the end: the day got shorter, or the size got bigger.
+  if (d.total_pages > 0 && d.page > d.total_pages) {
+    page = d.total_pages;
+    return loadDay(date);
+  }
   window.__entries = d.entries;
+  const first = d.total_entries ? (d.page - 1) * d.per_page + 1 : 0;
+  const last = (d.page - 1) * d.per_page + d.entries.length;
   draw(d.entries,
-    \`\${d.stats.segments} 分の音声 · 発話 \${d.stats.with_text} · 写真 \${d.stats.photos}\`);
+    \`\${d.stats.segments} 分の音声 · 発話 \${d.stats.with_text} · 写真 \${d.stats.photos}\` +
+    \` · 全 \${d.total_entries} 件中 \${first}–\${last} 件目（新しい順）\` +
+    (d.stats.rows_truncated ? ' · 件数が多すぎるため、この日の一部を表示できていません' : ''));
+  renderPager(d);
 }
 
 async function runSearch(q) {
+  mode = 'search';
+  ++loadSeq;
+  hidePager();
   $('stats').textContent = '検索中…';
   const r = await fetch('/v1/search?q=' + encodeURIComponent(q) + '&limit=100');
   if (!r.ok) { $('stats').textContent = '検索失敗 (' + r.status + ')'; return; }
@@ -212,12 +295,30 @@ $('date').value = todayJst();
 // Whichever view is showing follows the date; changing the day should not also
 // change what you were looking at.
 const reload = () => showTab($('map').hidden ? 'list' : 'map');
-$('date').addEventListener('change', reload);
+$('date').addEventListener('change', () => { page = 1; reload(); });
 $('prev').addEventListener('click', () => shiftDay(-1));
 $('next').addEventListener('click', () => shiftDay(1));
 $('showQuiet').addEventListener('change', (e) => {
   showQuiet = e.target.checked;
-  if (window.__entries) draw(window.__entries, $('stats').textContent);
+  // The server leaves silent segments out of a page, so the day has to be
+  // asked for again; search results are still filtered here.
+  if (mode === 'day') { page = 1; loadDay($('date').value); }
+  else if (window.__entries) draw(window.__entries, $('stats').textContent);
+});
+
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.pager button[data-page]');
+  if (!b || b.disabled) return;
+  page = Number(b.dataset.page);
+  loadDay($('date').value);
+  window.scrollTo({ top: 0 });
+});
+document.addEventListener('change', (e) => {
+  if (!e.target.matches('.pager select[data-per-page]')) return;
+  perPage = Number(e.target.value);
+  try { localStorage.setItem('perPage', String(perPage)); } catch (err) { /* not remembered */ }
+  page = 1;
+  loadDay($('date').value);
 });
 $('search').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
@@ -229,6 +330,7 @@ function shiftDay(delta) {
   const d = new Date($('date').value + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + delta);
   $('date').value = d.toISOString().slice(0, 10);
+  page = 1;
   reload();
 }
 
@@ -347,6 +449,7 @@ function showTab(which) {
   $('list').hidden = map;
   $('map').hidden = !map;
   if (map) {
+    hidePager();
     loadTrack($('date').value).catch((e) => {
       $('stats').textContent = '地図を読み込めません: ' + e.message;
     });
