@@ -1207,11 +1207,23 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     return json({ photo_id: photoId, error: "checksum mismatch" }, 422);
   }
 
+  // The copy captionPhoto reads instead of the original. Written before the
+  // row, like the original, so a row never names an object that is not there.
+  let captionKey: string | null = null;
+  if (desktop?.captionBytes) {
+    captionKey = `photo/${day}/${photoId}.caption.jpg`;
+    await env.BUCKET.put(captionKey, desktop.captionBytes, {
+      httpMetadata: { contentType: "image/jpeg" },
+      customMetadata: { photoId, deviceId, takenAt, role: "caption" },
+    });
+  }
+
   await env.DB.prepare(
     `INSERT INTO photos
        (photo_id, device_id, r2_key, facing, taken_at, taken_epoch, bytes,
-        sha256, received_at, source, source_file, ocr_text, capture_id, monitor_id, width, height)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+        sha256, received_at, source, source_file, ocr_text, capture_id, monitor_id, width, height,
+        caption_r2_key)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
      ON CONFLICT(photo_id) DO NOTHING`,
   )
     .bind(
@@ -1231,6 +1243,7 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       desktop?.monitorId ?? null,
       desktop?.width ?? null,
       desktop?.height ?? null,
+      captionKey,
     )
     .run();
 
@@ -1257,7 +1270,20 @@ const CAPTION_MAX_TOKENS = 220;
 
 /** Captions one photograph and records what it cost. */
 async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void> {
-  const object = await env.BUCKET.get(message.key);
+  // どのカメラのフレームかで訊くことが変わる。行が無いのはキューが D1 の
+  // 書き込みを追い越した場合だけで、そのとき R1 の文面に落ちるのは安全側 --
+  // キャプションが付かないよりはよい。
+  //
+  // 読む画像も行が決める。PC は縮小版を別に置いていて、recaption や
+  // caption-backfill のメッセージは原寸の r2_key を指しているので、
+  // メッセージの key ではなく行の caption_r2_key を優先する。
+  const row = await env.DB.prepare(
+    `SELECT source, caption_r2_key FROM photos WHERE photo_id = ?1`,
+  )
+    .bind(message.segmentId)
+    .first<{ source: string | null; caption_r2_key: string | null }>();
+
+  const object = await env.BUCKET.get(row?.caption_r2_key ?? message.key);
   if (!object) {
     await env.DB.prepare(
       `UPDATE photos SET status = 'failed', error = 'r2 object missing'
@@ -1267,15 +1293,6 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
       .run();
     return;
   }
-
-  // どのカメラのフレームかで訊くことが変わる。行が無いのはキューが D1 の
-  // 書き込みを追い越した場合だけで、そのとき R1 の文面に落ちるのは安全側 --
-  // キャプションが付かないよりはよい。
-  const row = await env.DB.prepare(
-    `SELECT source FROM photos WHERE photo_id = ?1`,
-  )
-    .bind(message.segmentId)
-    .first<{ source: string | null }>();
 
   const bytes = new Uint8Array(await object.arrayBuffer());
   const result: any = await env.AI.run(
@@ -1314,12 +1331,15 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
   const photoId = url.searchParams.get("photo_id");
   if (!photoId) return json({ error: "photo_id required" }, 400);
 
-  const row = await env.DB.prepare(`SELECT r2_key FROM photos WHERE photo_id = ?1`)
+  // The image captionPhoto would read, so the price measured is the one paid.
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(caption_r2_key, r2_key) AS key FROM photos WHERE photo_id = ?1`,
+  )
     .bind(photoId)
-    .first<{ r2_key: string }>();
+    .first<{ key: string }>();
   if (!row) return json({ error: "not found" }, 404);
 
-  const object = await env.BUCKET.get(row.r2_key);
+  const object = await env.BUCKET.get(row.key);
   if (!object) return json({ error: "image missing" }, 404);
   const bytes = new Uint8Array(await object.arrayBuffer());
 

@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import worker, { contextData, searchData } from "../src/index";
 import { groupPhotos } from "../src/day-group";
 import { captionPromptFor, CAPTION_PROMPT_DESKTOP } from "../src/caption-prompt";
+import { jpegSize } from "../src/desktop-photo";
 
 let db: DatabaseSync;
 let env: any;
@@ -26,10 +27,18 @@ function prepare(sql: string) {
   };
 }
 
-function request(id = photoId, ocr = "スクリーン文書 特別検索語 駅", metadata: object = {}) {
+/** The smallest JPEG header jpegSize has to read: SOI, a baseline SOF0, EOI. */
+function jpeg(width: number, height: number, sof = 0xc0) {
+  return new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00,
+    0xff, sof, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff,
+    0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xd9]);
+}
+
+function request(id = photoId, ocr = "スクリーン文書 特別検索語 駅", metadata: object = {}, caption?: Blob) {
   const form = new FormData();
   form.set("image", new Blob([new Uint8Array([255, 216, 255, 217])], { type: "image/jpeg" }), "screen.jpg");
   form.set("metadata", JSON.stringify({ capture_id: "a".repeat(32), monitor_id: "DISPLAY1", width: 2560, height: 1440, ocr_text: ocr, ...metadata }));
+  if (caption) form.set("caption_image", caption, "caption.jpg");
   return new Request(`https://test/v1/photos/${id}?source=desktop&taken_at=${at}&device_id=pc-test`, {
     method: "PUT", headers: { authorization: "Bearer ingest" }, body: form,
   });
@@ -101,6 +110,49 @@ describe("desktop ingestion through real SQLite migrations", () => {
     expect(result.results[0].text).toContain("PC上で文書");
     expect(result.results[0].text).toContain("特別検索語");
     expect(db.prepare("SELECT COUNT(*) AS n FROM photos_fts").get()).toMatchObject({ n: 1 });
+  });
+
+  it("keeps the caption image beside the original and captions from it", async () => {
+    const small = new Blob([jpeg(960, 540)], { type: "image/jpeg" });
+    expect((await worker.fetch(request(photoId, "文字", {}, small), env)).status).toBe(201);
+    const keys = env.BUCKET.put.mock.calls.map((call: any[]) => call[0]);
+    expect(keys).toEqual(["photo/2026/09/16/pc_1234567890abcdef.jpg", "photo/2026/09/16/pc_1234567890abcdef.caption.jpg"]);
+    expect(db.prepare("SELECT r2_key, caption_r2_key FROM photos").get()).toMatchObject({
+      r2_key: keys[0], caption_r2_key: keys[1],
+    });
+    // The queue still names the original; the consumer reads the row.
+    const message = env.TRANSCRIBE_QUEUE.send.mock.calls[0][0];
+    expect(message.key).toBe(keys[0]);
+    await worker.queue({ messages: [{ body: message, ack: vi.fn(), retry: vi.fn() }] } as any, env);
+    expect(env.BUCKET.get.mock.calls.map((call: any[]) => call[0])).toEqual([keys[1]]);
+  });
+
+  it("captions from the original when no caption image was sent", async () => {
+    await worker.fetch(request(), env);
+    expect(env.BUCKET.put).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT caption_r2_key FROM photos").get()).toMatchObject({ caption_r2_key: null });
+    const message = env.TRANSCRIBE_QUEUE.send.mock.calls[0][0];
+    await worker.queue({ messages: [{ body: message, ack: vi.fn(), retry: vi.fn() }] } as any, env);
+    expect(env.BUCKET.get.mock.calls.map((call: any[]) => call[0])).toEqual(["photo/2026/09/16/pc_1234567890abcdef.jpg"]);
+  });
+
+  it("rejects a caption image that is not a small JPEG before storing anything", async () => {
+    for (const bad of [
+      new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/jpeg" }),
+      new Blob([jpeg(960, 540)], { type: "image/png" }),
+      new Blob([jpeg(1920, 1080)], { type: "image/jpeg" }),
+      new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: "image/jpeg" }),
+    ]) {
+      expect((await worker.fetch(request(photoId, "文字", {}, bad), env)).status).toBe(400);
+    }
+    expect(env.BUCKET.put).not.toHaveBeenCalled();
+  });
+
+  it("reads JPEG dimensions from baseline and progressive headers", () => {
+    expect(jpegSize(jpeg(960, 540))).toEqual({ width: 960, height: 540 });
+    expect(jpegSize(jpeg(540, 960, 0xc2))).toEqual({ width: 540, height: 960 });
+    expect(jpegSize(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]))).toBeNull();
+    expect(jpegSize(new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00]))).toBeNull();
   });
 
   it("retains one row on retry and repairs failure after DB commit before enqueue", async () => {
