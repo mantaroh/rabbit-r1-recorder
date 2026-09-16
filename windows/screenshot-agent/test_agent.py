@@ -157,6 +157,20 @@ class OutboxTests(unittest.TestCase):
     def test_default_interval_is_one_minute(self):
         self.assertEqual(config.defaults()["interval_seconds"], 60)
 
+    def test_second_instance_is_told_the_first_is_running(self):
+        from agent import single_instance
+        first = single_instance(self.directory)
+        self.assertIsNotNone(first)
+        try:
+            # Reading the locked byte used to raise PermissionError here,
+            # which surfaced as a startup failure instead of this answer.
+            self.assertIsNone(single_instance(self.directory))
+        finally:
+            first.close()
+        again = single_instance(self.directory)
+        self.assertIsNotNone(again)
+        again.close()
+
     def test_resume_wake_does_not_capture_twice_immediately(self):
         from agent import Agent
         service = Agent(self.directory, {**config.defaults(), "token": "test", "interval_seconds": 0.2})

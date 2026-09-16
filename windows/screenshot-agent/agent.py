@@ -255,6 +255,26 @@ def run_ui(agent, background=False):
     root.mainloop()
 
 
+def single_instance(directory):
+    """The open lock file if this is the only running copy, otherwise None.
+
+    The OS releases the lock when the process dies, so a stale file never
+    blocks a restart. The lock is taken before anything reads the file:
+    reading byte 0 while another copy holds it raises PermissionError, which
+    used to end in a startup failure instead of "already running".
+    Windows allows locking past the end of an empty file.
+    """
+    import msvcrt
+    lock = open(Path(directory) / "agent.lock", "a+b")
+    lock.seek(0)
+    try:
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        lock.close()
+        return None
+    return lock
+
+
 def sqlite_error_types():
     import sqlite3
     return (sqlite3.Error, OSError)
@@ -272,17 +292,8 @@ def main():
     args.data_dir.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(args.data_dir / "agent.log", maxBytes=1024 * 1024, backupCount=3, encoding="utf-8")
     logging.basicConfig(handlers=[handler], level=logging.INFO)
-    # OS releases the lock on crashes; a stale file never blocks a restart.
-    import msvcrt
-    lock = open(args.data_dir / "agent.lock", "a+b")
-    lock.seek(0)
-    if lock.read(1) == b"":
-        lock.write(b"0")
-        lock.flush()
-    lock.seek(0)
-    try:
-        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError:
+    lock = single_instance(args.data_dir)
+    if lock is None:
         messagebox.showinfo("Lifelog", "既に起動しています。タスクトレイから開いてください。")
         return
     try:
