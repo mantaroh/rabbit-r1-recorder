@@ -118,6 +118,9 @@ export default {
     if (request.method === "GET" && url.pathname === "/v1/photos") {
       return listPhotos(env, url);
     }
+    if (request.method === "GET" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}\/text$/.test(url.pathname)) {
+      return photoTextView(env, url.pathname.split("/")[3]);
+    }
     if (request.method === "GET" && url.pathname === "/v1/debug/caption") {
       return debugCaption(env, url);
     }
@@ -794,9 +797,10 @@ const DAY_ROW_LIMIT = 50_000;
 /**
  * One page of a day, newest first; the layout rules are in day-page.ts.
  *
- * The whole day is read, but only the light columns. Captions and OCR are the
- * heavy ones — a PC screenshot carries about 2,500 characters — and are read
- * for the page's own photos only.
+ * The whole day is read, but only the light columns. Captions are read for the
+ * page's own photos only, and OCR not at all — a PC screenshot carries about
+ * 2,500 characters, and the page fetches it from photoTextView when a picture
+ * is opened. `has_ocr` says whether there is any to fetch.
  */
 async function dayPage(env: Env, url: URL, date: string, from: number, to: number): Promise<Response> {
   const perPage = perPageOf(intParam(url, "per_page"));
@@ -832,7 +836,7 @@ async function dayPage(env: Env, url: URL, date: string, from: number, to: numbe
   const details = new Map<string, PhotoDetail>();
   if (ids.length) {
     const rows = await env.DB.prepare(
-      `SELECT photo_id, caption, ocr_text FROM photos
+      `SELECT photo_id, caption, COALESCE(ocr_text, '') <> '' AS has_ocr FROM photos
         WHERE photo_id IN (SELECT value FROM json_each(?1))`,
     )
       .bind(JSON.stringify(ids))
@@ -856,9 +860,26 @@ async function dayPage(env: Env, url: URL, date: string, from: number, to: numbe
   });
 }
 
+/**
+ * One picture's caption and screen text, for the viewer on the web page.
+ *
+ * Not on the device's list of routes, so only the browser reaches it: the
+ * screen text is the most private thing in the archive, and neither the R1
+ * nor the PC recorder has any reason to read it back.
+ */
+async function photoTextView(env: Env, photoId: string): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT photo_id, caption, ocr_text FROM photos WHERE photo_id = ?1`,
+  )
+    .bind(photoId)
+    .first<{ photo_id: string; caption: string | null; ocr_text: string | null }>();
+  if (!row) return json({ error: "not found" }, 404);
+  return json({ photo_id: row.photo_id, caption: row.caption ?? "", ocr_text: row.ocr_text ?? "" });
+}
+
 interface PhotoDetail {
   caption: string | null;
-  ocr_text?: string | null;
+  has_ocr: number;
 }
 
 function audioEntry(row: SegmentHead) {
@@ -872,19 +893,25 @@ function audioEntry(row: SegmentHead) {
   };
 }
 
-/** `details` fills in what dayPage left out of its first read; the whole-day view already has it. */
+/**
+ * `details` is dayPage's second read: the caption and whether there is screen
+ * text, but not the text. The whole-day view has read everything already and
+ * passes the text through, as it always has.
+ */
 function photoEntry(group: PhotoGroup, details?: Map<string, PhotoDetail>) {
   return {
     kind: "photo",
     at: group.at,
     source: group.source,
     shots: group.shots.map((s) => {
-      const text: PhotoDetail = details?.get(s.photo_id) ?? s;
+      const detail = details?.get(s.photo_id);
+      const text = details
+        ? { caption: detail?.caption ?? "", has_ocr: Boolean(detail?.has_ocr) }
+        : { caption: s.caption ?? "", ocr_text: s.ocr_text ?? "" };
       return {
         id: s.photo_id,
         facing: s.facing,
-        caption: text.caption ?? "",
-        ocr_text: text.ocr_text ?? "",
+        ...text,
         // Windows names a screen \\.\DISPLAY1; the card already says PC.
         label: s.source === "desktop" ? String(s.monitor_id ?? "").replace(/^\\\\\.\\/, "") : undefined,
       };

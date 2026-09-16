@@ -252,9 +252,11 @@ describe("day view, a page at a time", () => {
     expect(d).toMatchObject({ page: 1, per_page: 20, total_entries: 3, total_pages: 1 });
     expect(d.entries.map((e: any) => e.kind === "audio" ? e.id : e.shots[0].id)).toEqual(["spoken", photoId, "camera123"]);
     expect(d.entries[0].text).toBe("こんにちは");
-    expect(d.entries[1].shots[0]).toMatchObject({
-      caption: "PC の説明", ocr_text: "スクリーン文書 特別検索語 駅", label: "DISPLAY1",
-    });
+    expect(d.entries[1].shots[0]).toMatchObject({ caption: "PC の説明", has_ocr: true, label: "DISPLAY1" });
+    // The screen text is fetched when a picture is opened, not with the page.
+    expect(d.entries[1].shots[0]).not.toHaveProperty("ocr_text");
+    expect(JSON.stringify(d)).not.toContain("特別検索語");
+    expect(d.entries[2].shots[0]).toMatchObject({ id: "camera123", has_ocr: false });
     expect(d.stats).toMatchObject({ segments: 2, with_text: 1, photos: 2, rows_truncated: false });
   });
 
@@ -296,6 +298,29 @@ describe("day view, a page at a time", () => {
     expect(new Set(seen).size).toBe(2053);
     expect(seen.at(-1)).toBe("camera123");
     expect((await day("&page=22&per_page=100")).entries).toEqual([]);
+  });
+
+  it("hands one picture's caption and screen text to the web page, and to nobody else", async () => {
+    const ask = (id: string, token: string) => worker.fetch(new Request(`https://test/v1/photos/${id}/text`, {
+      headers: { authorization: "Bearer " + token },
+    }), env);
+
+    const response = await ask(photoId, "admin");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      photo_id: photoId, caption: "PC の説明", ocr_text: "スクリーン文書 特別検索語 駅",
+    });
+    expect(await (await ask("camera123", "admin")).json()).toEqual({ photo_id: "camera123", caption: "", ocr_text: "" });
+
+    expect((await ask("nosuchphoto", "admin")).status).toBe(404);
+    expect((await ask(photoId, "desktop-secret")).status).toBe(403);
+    expect((await ask(photoId, "ingest")).status).toBe(403);
+  });
+
+  it("keeps the screen text in the whole-day answer the R1 reads", async () => {
+    const d = await day("");
+    expect(d.entries.find((e: any) => e.kind === "photo" && e.shots[0].id === photoId).shots[0])
+      .toMatchObject({ ocr_text: "スクリーン文書 特別検索語 駅" });
   });
 
   it("falls back to 50 a page for a size the page does not offer", async () => {

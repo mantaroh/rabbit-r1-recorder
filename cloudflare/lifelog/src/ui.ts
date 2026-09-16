@@ -99,9 +99,8 @@ export const UI_HTML = `<!doctype html>
     font-size: 12px; color: var(--dim); margin-top: 3px; line-height: 1.45;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
-  .shot details .cap { display: block; max-height: 12em; overflow: auto; white-space: pre-wrap; }
-  .shot summary { font-size: 12px; color: var(--dim); cursor: pointer; }
-  .facing { font-size: 11px; color: var(--warn); margin-top: 2px; }
+  .facing { font-size: 11px; color: var(--warn); margin-top: 2px; display: flex; gap: 6px; }
+  .has-ocr { color: var(--dim); }
   audio { width: 100%; height: 32px; margin-top: 6px; }
   .empty { color: var(--dim); padding: 30px 0; text-align: center; grid-column: 1 / -1; }
   .pager {
@@ -125,14 +124,33 @@ export const UI_HTML = `<!doctype html>
   #map { height: calc(100vh - 150px); min-height: 320px; border-radius: 8px; overflow: hidden; }
   #map .maplibregl-ctrl-attrib { font-size: 11px; }
   dialog {
-    border: none; background: transparent; max-width: 96vw; max-height: 96vh; padding: 0;
-  }
-  dialog img { max-width: 96vw; max-height: 86vh; border-radius: 8px; display: block; margin: 0 auto; }
-  #viewerCap {
-    max-width: min(96vw, 900px); margin: 8px auto 0; color: var(--text);
-    font-size: 14px; white-space: pre-wrap; text-align: left;
+    border: none; background: transparent; color: var(--text);
+    max-width: 96vw; max-height: 96vh; padding: 0; overflow: visible;
   }
   dialog::backdrop { background: rgba(0,0,0,.85); }
+  /* Picture above its words on a narrow window, beside them on a wide one. */
+  .viewer-body { display: grid; gap: 10px; }
+  #viewerImg {
+    max-width: 96vw; max-height: 60vh; border-radius: 8px;
+    display: block; margin: 0 auto; cursor: zoom-out;
+  }
+  #viewerText {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; max-height: 30vh; overflow: auto; font-size: 14px;
+  }
+  @media (min-width: 1100px) {
+    .viewer-body { grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr); align-items: start; }
+    #viewerImg { max-width: 100%; max-height: 92vh; }
+    #viewerText { max-height: 92vh; }
+  }
+  #viewerCap { margin: 0; white-space: pre-wrap; }
+  #viewerOcrBox h2 { font-size: 12px; color: var(--dim); font-weight: 600; margin: 12px 0 4px; letter-spacing: .04em; }
+  #viewerOcr { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.6; font-family: inherit; }
+  #viewerClose {
+    position: fixed; top: 10px; right: 12px; z-index: 1;
+    font-size: 20px; line-height: 1; padding: 6px 12px;
+  }
+  #viewerClose:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>
 </head>
 <body>
@@ -157,7 +175,19 @@ export const UI_HTML = `<!doctype html>
   <nav class="pager" id="pagerBottom" aria-label="ページ" hidden></nav>
   <div id="map" hidden></div>
 </main>
-<dialog id="viewer"><img id="viewerImg" alt=""><p id="viewerCap"></p></dialog>
+<dialog id="viewer" aria-label="画像">
+  <button type="button" id="viewerClose" aria-label="閉じる">×</button>
+  <div class="viewer-body">
+    <img id="viewerImg" alt="">
+    <div id="viewerText">
+      <p id="viewerCap"></p>
+      <section id="viewerOcrBox" hidden>
+        <h2>画面の文字</h2>
+        <pre id="viewerOcr"></pre>
+      </section>
+    </div>
+  </div>
+</dialog>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -224,10 +254,10 @@ function renderEntry(e) {
         <img loading="lazy" decoding="async" \${size}
              src="/v1/media/photo/\${encodeURIComponent(s.id)}"
              data-full="/v1/media/photo/\${encodeURIComponent(s.id)}"
+             data-id="\${escapeHtml(s.id)}"
              data-caption="\${escapeHtml(s.caption)}" alt="">
-        <div class="facing">\${escapeHtml(s.label ?? (s.facing === 'front' ? '前' : '後'))}</div>
+        <div class="facing"><span>\${escapeHtml(s.label ?? (s.facing === 'front' ? '前' : '後'))}</span>\${s.has_ocr ? '<span class="has-ocr">文字あり</span>' : ''}</div>
         <div class="cap" title="\${escapeHtml(s.caption)}">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
-        \${s.ocr_text ? '<details><summary>画面の文字</summary><div class="cap">' + escapeHtml(s.ocr_text) + '</div></details>' : ''}
       </div>\`).join('');
     const many = e.shots.length > 2 ? ' wide' : '';
     return \`<div class="entry\${many}">\${renderHead(e, SOURCE_NAMES[e.source] || 'R1')}
@@ -500,15 +530,51 @@ function showTab(which) {
 $('tabMap').addEventListener('click', () => showTab('map'));
 $('tabList').addEventListener('click', () => showTab('list'));
 
+// The screen text is not in the day's answer; it is fetched for the one
+// picture being looked at. Only the latest request may fill the viewer.
+let viewerSeq = 0;
+
+async function showText(id, seq) {
+  $('viewerOcrBox').hidden = true;
+  $('viewerOcr').textContent = '';
+  if (!id) return;
+  try {
+    const r = await fetch('/v1/photos/' + encodeURIComponent(id) + '/text');
+    if (seq !== viewerSeq) return;
+    if (!r.ok) throw new Error(String(r.status));
+    const d = await r.json();
+    if (seq !== viewerSeq) return;
+    if (d.caption) $('viewerCap').textContent = d.caption;
+    if (d.ocr_text) {
+      $('viewerOcr').textContent = d.ocr_text;
+      $('viewerOcrBox').hidden = false;
+    }
+  } catch (err) {
+    if (seq !== viewerSeq) return;
+    $('viewerOcr').textContent = '画面の文字を読み込めませんでした（' + err.message + '）';
+    $('viewerOcrBox').hidden = false;
+  }
+}
+
 document.addEventListener('click', (e) => {
   const img = e.target.closest('.shot img');
   if (!img) return;
+  const seq = ++viewerSeq;
   $('viewerImg').src = img.dataset.full;
-  // The card cuts the caption at two lines; the whole of it is here.
-  $('viewerCap').textContent = img.dataset.caption || '';
+  // The card cuts the caption at two lines; the whole of it is here, and the
+  // fetch below replaces it with the stored one.
+  $('viewerCap').textContent = img.dataset.caption || 'キャプションなし';
+  $('viewerText').scrollTop = 0;
   $('viewer').showModal();
+  showText(img.dataset.id, seq);
 });
-$('viewer').addEventListener('click', () => $('viewer').close());
+// Closed by the picture, the dark background, the button or Esc — not by a
+// click on the text, which has to stay selectable.
+$('viewer').addEventListener('click', (e) => {
+  if (e.target === $('viewer') || e.target === $('viewerImg') || e.target === $('viewerClose')) {
+    $('viewer').close();
+  }
+});
 
 // ------------------------------------------------------------ lost R1 ---
 // The device carries a token in a pocket. This is the switch that kills it,
