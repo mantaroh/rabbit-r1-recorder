@@ -76,6 +76,12 @@ In order:
      depend on the image the caption is written from.
    Capturing only between 08:00 and 23:00 is not in the app; it would be a
    feature of its own.
+   **Done 2026-09-16** (`573042a`, `5964c82`, migration 0020, Worker
+   `68b7bfcb`): the PC sends a copy at most 960 px on the long edge as
+   `caption_image` and captions are written from it; the interval is 60
+   seconds. Measured on five frames: 1920x1080 65.9, 1280x720 53.5, 960x540
+   32.5, 640x360 24.8 neurons; at 640 the model invented titles. First
+   production frames after the change: 31-34 neurons.
 2. **The day view stops at 2,000 photos, oldest first.** The PC alone adds
    about 240 an hour, so a working day hides its own latest records, and the
    page does not say so (`photos_truncated` is in the API only). Proposed:
