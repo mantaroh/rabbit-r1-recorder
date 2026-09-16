@@ -84,13 +84,28 @@ In order:
    production frames after the change: 31-34 neurons.
 2. **The day view stops at 2,000 photos, oldest first.** The PC alone adds
    about 240 an hour, so a working day hides its own latest records, and the
-   page does not say so (`photos_truncated` is in the API only). Proposed:
-   pages of 500 with a "load more" button, never splitting one capture across
-   two pages.
+   page does not say so (`photos_truncated` is in the API only).
+   **Built 2026-09-16 on `feature/day-view-paging`, not yet deployed:**
+   `/v1/day?page=N&per_page=20|50|100` lays the whole day out from the light
+   columns (`src/day-page.ts`), newest first, and reads captions and OCR for
+   the page's photos only. The web page shows numbered pages above and below
+   the list and remembers the page size. Silent segments are now left out on
+   the server (`quiet=1` keeps them), so a page is never mostly hidden.
+   Without `page` the answer is unchanged, because the R1 reads it.
 3. **The day view carries every OCR text.** 2,000 images at about 2,500
    characters is several MB per load. Proposed: return only whether a photo
    has OCR, and fetch the text from `GET /v1/photos/<id>/text` when the image
-   is opened in the viewer. Search keeps returning the text.
+   is opened in the viewer. Search keeps returning the text. With pages of
+   at most 100 entries this is at most about 500 KB, so it is less urgent
+   than it was.
+4. **The R1 still downloads the whole day.** `LifelogSummary.kt` calls
+   `/v1/day` without `page` and uses only the counts and the latest words,
+   but the answer carries every caption and OCR text of the day, several MB
+   with the PC recording. It wants an endpoint of its own, or `page=1` and a
+   change on the device.
+5. **PC times show in UTC on the web page.** `timeOf` in `ui.ts` takes the
+   hour from the text, which is right for the R1's `+09:00` and wrong for the
+   PC's `Z`: a capture at 17:24 JST is listed at 08:24.
 
 ---
 
