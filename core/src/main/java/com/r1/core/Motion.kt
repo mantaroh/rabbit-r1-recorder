@@ -217,6 +217,16 @@ object Motion {
     @Volatile
     var onShake: ((Int, Float, Long) -> Unit)? = null
 
+    /**
+     * Whether [start] took and the accelerometer is actually reporting.
+     *
+     * [placement] has a default, and the default says the device is still —
+     * which is indistinguishable from a device that genuinely is. Anything
+     * using stillness as evidence has to be able to tell "nothing moved" from
+     * "nobody was watching".
+     */
+    val watching: Boolean get() = manager != null
+
     private var manager: SensorManager? = null
     private var gravityX = 0.0
     private var gravityY = 0.0

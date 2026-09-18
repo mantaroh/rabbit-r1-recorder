@@ -38,6 +38,27 @@ openai_key_for_hermes.txt
 *.opus
 *.m4a
 
+# One exception: a line synthesised for a talk, which is source rather than a
+# recording of anybody. Without this the demo builds silently from a fresh
+# clone. See CueActivity.
+!audioprobe/src/main/res/raw/cue_hello.wav
+
+# The character on the panel. A third-party model of a dozen megabytes that is
+# swapped per talk; see audioprobe/stage/README.md.
+audioprobe/src/main/assets/stage/*.vrm
+
+# Motion clips, likewise not ours to hand on. The pack's terms forbid
+# redistributing the motions "in a state where they can be extracted", which a
+# public repository is; see audioprobe/stage/README.md for where to put them.
+audioprobe/src/main/assets/stage/motion/*.vrma
+
+# The same rule at the top of the tree, where the downloads land. A stray
+# `git add -A` publishing a model or a motion pack is the one mistake here that
+# cannot be taken back.
+/*.vrm
+/*.vrma
+/VRMA_MotionPack.zip
+
 # Opens the destructive endpoints; never on the device, never committed.
 .admin-token
 .agent-token

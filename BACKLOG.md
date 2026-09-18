@@ -832,3 +832,283 @@ shown so far had a person in it, so it has never yet had the chance to say no.
 Design: 2 planned / 2 actual — one to survey the ground and propose, one to
 settle the four choices and write this down. Implementation: 1 planned /
 1 actual.
+
+## Built: an avatar on the standby display
+
+The standby display becomes a character rather than a page of text: the model
+stands on the panel and holds a board with the current headline on it.
+
+Written down the night the talk prop was built, because that prop answered most
+of the questions this feature would otherwise have had to ask first.
+
+### What is now known rather than assumed
+
+All of it measured on the device on 2026-08-27, building 一言:
+
+- The R1 runs **WebView 147** (Chromium) over **OpenGL ES 3.2** on a PowerVR
+  GE8320. three.js and `@pixiv/three-vrm` bundled to one classic script render
+  a **19 MB VRM 1.0 model** on it, with spring bones, blinking and expression
+  weights, at a frame rate that reads as smooth on a 480×640 panel.
+- Assets reach the page through `WebViewClient.shouldInterceptRequest` under a
+  host that does not exist. That gives an ordinary origin — needed for `fetch`
+  — without adding androidx.webkit, which this app deliberately does not have.
+- The model was on screen well inside a twelve-second budget from a cold start.
+  The load time itself was never measured; it wants measuring before anything
+  depends on it.
+- Four failures that all look identical from the outside, each of which cost an
+  hour: a `GONE` WebView is never laid out and the page measures itself at zero
+  by zero; `Box3` read before `updateMatrixWorld` puts the camera at knee
+  height; the head bone is not nine tenths of the way up every rig (0.28 of
+  0.72 on one model); and `VRMUtils.rotateVRM0` does not leave every 0.x model
+  facing the viewer. Framing from the bounding box after the matrices are
+  updated, and taking the facing from `meta.metaVersion`, survives a model
+  swap. See `audioprobe/stage/entry.js`.
+- Drawing at five frames a second while nothing is happening is invisible and
+  cheap. Anything on screen has to be drawn properly.
+
+### Why the battery objection mostly is not one
+
+A 3D scene running all day would be indefensible on a 1010 mAh device. The
+standby display is not all day: `Idle` only fires while charging, and
+`SignageActivity.applyKeepAwake` only holds the panel awake while charging. So
+the avatar renders on a desk with a cable in it and nowhere else, which is the
+same condition under which the display already keeps a bright panel lit.
+
+What does want measuring is the *idle* draw, since the panel is up for hours
+rather than the five minutes the talk needed.
+
+### The part that is genuinely hard, and it is not the 3D
+
+The board.
+
+`HeadlinesScreen` already settled this argument once, and the note above it
+says so: at a size that fits four Japanese headlines on a 240 dp panel, none of
+them can be read from across a desk. It shows **one headline, large, for
+fifteen seconds**. A board held by a character is by definition smaller than
+the panel the headline currently gets all of — so the charming version is
+strictly worse at the one thing the screen exists for.
+
+Three ways out, in order of how much they give up:
+
+1. **Board holds the headline.** Most faithful to the idea, least readable.
+   Only viable if the character is small and the board is most of the frame,
+   at which point it is a text screen with a mascot in the corner.
+2. **Character beside the text.** The headline keeps its size and position; the
+   model stands to one side of it, or behind it at low contrast. Readable, and
+   the least interesting version of the idea.
+3. **Board holds the source, text holds the headline.** The board carries the
+   feed name — short, fixed, legible at any size — and the headline stays as
+   HTML underneath. The board earns its place by saying something the text no
+   longer has to.
+
+Three is the one to build. One is the one to try first for a day, because the
+argument above is about reading and this screen is glanced at, and that
+distinction has already been wrong once here.
+
+### How the board would be made
+
+A `THREE.Mesh` plane parented to the hand bone —
+`vrm.humanoid.getNormalizedBoneNode("rightHand")` — with a `CanvasTexture` for
+its face, redrawn when the headline changes and marked `needsUpdate`. Canvas 2D
+draws Japanese in this WebView. The arm goes into a holding pose the same way
+the talk prop takes the model out of its T-pose: setting rotations on the
+normalized rig, which three-vrm copies onto the real bones each update.
+
+### Where it did not fit, and what it cost to make it
+
+`SignageScreen` hands back a `View` and `SignageActivity.show()` swaps one for
+another. An avatar built that way would parse a 19 MB model on every turn of
+the wheel. The avatar had to become the standby display's *frame*, with the
+existing screens drawn over it, rather than one more screen in the rotation —
+which was a larger change to that Activity than it sounds, and was most of the
+work.
+
+It is now two children of the same frame: the page underneath, built once in
+`onCreate` and left alone, and a `content` container that `show()` swaps
+screens into. `content` takes the top 52% of the panel and carries a scrim that
+is opaque for its first quarter and clear by halfway down; the screens, which
+paint themselves black, are made transparent over it. The two numbers that have
+to agree — `CONTENT_FRACTION` in the Activity and `STANDBY_CROP` in
+`entry.js` — are commented as agreeing, because nothing enforces it.
+
+### The licence is not the constraint it looked like
+
+This was written down wrong the first time and the correction is worth keeping,
+because the wrong version was about to cost the headline its space.
+
+The model's own metadata says `creditNotation: required`. **The licence it
+points at says the opposite.** The VN3 agreement shipped with the model set
+answers "Credit for use" with **Not necessary**, and the line reading
+`SSS LLC.` under "Credit notation" is the wording to use *if* a credit is
+shown, not an instruction to show one. `commercialUsage` in the metadata is
+`personalNonProfit`, which the agreement does bear out — publicising for
+non-profit purposes is what it permits.
+
+So the standby display does not owe a permanent credit in a corner, and the
+headline keeps its panel. The metadata enum is coarse and the exporter picks
+from a short list; the agreement is the document that governs.
+
+The credit is still worth showing, because it costs almost nothing in the right
+place and being correct here is cheap. That place is a licence screen in 設定,
+not the panel — see below. The talk prop keeps its credit under the caption,
+which is a few minutes of a screen nobody is reading anyway.
+
+Read from `ミニずんだもん_使用ライセンスvn3.pdf` in the model set. The Japanese
+original does not extract as text; the English edition shipped alongside it
+does, and the sentences quoted above are from that. Terms may change —
+<https://zunko.jp/guideline.html> is where the licensor says so.
+
+## Proposed: a licence screen in 設定
+
+There is not one, and the app has quietly accumulated things that want naming:
+OkHttp (Apache-2.0), and — since the talk prop — three.js and
+`@pixiv/three-vrm` (both MIT) bundled into `assets/stage/bundle.js`, plus a
+character model under its own agreement.
+
+One screen behind 設定, listing each component, its licence, and the full text
+where the licence asks for it. Apache-2.0 does ask; MIT asks for the copyright
+notice and permission text. Nothing here is a hardship and none of it is
+currently written down anywhere a person could find it.
+
+The reason to do it is not only tidiness. It gives every future credit — the
+next model, the next library — a place to go that is not the panel, which is
+the argument that nearly cost the standby display its headline above.
+
+### Explicitly not proposed
+
+- Lip sync. The page never sees audio; the talk prop moves the mouth on a
+  shaped oscillator and that is all this would get.
+- The avatar speaking. That is 声かけ, which has its own screen and its own
+  reasons for taking over the panel.
+- Lip sync, and the avatar speaking: both still stand.
+- Animation clips were on this list — "VRMA would want a second dependency and a
+  second licence question, for movement a sway and a blink already cover" — and
+  were built anyway on 2026-08-30, see below. Both costs were real and both were
+  small. The reasoning was not wrong about the price; it was wrong that a sway
+  covers it, because a sway is not something a person can *do* to the thing.
+
+### Open questions
+
+- The idle draw, in milliamps, over an hour. Everything above assumes it is
+  small next to a lit panel and nothing has measured it.
+- Whether the model belongs in the APK or in R2 behind the Worker. Nineteen
+  megabytes is a fifth of the current APK, and the device already knows how to
+  fetch things.
+- Whether the character should react to anything — a segment uploading, a
+  question being asked — or simply stand there. Reacting is where this stops
+  being a wallpaper and starts being a second thing to debug.
+
+### Built on 2026-08-30
+
+Option three, as argued above: the board carries the feed name and the headline
+stays as text over it. Option one was never tried for its day — the board was
+legible enough holding a source that the question of it holding a headline
+stopped being interesting.
+
+What is on the device:
+
+- `StagePage` holds the WebView, the asset host and the four failures worth
+  knowing about; `CueActivity` and `SignageActivity` both build from it. The
+  page is one bundle with two modes — `cueSpeak`/`cueIdle` for the talk,
+  `stageStandby`/`stageBoard` for the panel — because a second page would pay
+  for the model and the GL surface twice.
+- The board is a plane parented to the right hand for the sway, but placed and
+  turned in the camera's axes every frame. Parenting alone put it through the
+  character's own torso: a rig can orient its wrist any way it likes.
+- The arm follows the board rather than the mode. Most standby screens have
+  nothing to hold up, and a raised arm with nothing in it reads as a fault.
+- Feed names are broken over two lines and then three before the type is
+  allowed to shrink. "ギズモード・ジャパン" takes two; "はてなブックマーク -
+  人気エントリー - 総合" takes three and is the worst case there is.
+- `UploadSettings.avatar`, on by default. Off puts the display back exactly as
+  it was, which includes giving `HeadlinesScreen` its feed name back — the
+  screens are told whether the board is really up, so moving something onto it
+  is reversible.
+
+### A tap plays a motion, added 2026-08-30
+
+The standby display had one gesture and it dismissed the screen — a second way
+out that nothing pointed at, next to the side button that the code already
+called the way out. A tap now plays one clip from pixiv's VRMA_MotionPack,
+round the six in order, and the side button is the only way back.
+
+- The clips are read only after the panel enters standby. The talk shares the
+  page and cannot play one; making it read five megabytes to find that out
+  would be the second dependency earning its bad reputation.
+- Nothing puts a rig back. An action that has finished leaves the bones on its
+  last frame, which after the knee bend is a character stuck in a crouch, so
+  the whole normalized rest pose is captured at load and written back when a
+  clip ends.
+- The board is hidden while a clip runs. It is held in the hand the clips move.
+- A tap during a clip is ignored rather than queued or restarted. Cut short a
+  motion reads as a fault; queued, as a device that stopped listening.
+- `VRMA_04` is drawing and firing a weapon and is not used.
+- The clips must not be committed. The pack forbids redistributing them "in a
+  state where they can be extracted", which a public repository is. Same
+  treatment as the model: gitignored, and named in `stage/README.md`.
+
+It also found a real bug in the frame loop. `getDelta` resets the clock whether
+or not anything is drawn with it, so every throttled frame threw its slice
+away and everything driven by time ran at half speed. Invisible in a sway.
+Not invisible at all in a motion clip.
+
+### It moves on its own too, added 2026-09-01
+
+A tap was the only thing that made the character move, and a standby display is
+mostly not being touched. Now a clip also plays by itself, somewhere between
+two and five minutes after the last one, the interval drawn afresh each time so
+it does not settle into a period next to the fifteen-second headline rotation
+and the two-minute fetch.
+
+- Only on a cable. Off one the panel is already dark and the page paused, and a
+  clip played then is a GL context turning over for nobody. Nothing catches up
+  afterwards: a display asleep for an hour owes no motions.
+- A tap restarts the clock, so a motion asked for by hand is not followed a
+  second later by one nobody asked for.
+- The timer gives up permanently the first time the page reports it cannot read
+  a clip. The pack is not committed, so a device without it is ordinary rather
+  than broken, and asking every few minutes would spend the day learning the
+  same thing. A tap still asks, and its report is how the absence is noticed.
+- No page change. `window.stagePlay` already took the turn and answered "busy"
+  to anything arriving mid-clip.
+
+### The board came off, 2026-09-01
+
+Removed. The board was legible on its own terms and that turned out not to be
+the test: on the panel, over a character framed at a third of its height, a
+feed name in a held-up sign is read after the headline it belongs to rather
+than with it, and by then the text has already said where the item came from.
+It was answering a question nobody had while it was up.
+
+So the mesh, its canvas and the line-breaking that fitted "はてなブックマーク -
+人気エントリー - 総合" onto three lines are all gone, along with
+`window.stageBoard`, `SignageScreen.board` and `onBoardShown`. The arm no
+longer follows anything: both come down, in standby as in the talk.
+`HeadlinesScreen` keeps its feed name on the meta line unconditionally, which
+is where it was before any of this and where the avatar switch put it back.
+
+What stays is the arrangement underneath, which was the expensive part and is
+not in question: the character built once as the display's frame, the screens
+swapped into a container over it, the scrim, and a tap playing a motion.
+
+### Still unproven
+
+- **The idle draw, in milliamps, over an hour.** Unchanged from the open
+  question below, and it stayed open: the device measures battery current, and
+  on a full battery on a charger that number sits near zero whatever the GPU is
+  doing. Measuring it wants either a meter on the cable or a run off charge
+  with the panel forced awake, and neither is a thing the device can do to
+  itself.
+- A headline of four lines reaches into the fade and sits over the character's
+  ears. It is readable and it is not nothing.
+
+### Turns
+
+Design: 1 planned / 1 actual, written from a prop that had just answered the
+technical half. Implementation: 1 planned / 4 actual — one to build it and
+three spent entirely on where the board sits and how large its type can be,
+which is the half of this that no amount of design settled.
+
+Motion on tap: 1 planned / 1 actual. The clips retargeted and played first try;
+what cost anything was noticing that the rig had to be put back afterwards, and
+that the frame throttle had been lying about time all along.

@@ -33,6 +33,7 @@ class UploadSettings(context: Context) {
         private const val KEY_OPUS = "opus"
         private const val KEY_INTERPRET_TARGET = "interpret_target"
         private const val KEY_NUDGE = "nudge"
+        private const val KEY_AVATAR = "avatar"
 
         private const val DEFAULT_BASE_URL = "https://lifelog.mantaroh.org"
         private const val DEFAULT_DEVICE_ID = "rabbit-r1-01"
@@ -198,6 +199,21 @@ class UploadSettings(context: Context) {
     var nudge: Boolean
         get() = prefs.getBoolean(KEY_NUDGE, false)
         set(v) = prefs.edit().putBoolean(KEY_NUDGE, v).apply()
+
+    /**
+     * Whether the standby display draws the character behind its screens.
+     *
+     * On by default, and only ever running on a desk with a cable in it — the
+     * panel is not held awake off charge, so the scene is not either. What an
+     * idle 3D scene costs in milliamps over an hour is still unmeasured
+     * though, and this is the switch that exists because of it.
+     *
+     * Off also gets the display back exactly as it was: the screens paint
+     * themselves black and take the whole panel.
+     */
+    var avatar: Boolean
+        get() = prefs.getBoolean(KEY_AVATAR, true)
+        set(v) = prefs.edit().putBoolean(KEY_AVATAR, v).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && bearer.isNotEmpty()

@@ -295,10 +295,11 @@ private class HeadlinesScreen : SignageScreen {
         showing = item.title
 
         val paint = {
+            // The counter and the feed name. A headline whose source is
+            // nowhere is worse than a crowded line.
             meta.text = buildString {
                 append(index % items.size + 1).append(" / ").append(items.size)
-                append("   ")
-                append(item.source.ifEmpty { "新着" })
+                append("   ").append(item.source.ifEmpty { "新着" })
             }
             body.text = item.title
         }
@@ -427,16 +428,16 @@ private class TasksScreen : SignageScreen {
     }
 
     override fun refresh(data: LifelogSummary.Snapshot?) {
-        val board = HermesStatus.board
+        val cards = HermesStatus.board
         body.text = when {
-            board == null -> "—"
-            board.total == 0 -> "カードはありません"
+            cards == null -> "—"
+            cards.total == 0 -> "カードはありません"
             else -> buildString {
-                for ((name, count) in board.columns) {
+                for ((name, count) in cards.columns) {
                     append(name).append("  ").append(count).append('\n')
                 }
                 // What is actually moving matters more than the counts.
-                board.running.firstOrNull()?.let {
+                cards.running.firstOrNull()?.let {
                     append('\n').append("▶ ").append(it.take(40))
                 }
             }

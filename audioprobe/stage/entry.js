@@ -1,0 +1,577 @@
+// The panel, as a page.
+//
+// Three states and one job. For the talk it waits as a clock and then a
+// character stands up and greets the room; for the standby display the same
+// character stands at the bottom of the panel, with the screens drawn over it
+// by Android. Kotlin drives all of it through the functions hung on window at
+// the bottom.
+//
+// One page and one bundle on purpose. The model is nineteen megabytes and the
+// renderer takes a second to bring a GL surface up; a second page would pay
+// both again for a character that is already loaded.
+//
+// Nothing here plays audio. The sound is native, compiled into the APK, and it
+// must not depend on whether a browser engine started -- see CueActivity.
+
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import {
+  VRMAnimationLoaderPlugin,
+  VRMLookAtQuaternionProxy,
+  createVRMAnimationClip,
+} from "@pixiv/three-vrm-animation";
+
+const clockEl = document.getElementById("clock");
+const stageEl = document.getElementById("stage");
+const bubbleEl = document.getElementById("bubble");
+const canvas = document.getElementById("canvas");
+
+// ------------------------------------------------------------------ clock ---
+
+function paintClock() {
+  const now = new Date();
+  clockEl.textContent = now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0");
+}
+paintClock();
+setInterval(paintClock, 1000);
+
+// ------------------------------------------------------------------ scene ---
+
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
+renderer.setPixelRatio(1); // The panel is 480x640; there is nothing to gain above 1.
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(22, 1, 0.01, 20);
+
+/**
+ * The drawing buffer, from the element rather than from the window.
+ *
+ * `window.innerWidth` is zero while the page's own view is not laid out, and
+ * this page is loaded before it is shown on purpose -- the model has to be in
+ * memory well before the cue. Reading the document element instead means the
+ * first measurement is taken whenever it is valid, and the observer below
+ * takes it again if it changes.
+ */
+function resize() {
+  const w = document.documentElement.clientWidth || window.innerWidth;
+  const h = document.documentElement.clientHeight || window.innerHeight;
+  if (!w || !h) return;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+resize();
+new ResizeObserver(resize).observe(document.documentElement);
+
+// Flat and bright rather than modelled. VRM toon materials do their own
+// shading and a dim room reads as a fault on a small panel.
+scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+const key = new THREE.DirectionalLight(0xffffff, 1.1);
+key.position.set(0.6, 1.6, 1.4);
+scene.add(key);
+
+let vrm = null;
+
+/** Whether the mouth is moving. */
+let speaking = false;
+
+/**
+ * Whether the lid is off.
+ *
+ * One way only. The character arrives with the last line of the talk and then
+ * stays for whatever follows it -- questions, applause, somebody walking up to
+ * look at the device. Going back to a clock would take the ending away again.
+ */
+let revealed = false;
+
+/**
+ * Whether this is the standby display rather than the talk.
+ *
+ * The difference is the crop and the pose: the talk wants a face big enough to
+ * watch a mouth move, and standby wants a whole figure small enough to leave
+ * the top of the panel to the text it is standing under.
+ */
+let standby = false;
+const clock = new THREE.Clock();
+
+/**
+ * How much of the figure's height fills the panel.
+ *
+ * 0.8 for the talk -- head and torso, since the caption covers the lower third
+ * anyway and the legs were paying rent on space already spoken for. 1.8 for
+ * standby, which puts the whole figure in the bottom 56% and leaves the rest
+ * for the headline. Both were settled by looking at the panel; there is no
+ * measurement that would have given either.
+ */
+const CUE_CROP = 0.8;
+const STANDBY_CROP = 1.8;
+
+/**
+ * Standby draws at thirty rather than sixty.
+ *
+ * The talk lasts minutes and gets everything. Standby is a desk display that
+ * is up for hours, and a sway and a blink do not read any differently at half
+ * the rate -- while five frames a second, which is what the covered clock
+ * draws at, would read as a fault. What this costs in milliamps is unmeasured;
+ * that is the one open question this feature carries.
+ */
+const STANDBY_FRAME_MS = 1 / 30;
+
+/**
+ * Which way the model has to be turned to face the room, decided per model.
+ *
+ * A VRM 1.0 character is authored facing the viewer and needs nothing. A 0.x
+ * one is authored facing away and `VRMUtils.rotateVRM0` turns it -- except
+ * that the 0.x model this was first built against came out facing away even
+ * so, and a character delivering the last line of a talk with its back to the
+ * audience is not a subtle bug. Half a turn for 0.x, none for 1.0; both
+ * confirmed by looking at the panel rather than at the specification.
+ */
+let baseYaw = 0;
+
+// -------------------------------------------------------------- expression ---
+
+/** Blink on a rhythm that is not quite regular, because a metronome reads as dead. */
+let nextBlinkAt = 1.5;
+let blinkStartedAt = -1;
+
+function blink(t, expressions) {
+  if (blinkStartedAt < 0 && t >= nextBlinkAt) blinkStartedAt = t;
+  if (blinkStartedAt < 0) return;
+
+  const dt = t - blinkStartedAt;
+  const BLINK_MS = 0.12;
+  if (dt > BLINK_MS) {
+    expressions.setValue("blink", 0);
+    blinkStartedAt = -1;
+    nextBlinkAt = t + 2 + Math.random() * 3;
+    return;
+  }
+  // Closes and opens over the same span; a triangle is enough at this size.
+  expressions.setValue("blink", 1 - Math.abs(dt / BLINK_MS - 0.5) * 2);
+}
+
+/**
+ * A mouth that moves while the line is playing.
+ *
+ * Not lip sync. The audio is played natively and this page never sees it, so
+ * the mouth is driven by a shaped oscillator: fast enough to read as speech,
+ * irregular enough not to read as a machine.
+ */
+function mouth(t, expressions) {
+  if (!speaking) {
+    expressions.setValue("aa", 0);
+    return;
+  }
+  const open = (Math.sin(t * 17) * 0.5 + 0.5) * (Math.sin(t * 6.1) * 0.25 + 0.75);
+  expressions.setValue("aa", Math.max(0, open) * 0.7);
+}
+
+let lastDrawnAt = 0;
+
+/**
+ * Time dropped by the throttles below, carried to the frame that does draw.
+ *
+ * `getDelta` resets the clock whether or not anything is drawn with it, so a
+ * skipped frame used to throw its slice away: at thirty frames a second the
+ * renderer was handed sixteen milliseconds for thirty-three that had passed,
+ * and everything driven by time ran at half speed. Invisible in a sway, not
+ * invisible at all in a motion clip.
+ */
+let carried = 0;
+
+function frame() {
+  requestAnimationFrame(frame);
+  carried += clock.getDelta();
+  const t = clock.elapsedTime;
+
+  // Covered by the clock and nobody is watching: draw a few times a second
+  // rather than sixty, so a talk's worth of waiting is not spent turning the
+  // GPU over. Still drawing, though -- that is the whole point of this page.
+  // Once the lid is off this stops applying, mouth moving or not: a character
+  // on screen at five frames a second reads as a fault.
+  if (!revealed) {
+    if (t - lastDrawnAt < 0.2) return;
+    lastDrawnAt = t;
+  } else if (standby) {
+    if (t - lastDrawnAt < STANDBY_FRAME_MS) return;
+    lastDrawnAt = t;
+  }
+
+  const delta = carried;
+  carried = 0;
+
+  if (vrm) {
+    // Before vrm.update, which is what copies the normalized rig the clip
+    // drives onto the bones that are actually drawn.
+    if (mixer) mixer.update(delta);
+
+    const expressions = vrm.expressionManager;
+    if (expressions) {
+      blink(t, expressions);
+      mouth(t, expressions);
+    }
+    // A slow sway around the base yaw, so a still model does not look like a
+    // frozen one. Written as base plus offset rather than assigned outright,
+    // which is how the first version quietly undid the turn above.
+    vrm.scene.rotation.y = baseYaw + Math.sin(t * 0.5) * 0.06;
+    vrm.scene.position.y = Math.sin(t * 1.1) * 0.004;
+    vrm.update(delta);
+  }
+
+  renderer.render(scene, camera);
+}
+frame();
+
+// ------------------------------------------------------------- the figure ---
+
+/** The model's own size, measured once it is in the scene. */
+const figureSize = new THREE.Vector3();
+
+/**
+ * A bone on the normalized rig, which is the one three-vrm copies onto the
+ * real bones on every update. Setting the real ones is undone each frame.
+ */
+function bone(name) {
+  return vrm && vrm.humanoid && vrm.humanoid.getNormalizedBoneNode
+    ? vrm.humanoid.getNormalizedBoneNode(name)
+    : null;
+}
+
+/**
+ * Points the camera at the model, measured after its matrices are up to date.
+ *
+ * Three attempts got here. A fixed camera height assumed an adult-sized figure
+ * and this model stands 0.72 units tall. A bounding box read before
+ * updateMatrixWorld put the camera at knee height. The head bone looked like
+ * the reliable landmark and is not: this character's head sits at 0.28 of a
+ * 0.72 figure, nowhere near the nine tenths a human rig would give, so
+ * anything scaled from it framed a patch of hair.
+ *
+ * So: no proportions are assumed at all. The box says how big the figure is
+ * and the crop says how much of the panel it gets. A character too small to
+ * read is a worse failure than one framed loosely, and this has to work with
+ * whatever model is dropped in next.
+ */
+function frameCamera() {
+  if (!vrm) return;
+  vrm.scene.updateMatrixWorld(true);
+
+  const box = new THREE.Box3().setFromObject(vrm.scene);
+  box.getSize(figureSize);
+  const centre = box.getCenter(new THREE.Vector3());
+
+  const framed = figureSize.y * (standby ? STANDBY_CROP : CUE_CROP);
+  const distance = framed / 2 / Math.tan((camera.fov / 2) * (Math.PI / 180));
+
+  // Anchored to an edge rather than to the centre, so the part that matters
+  // lands where it has to whatever the proportions are: the face in the upper
+  // half for the talk, the feet just above the bottom edge for standby.
+  const lookY = standby
+    ? box.min.y - figureSize.y * 0.04 + framed / 2
+    : box.max.y + figureSize.y * 0.02 - framed / 2;
+
+  camera.position.set(centre.x, lookY, centre.z + distance);
+  camera.lookAt(centre.x, lookY, centre.z);
+  camera.updateProjectionMatrix();
+}
+
+/**
+ * Out of the T-pose, into a pose a character can stand in.
+ *
+ * A VRM loads with its arms straight out because that is the pose it is rigged
+ * in, and nobody greets a room like that. Both arms come down, for the talk and
+ * for standby alike.
+ *
+ * The numbers are eye-work, like BASE_YAW. A rig can put its elbow anywhere
+ * and no amount of reading the specification says where this one put it.
+ */
+function applyPose() {
+  const leftArm = bone("leftUpperArm");
+  const rightArm = bone("rightUpperArm");
+  const rightLower = bone("rightLowerArm");
+
+  if (leftArm) leftArm.rotation.z = -1.15;
+  if (rightArm) rightArm.rotation.set(0, 0, 1.15);
+  if (rightLower) rightLower.rotation.set(0, 0, 0);
+}
+
+// ------------------------------------------------------------- the motions ---
+
+/**
+ * The clips a tap plays, in the order taps play them.
+ *
+ * Six of the seven in the pack. `VRMA_04` is somebody drawing and firing a
+ * weapon, which is not what a character standing on a desk should do when the
+ * screen is touched.
+ *
+ * Round in order rather than at random: every one is reachable, and the same
+ * tap twice does not give the same thing twice.
+ */
+const MOTIONS = [
+  "VRMA_01.vrma",
+  "VRMA_02.vrma",
+  "VRMA_03.vrma",
+  "VRMA_05.vrma",
+  "VRMA_06.vrma",
+  "VRMA_07.vrma",
+];
+
+let motionAt = 0;
+let mixer = null;
+let action = null;
+let playing = false;
+
+/** Promise per clip, so a tap during a load waits for it instead of racing. */
+const clips = new Map();
+
+/**
+ * Every normalized bone as the model arrived, so a clip can be undone.
+ *
+ * Nothing puts a rig back. An action that has finished leaves the bones on its
+ * last frame — after the knee bend that is a character stuck in a crouch — and
+ * `applyPose` only ever touches three bones, so it cannot undo the other
+ * fifty. The whole rest pose is kept instead.
+ */
+let restPose = null;
+
+function eachBone(fn) {
+  const humanoid = vrm && vrm.humanoid;
+  if (!humanoid || !humanoid.humanBones) return;
+  Object.keys(humanoid.humanBones).forEach((name) => {
+    const node = humanoid.getNormalizedBoneNode(name);
+    if (node) fn(name, node);
+  });
+}
+
+function captureRest() {
+  restPose = {};
+  eachBone((name, node) => {
+    restPose[name] = { q: node.quaternion.clone(), p: node.position.clone() };
+  });
+}
+
+function restoreRest() {
+  if (restPose) {
+    eachBone((name, node) => {
+      const saved = restPose[name];
+      if (!saved) return;
+      node.quaternion.copy(saved.q);
+      node.position.copy(saved.p);
+    });
+  }
+  applyPose();
+}
+
+const animations = new GLTFLoader();
+animations.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+function loadClip(name) {
+  if (clips.has(name)) return clips.get(name);
+  const pending = new Promise((resolve, reject) => {
+    animations.load(
+      "motion/" + name,
+      (gltf) => {
+        const found = gltf.userData.vrmAnimations && gltf.userData.vrmAnimations[0];
+        if (!found) {
+          reject(new Error("no animation in " + name));
+          return;
+        }
+        // Retargeted onto this model. A clip is authored against the
+        // normalized humanoid and means nothing without a rig to bind it to.
+        resolve(createVRMAnimationClip(found, vrm));
+      },
+      undefined,
+      reject,
+    );
+  });
+  pending.catch(() => clips.delete(name));
+  clips.set(name, pending);
+  return pending;
+}
+
+let preloading = false;
+
+/**
+ * Reads the clips in, one at a time, once there is a panel that can play them.
+ *
+ * Standby only, and started from `stageStandby` rather than from the loader:
+ * the talk cannot play a clip and has no business reading five megabytes it
+ * will never use. Serial rather than at once because the first tap is likely to
+ * want the first clip, and six parallel reads would put it last.
+ */
+function preload() {
+  if (preloading || !vrm) return;
+  preloading = true;
+  MOTIONS.reduce(
+    (queue, name) => queue.then(() => loadClip(name)).catch(() => {}),
+    Promise.resolve(),
+  );
+}
+
+function makeMixer() {
+  mixer = new THREE.AnimationMixer(vrm.scene);
+  mixer.addEventListener("finished", () => {
+    if (action) {
+      action.stop();
+      action = null;
+    }
+    playing = false;
+    restoreRest();
+  });
+}
+
+// ------------------------------------------------------------------- load ---
+
+const loader = new GLTFLoader();
+loader.register((parser) => new VRMLoaderPlugin(parser));
+
+loader.load(
+  "character.vrm",
+  (gltf) => {
+    vrm = gltf.userData.vrm;
+    // VRM 0.x models face -Z; without this the character has its back to the
+    // room, which is a very quiet way to fail.
+    VRMUtils.rotateVRM0(vrm);
+    baseYaw = vrm.meta && vrm.meta.metaVersion === "0" ? Math.PI : 0;
+    VRMUtils.removeUnnecessaryJoints(gltf.scene);
+    vrm.scene.traverse((object) => {
+      object.frustumCulled = false;
+    });
+    if (vrm.lookAt) {
+      vrm.lookAt.target = camera;
+      // A clip's gaze track has nowhere to land without this, and
+      // createVRMAnimationClip makes one itself and says so every time it is
+      // called. Made once, here, where it can be seen.
+      const gaze = new VRMLookAtQuaternionProxy(vrm.lookAt);
+      gaze.name = "lookAtQuaternionProxy";
+      vrm.scene.add(gaze);
+    }
+    scene.add(vrm.scene);
+
+    // Framed and posed from the model, both of which depend on the mode.
+    // Done here and again from stageStandby: the standby display switches mode
+    // after the model is already up, and re-framing is a few matrix operations
+    // against re-loading nineteen megabytes.
+    captureRest();
+    frameCamera();
+    applyPose();
+    makeMixer();
+    // The clips are not read here; see preload.
+    if (standby) preload();
+
+    const round = (v) => v.toArray().map((n) => Math.round(n * 100) / 100);
+    report(
+      "ready:" +
+        JSON.stringify({
+          view: [document.documentElement.clientWidth, document.documentElement.clientHeight],
+          size: round(figureSize),
+          cam: round(camera.position),
+          meta: (vrm.meta && vrm.meta.metaVersion) || "?",
+        }),
+    );
+  },
+  undefined,
+  (error) => report("failed:" + (error && error.message ? error.message : "load")),
+);
+
+function report(state) {
+  if (window.StageBridge && window.StageBridge.onState) window.StageBridge.onState(state);
+}
+
+// -------------------------------------------------------------- the states ---
+
+/**
+ * The character is always on the panel. The clock is what covers it.
+ *
+ * Showing the stage at the moment of the cue meant the compositor had a GL
+ * surface to bring up right then, and it took over a second to arrive --
+ * measured, by photographing the panel every 800 ms: the voice had started
+ * and the picture had not. Nothing is switched on at the cue now. The canvas
+ * has been drawing since the screen opened, and this only lifts the lid.
+ */
+window.cueSpeak = function () {
+  revealed = true;
+  speaking = true;
+  clockEl.style.opacity = "0";
+  bubbleEl.style.display = "block";
+};
+
+/** The line has finished. The mouth stops; everything else stays. */
+window.cueQuiet = function () {
+  speaking = false;
+};
+
+window.cueIdle = function () {
+  revealed = false;
+  speaking = false;
+  clockEl.style.opacity = "1";
+  bubbleEl.style.display = "none";
+};
+
+/**
+ * The standby display, which is the talk's states turned inside out.
+ *
+ * The clock here belongs to Android -- `ClockScreen` draws it, over this page,
+ * along with every other standby screen. So the page's own clock goes away
+ * entirely rather than being lifted like a lid, and the character is on from
+ * the moment the screen opens instead of arriving at a cue.
+ *
+ * Safe to call before the model has loaded: the mode is a flag, and the loader
+ * reads it when it frames and poses.
+ */
+window.stageStandby = function () {
+  standby = true;
+  revealed = true;
+  speaking = false;
+  clockEl.style.display = "none";
+  bubbleEl.style.display = "none";
+  frameCamera();
+  applyPose();
+  preload();
+  return "standby";
+};
+
+/**
+ * One clip, once, on a tap of the panel.
+ *
+ * Standby only. The talk has six seconds and a line to deliver, and a
+ * character breaking into a knee bend halfway through it is not a feature.
+ *
+ * A tap while one is running is ignored rather than queued or restarted: cut
+ * short, a motion reads as a fault, and queued it reads as a device that stopped
+ * listening. Returning the name is what tells Kotlin which it was.
+ */
+window.stagePlay = function () {
+  if (!standby || !vrm || !mixer) return "not ready";
+  if (playing) return "busy";
+
+  const name = MOTIONS[motionAt % MOTIONS.length];
+  motionAt += 1;
+  playing = true;
+
+  loadClip(name)
+    .then((clip) => {
+      if (!playing) return;
+      action = mixer.clipAction(clip);
+      action.reset();
+      action.setLoop(THREE.LoopOnce, 1);
+      // The bones are put back by hand when it finishes; clamping would only
+      // fight that.
+      action.clampWhenFinished = false;
+      action.play();
+    })
+    .catch((error) => {
+      playing = false;
+      restoreRest();
+      report("motion-failed:" + name + ":" + (error && error.message ? error.message : "?"));
+    });
+
+  return name;
+};
+
+window.addEventListener("resize", resize);
+
+window.cueIdle();

@@ -198,6 +198,21 @@ class StopPromptActivity : Activity() {
                 .setAction(RecorderService.ACTION_PROMPT_ANSWER)
                 .putExtra(RecorderService.EXTRA_STOP_RECORDING, stop),
         )
+        // "今日はここまで" is the end of the day and not just the end of the
+        // recording. This screen turned the panel on by itself to ask, at an
+        // hour when the answer is usually given from a bed, so leaving it lit
+        // afterwards would be the prompt walking away from its own mess. The
+        // other answer means the day is still going, and takes nothing away.
+        //
+        // Its own task, because this one is about to be removed and the dark
+        // screen has to outlive it. It finishes on the way back, so waking up
+        // lands on the menu.
+        if (stop) {
+            startActivity(
+                Intent(this, DarkActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
         finishAndRemoveTask()
     }
 

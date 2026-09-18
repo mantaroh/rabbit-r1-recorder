@@ -32,6 +32,32 @@ class KeyService : AccessibilityService() {
         @Volatile var doublePresses = 0; private set
 
         /**
+         * The running service, for [darken]. Cleared when it goes away so a
+         * dead one cannot be asked to do anything.
+         */
+        @Volatile private var running: KeyService? = null
+
+        /**
+         * Turns the panel off, and answers whether it could.
+         *
+         * An ordinary app has no way to do this: `PowerManager.goToSleep` is
+         * signature-only and locking through a device admin would mean asking
+         * to be one. An accessibility service can, and this device already has
+         * one running for the side button — so the capability is here anyway
+         * and costs no new permission.
+         *
+         * False if the service is not connected. That is a real case rather
+         * than a defensive one: the service is enabled by hand in Android's
+         * settings, and a fresh install has it off until somebody does.
+         */
+        fun darken(): Boolean {
+            val service = running ?: return false
+            return runCatching { service.performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) }
+                .onFailure { Log.e(TAG, "lock screen failed", it) }
+                .getOrDefault(false)
+        }
+
+        /**
          * Set by the recorder. A plain callback rather than a broadcast: both
          * live in the same process, and the gesture should reach the state
          * machine without a trip through the system.
@@ -69,6 +95,7 @@ class KeyService : AccessibilityService() {
             flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         }
         connected = true
+        running = this
         Log.i(TAG, "KeyService connected, flags=${serviceInfo.flags}")
         metrics.write("keyservice", mapOf("state" to "connected", "flags" to serviceInfo.flags))
     }
@@ -126,6 +153,7 @@ class KeyService : AccessibilityService() {
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         connected = false
+        running = null
         return super.onUnbind(intent)
     }
 }

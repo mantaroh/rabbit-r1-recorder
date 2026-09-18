@@ -17,10 +17,17 @@
 import { handleMcp } from "./mcp";
 import { fetchMapAssets, serveMap } from "./map";
 import { interpretTargets, mintInterpretSession } from "./interpret";
-import { confirmNudge, nudgeDue, nudgeHistory, nudgeOutcome } from "./nudge";
+import {
+  confirmNudge,
+  nudgeDue,
+  nudgeHistory,
+  nudgeOutcome,
+  PRESENCE_PROMPT,
+} from "./nudge";
+import { CUE_HTML, cueFire, cuePoll, cueState } from "./cue";
 import { UI_HTML } from "./ui";
 import { IMPORT_HTML } from "./import";
-import { captionPromptFor } from "./caption-prompt";
+import { captionPromptFor, CAPTION_PROMPT_R1 } from "./caption-prompt";
 import { CAPTION_MODEL, captionInput, captionTextOf } from "./caption-model";
 import { recaptionBatches, recaptionCutoff } from "./recaption";
 import { groupPhotos, type PhotoGroup, type PhotoRow } from "./day-group";
@@ -176,6 +183,18 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/nudge/outcome") {
       return nudgeOutcome(env, url);
+    }
+    // 一言. Three routes and a page; see cue.ts.
+    if (url.pathname === "/v1/cue") {
+      return request.method === "POST" ? cueFire(env) : cuePoll(env);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/cue/state") {
+      return cueState(env);
+    }
+    if (request.method === "GET" && url.pathname === "/cue") {
+      return new Response(CUE_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
     }
     if (request.method === "GET" && url.pathname === "/v1/nudge/history") {
       return nudgeHistory(env, url);
@@ -359,6 +378,10 @@ const DEVICE_ROUTES: Array<{ method: string; path: RegExp }> = [
   { method: "GET", path: /^\/v1\/nudge$/ },
   { method: "POST", path: /^\/v1\/nudge\/confirm$/ },
   { method: "POST", path: /^\/v1\/nudge\/outcome$/ },
+  // 一言: the poll only. Firing the cue belongs to the person holding the
+  // phone, and a device that could advance the counter could interrupt its
+  // own talk.
+  { method: "GET", path: /^\/v1\/cue$/ },
 ];
 
 function principalFor(request: Request, env: Env): Principal | null {
@@ -1429,6 +1452,24 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
   );
 
   const text = captionTextOf(result);
+
+  // An empty answer is not a caption. Storing one would mark the frame
+  // captioned forever with nothing in it, and the frame would never come back
+  // through the backfill — so this is a failure, and it says which kind.
+  if (!text) {
+    await env.DB.prepare(
+      `UPDATE photos SET status = 'failed', error = ?1 WHERE photo_id = ?2`,
+    )
+      .bind(
+        `empty caption (finish_reason: ${
+          result?.choices?.[0]?.finish_reason ?? result?.finish_reason ?? "none"
+        })`,
+        message.segmentId,
+      )
+      .run();
+    return;
+  }
+
   await env.DB.prepare(
     `UPDATE photos
         SET caption = ?1, caption_at = ?2, caption_neurons = ?3,
@@ -1445,14 +1486,33 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
 }
 
 /**
- * Runs one stored photograph through the vision model and reports what it
- * cost, so the price of captioning the archive is measured rather than
- * guessed.
+ * Runs one stored photograph through a vision model and reports what it cost,
+ * so the price of captioning the archive is measured rather than guessed.
  *
  * The pricing page bills vision input per token and does not say how many
- * tokens an image becomes — the model tiles at 560x560, so a 640x480 frame is
- * somewhere between one and four tiles and the estimate spans 4x. The raw
- * response is returned unedited because whether it carries a usage block is
+ * tokens an image becomes — and the count is a property of the model, not of
+ * the picture. One that tiles at 560x560 and one that patches dynamically will
+ * not agree about the same frame, so an estimate carried across from the old
+ * model to a new one is not evidence of anything.
+ *
+ * The model is therefore a parameter. The way to choose one is to show two of
+ * them the same photograph and read the usage block off each:
+ *
+ *   ?model=       defaults to the current model; "legacy" reaches the old one
+ *   ?max_tokens=  the ceiling, which a thinking model spends before answering
+ *   ?reasoning=   low | medium | high
+ *   ?no_think=1   asks the chat template to skip thinking altogether
+ *   ?preset=caption | presence   the prompt one of the two callers uses,
+ *                    verbatim
+ *
+ * The preset is not a convenience. Passing that question as ?prompt= put it
+ * through a URL, and what reached the model was "この画像に、話" and then
+ * mojibake — it spent its whole budget wondering what had been asked, and the
+ * three measurements taken that way answered nothing. A question that lives in
+ * the source is a question that arrives.
+ *
+ * The raw response is returned unedited because whether it carries a usage
+ * block — and where the answer sits inside it once a model thinks first — is
  * exactly what needs finding out.
  */
 async function debugCaption(env: Env, url: URL): Promise<Response> {
@@ -1471,8 +1531,14 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
   if (!object) return json({ error: "image missing" }, 404);
   const bytes = new Uint8Array(await object.arrayBuffer());
 
-  const prompt = url.searchParams.get("prompt") ??
-    "この写真に写っているものを日本語で簡潔に説明してください。";
+  const preset = url.searchParams.get("preset");
+  const prompt = preset === "presence"
+    ? PRESENCE_PROMPT
+    : preset === "caption"
+    ? CAPTION_PROMPT_R1
+    : url.searchParams.get("prompt") ??
+      "この写真に写っているものを日本語で簡潔に説明してください。";
+  const maxTokens = intParam(url, "max_tokens") ?? 128;
 
   // The same model and request shape as captionPhoto. A debug endpoint that
   // measures the price of captioning is only worth anything if it measures the
@@ -1481,17 +1547,25 @@ async function debugCaption(env: Env, url: URL): Promise<Response> {
   try {
     const result: any = await env.AI.run(
       CAPTION_MODEL as any,
-      captionInput(bytes, prompt, 128) as any,
+      captionInput(bytes, prompt, maxTokens) as any,
     );
     return json({
       photo_id: photoId,
+      model: CAPTION_MODEL,
+      max_tokens: maxTokens,
       image_bytes: bytes.length,
       elapsed_ms: Date.now() - started,
+      // Pulled out because the comparison is read by eye, and the raw block is
+      // deep enough that the caption itself is hard to find in it.
+      text: captionTextOf(result),
+      // "length" with an empty text is the failure this endpoint exists to
+      // catch: the ceiling went on thinking and no answer was ever written.
+      finish_reason: result?.choices?.[0]?.finish_reason ?? result?.finish_reason ?? null,
       // Verbatim: the usage block, if there is one, is the whole point.
       raw: result,
     });
   } catch (error) {
-    return json({ photo_id: photoId, error: String(error).slice(0, 400) }, 500);
+    return json({ photo_id: photoId, model: CAPTION_MODEL, error: String(error).slice(0, 400) }, 500);
   }
 }
 

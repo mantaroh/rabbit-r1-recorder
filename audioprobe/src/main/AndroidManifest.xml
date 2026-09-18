@@ -84,6 +84,17 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <!-- 本番: the screen the device is left on during a talk. Not exported
+             and not in recents, like the interpreter, because while it is up
+             the timelapse and 声かけ are held still; it should exist only
+             while it is the thing on screen. -->
+        <activity
+            android:name=".CueActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <!-- Everything the home screen deliberately does not show: the upload
              target, the codec, the capture source. Reached from 設定 and left
              by 戻る, since the R1 has no Back key. -->
@@ -140,6 +151,17 @@
             android:name="com.r1.hermes.ProbeActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- 消灯. Not in recents for the same reason as the standby display:
+             it is a state the device is put into, not a screen to come back
+             to. It finishes itself on the way back. -->
+        <activity
+            android:name=".DarkActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
             android:screenOrientation="portrait" />
 
         <!-- The standby display. Not exported and not in recents: it is a

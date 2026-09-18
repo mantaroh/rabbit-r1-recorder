@@ -161,6 +161,19 @@ class RecorderService : Service() {
          */
         @Volatile var audioTap: ((ShortArray, Int) -> Unit)? = null
 
+        /**
+         * Whether the device is in front of an audience; see [CueActivity].
+         *
+         * Set while the stage screen is up, and it means one thing: nothing
+         * that moves the arm or starts a conversation. Away from the home
+         * Wi-Fi the timelapse fires every five minutes and the arm is audible,
+         * so a talk without this would have had a motor run through it.
+         *
+         * Recording is deliberately not included. The talk is worth keeping
+         * and the microphone makes no noise.
+         */
+        @Volatile var onStage = false
+
     }
 
     private lateinit var metrics: Metrics
@@ -681,10 +694,14 @@ class RecorderService : Service() {
 
             // Returns immediately; the cycle itself runs on its own thread.
             // Skipped entirely while a question is in flight — the camera and
-            // the arm have no business moving mid-question. Also skipped while
-            // recording is off: "stop for today" means the camera too, and the
-            // first version kept photographing the night it had been told to end.
-            if (photosEnabled && writeAudio && query.state == QueryController.State.LIFELOG) {
+            // the arm have no business moving mid-question — and while the
+            // stage screen is up, where a motor run would be heard by a room.
+            // Also skipped while recording is off: "stop for today" means the
+            // camera too, and the first version kept photographing the night
+            // it had been told to end.
+            if (photosEnabled && writeAudio && !onStage &&
+                query.state == QueryController.State.LIFELOG
+            ) {
                 if (vad.isSpeaking) timelapse?.noteSpeech()
                 timelapse?.tick(now, vad.isSpeaking)
             }
@@ -700,7 +717,7 @@ class RecorderService : Service() {
             // timelapse is — the arm and the microphone are both already spoken
             // for — and while the interpreter or a previous nudge holds the
             // audio tap, since two live sessions would fight over it.
-            if (query.state == QueryController.State.LIFELOG && audioTap == null) {
+            if (!onStage && query.state == QueryController.State.LIFELOG && audioTap == null) {
                 nudge?.tick(now, writeAudio)
             }
 
@@ -710,6 +727,15 @@ class RecorderService : Service() {
             if ((writeAudio || sampleRequested) && !diskFull) {
                 if (pending == null) {
                     sampleRequested = false
+                    // The envelope describes this segment and nothing before
+                    // it. Loudness is measured every second whether or not a
+                    // segment is open, but only closing one empties the list —
+                    // so a night with recording stopped left seventeen hours of
+                    // readings to be flushed onto the first segment of the
+                    // morning. That sidecar rode the upload URL as `rms=` and
+                    // came back 414, and the retry blocked photographs and
+                    // positions behind it for the rest of the day.
+                    envelope.clear()
                     pending = openSegmentWriter()
                     pendingSamples = 0
                 }
@@ -964,7 +990,11 @@ class RecorderService : Service() {
         // A second of *audio*, not of samples: stereo delivers twice as many.
         if (secondSamples >= sampleRate * channels) {
             val level = rmsByte(secondSumSquares, secondSamples)
-            envelope.add(level)
+            // One segment's worth and no more. Opening a segment clears this,
+            // so the cap is never reached in ordinary running; it is here so
+            // that any future path which stops closing segments costs a
+            // truncated envelope rather than an unbounded URL.
+            if (envelope.size < SEGMENT_SECONDS + 2) envelope.add(level)
             // The same measurement decides whether the scene is worth
             // photographing, and whether the room is already busy enough that
             // the device should not speak into it; there is no reason to

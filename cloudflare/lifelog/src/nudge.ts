@@ -169,13 +169,13 @@ const CLIENT_SECRETS = "https://api.openai.com/v1/realtime/client_secrets";
  * logs readable, because "いいえ" alone cannot be told from a model that
  * refused the image, and those want opposite fixes.
  */
-const PRESENCE_PROMPT =
+export const PRESENCE_PROMPT =
   "この画像に、話しかけられる距離（おおよそ2メートル以内）にいて、" +
   "こちらを向いている人が写っていますか。" +
   "1行目に「はい」か「いいえ」だけを書き、2行目にその理由を20字程度で書いてください。";
 
 /** Room for two short lines and no more. */
-const PRESENCE_MAX_TOKENS = 64;
+export const PRESENCE_MAX_TOKENS = 64;
 
 /**
  * What the model is for, and what it is not for.
