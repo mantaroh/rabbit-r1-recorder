@@ -24,16 +24,38 @@ object Headlines {
     private const val TIMEOUT_MS = 8_000
 
     /**
-     * Ten, always — not "whatever is new since last time".
+     * Fifty, always — not "whatever is new since last time".
      *
      * A reader that shows nothing when nothing has been published is a screen
      * that is blank most of the day, and blank reads as broken. The endpoint
-     * returns the most recent ten whether they arrived a minute ago or on
-     * Tuesday, and the screen rotates through them.
+     * returns the most recent fifty whether they arrived a minute ago or on
+     * Tuesday.
+     *
+     * It was ten while the rotation was the only way through the list, because
+     * fifty at fifteen seconds each is a loop of twelve and a half minutes and
+     * nobody watches a standby display for that long. Sideways swipes changed
+     * what the number means: the far end of the list is now somewhere you go
+     * when you want it rather than somewhere you wait for, so the length is
+     * bounded by what is worth having on hand instead of by the loop.
+     *
+     * Fifty costs about 35 KB a fetch against four, which on the two-minute
+     * refresh is nothing on an unmetered link — and the pictures are fetched
+     * for the item on screen and the next one, so a longer list does not mean
+     * more of them.
      */
-    private const val WANT = 10
+    private const val WANT = 50
 
-    data class Item(val title: String, val source: String)
+    /**
+     * [summary] is already in Japanese where the Worker could manage it, and in
+     * the publisher's own language where it could not. Which of the two it is
+     * is not this end's business.
+     */
+    data class Item(
+        val title: String,
+        val source: String,
+        val summary: String,
+        val imageUrl: String?,
+    )
 
     @Volatile
     var items: List<Item> = emptyList()
@@ -99,7 +121,14 @@ object Headlines {
             val row = array.optJSONObject(index) ?: return@mapNotNull null
             val title = row.optString("title").trim()
             if (title.isEmpty()) return@mapNotNull null
-            Item(title, row.optString("feed_title").trim())
+            Item(
+                title = title,
+                source = row.optString("feed_title").trim(),
+                summary = row.optString("summary").trim(),
+                // optString gives "" for a JSON null as well as for a missing
+                // key, and both mean the same thing here: nothing to fetch.
+                imageUrl = row.optString("image_url").trim().ifEmpty { null },
+            )
         }
     }
 }

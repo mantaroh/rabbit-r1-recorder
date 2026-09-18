@@ -21,10 +21,11 @@
  * Cloudflare Access and its own bearer.
  */
 
-import { parseFeed, parseFeedTitle, parseOpml, type Subscription } from "./feed";
+import { firstCodePoints, parseFeed, parseFeedTitle, parseOpml, type Subscription } from "./feed";
 
 interface Env {
   DB: D1Database;
+  AI: Ai;
 }
 
 /** How many feeds are in flight at once during a crawl. */
@@ -47,6 +48,62 @@ const MAX_ITEMS_PER_FEED = 50;
  */
 const FAILURES_BEFORE_BACKOFF = 5;
 const BACKOFF_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The model that turns an English summary into a Japanese one.
+ *
+ * An instruction model rather than a translation model. m2m100 is cheaper and
+ * faster and reads like it: the subscription list is technical writing, full
+ * of product names that a translation model declines and word order it gets
+ * backwards. This is a screen that exists to be read at a glance, and a
+ * sentence that has to be decoded is worse than the English was.
+ *
+ * The base id the design named, @cf/meta/llama-3.1-8b-instruct, is gone from
+ * the account's model catalog — deprecated in favour of an internal variant
+ * that has since been deprecated itself. Its quantised sibling below survived,
+ * and was checked against two other current candidates on real summaries with
+ * company names in them (Firefox's Web Serial API announcement; an Interop
+ * post naming Apple, Google, Igalia, Microsoft, and Mozilla in one sentence).
+ * This one kept every name, answered in the plain { response: string } shape
+ * this file already expects, finished well inside the 600-token budget, and
+ * cost about a third of what the other two spent in neurons. Qwen
+ * (qwen3-30b-a3b-fp8) spends most of that budget on hidden chain-of-thought
+ * before it starts translating, which truncated one of the two test summaries
+ * mid-word; Gemma (gemma-4-26b-a4b-it) spent the whole budget thinking and
+ * never emitted a response at all.
+ */
+const TRANSLATE_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
+
+/**
+ * How many summaries are translated in one crawl.
+ *
+ * A bound rather than a budget. Most hours bring nothing like this many, but
+ * feeds do update in unison, and an hour where forty sites all publish at once
+ * should not be the hour that spends the day's neurons. What is left waits for
+ * the next run, which is at most an hour away.
+ */
+const TRANSLATE_PER_CRAWL = 30;
+
+/**
+ * The Latin-letters-and-digits clause below is written as a mechanical rule
+ * rather than a category ("keep technical terms in the original") because the
+ * abstract version was tried first and shipped once: it produced ウェブGPU
+ * from WebGPU on a real summary, because the model had to decide for itself
+ * what counted as a name worth protecting and decided wrong. A rule with
+ * nothing to judge does not have that failure mode. The natural-Japanese
+ * clause is from the same measurement pass, for a companion failure on the
+ * same test inputs — テスト套数 for "test suite coverage," reaching for a
+ * Chinese compound where a Japanese word was wanted. Both clauses were
+ * checked against real English summaries before this wording shipped;
+ * tidying either back toward the abstract phrasing brings its bug back with it.
+ */
+const TRANSLATE_PROMPT =
+  "あなたは技術ニュースの翻訳者です。" +
+  "渡された英語の要約を、日本語の技術記事として自然な文体に訳してください。" +
+  "原文でアルファベットや数字で書かれている語（例: WebGPU、Firefox 141）は、" +
+  "カタカナに変換せず原文の表記のまま残します。" +
+  "中国語由来の熟語ではなく、自然な日本語の言葉を使ってください。" +
+  "前置きも注釈も引用符も付けず、訳文だけを返してください。";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -89,6 +146,7 @@ interface CrawlSummary {
   failed: number;
   newItems: number;
   skipped: number;
+  translated: number;
 }
 
 /**
@@ -116,6 +174,7 @@ async function crawl(env: Env, limit: number): Promise<CrawlSummary> {
     failed: 0,
     newItems: 0,
     skipped: (rows.results?.length ?? 0) - due.length,
+    translated: 0,
   };
 
   for (let i = 0; i < due.length; i += CONCURRENCY) {
@@ -129,7 +188,98 @@ async function crawl(env: Env, limit: number): Promise<CrawlSummary> {
     }
   }
 
+  // After the fetching, not during it. A crawl that spent its time waiting on
+  // a model would leave feeds unread, and the summaries are still there next
+  // time whereas a feed's window is not.
+  summary.translated = await translatePending(env, TRANSLATE_PER_CRAWL);
+
   return summary;
+}
+
+/**
+ * Enough of a test: ordinary Japanese prose does not go far without hiragana
+ * or katakana, even when every content word in it is kanji.
+ *
+ * The ideograph range (\u4e00-\u9fff) used to be part of this test, and it was
+ * wrong in both directions. A single kanji in an English summary — a Japanese
+ * product or company name, which is common on this subscription list — made
+ * this false, so the English was copied verbatim into summary_ja and the row
+ * was never reconsidered for the rest of its life. The same range also made a
+ * Chinese summary read as Japanese, since Chinese text is ideographs with no
+ * kana at all. Requiring kana specifically (\u3040-\u309f is hiragana,
+ * \u30a0-\u30ff is katakana) fixes both.
+ *
+ * The cost is a summary written entirely in kanji, with no kana anywhere,
+ * being sent for translation it did not need. Summaries here are prose, not
+ * classical-style kanji-only text, so that does not happen in practice.
+ *
+ * Written as \u escapes rather than the literal characters on purpose: this
+ * exact substitution has silently reverted five times in this project, because
+ * U+3040 is unassigned and U+30A0 is a katakana double hyphen, so neither
+ * range boundary is visually distinguishable from the ideograph range in a
+ * diff. Verify mechanically instead of by eye:
+ * `grep -nP '[^\x00-\x7F]' src/index.ts` must not list this line.
+ */
+function foreign(text: string): boolean {
+  return !/[\u3040-\u309f\u30a0-\u30ff]/.test(text);
+}
+
+/**
+ * Fills in summary_ja for entries that do not have one yet.
+ *
+ * Newest first, because the screen shows the ten most recent and an entry that
+ * has already scrolled off the bottom of that is not worth a model call. An
+ * entry whose translation keeps failing is retried on every crawl, which costs
+ * one call an hour and stops mattering as soon as anything newer arrives.
+ */
+async function translatePending(env: Env, limit: number): Promise<number> {
+  const rows = await env.DB.prepare(
+    `SELECT item_id, summary FROM items
+      WHERE summary IS NOT NULL AND summary_ja IS NULL
+      ORDER BY first_seen_epoch DESC
+      LIMIT ?1`,
+  )
+    .bind(limit)
+    .all<{ item_id: string; summary: string }>();
+
+  let done = 0;
+  for (const row of rows.results ?? []) {
+    // Already Japanese. Copied across rather than left null, or it would be
+    // reconsidered on every crawl for the rest of the entry's life.
+    const translated = foreign(row.summary) ? await translate(env, row.summary) : row.summary;
+    if (!translated) continue;
+
+    await env.DB.prepare(`UPDATE items SET summary_ja = ?2 WHERE item_id = ?1`)
+      .bind(row.item_id, translated)
+      .run();
+    done += 1;
+  }
+  return done;
+}
+
+async function translate(env: Env, summary: string): Promise<string | null> {
+  try {
+    const result: any = await env.AI.run(TRANSLATE_MODEL as any, {
+      messages: [
+        { role: "system", content: TRANSLATE_PROMPT },
+        { role: "user", content: summary },
+      ],
+      max_tokens: 600,
+    });
+
+    const answer = String(result?.response ?? "").replace(/\s+/g, " ").trim();
+    if (!answer) return null;
+    // A model that answered in English has translated nothing, and storing
+    // that would mean never asking again.
+    if (foreign(answer)) return null;
+
+    // Code points, not [String.slice] — see [firstCodePoints] on the same
+    // surrogate-pair hazard this guards against for the English summary.
+    return firstCodePoints(answer, 600);
+  } catch (error) {
+    console.log("translate failed", String(error).slice(0, 200));
+    return null;
+  }
 }
 
 interface FeedRow {
@@ -203,9 +353,14 @@ async function fetchOne(
   const seconds = Math.floor(now / 1000);
   const statements = items.map((item) =>
     env.DB.prepare(
-      `INSERT OR IGNORE INTO items
-         (item_id, xml_url, title, link, published_at, published_epoch, first_seen_epoch)
-       VALUES (?1,?2,?3,?4,?5,?6,?7)`,
+      `INSERT INTO items
+         (item_id, xml_url, title, link, published_at, published_epoch, first_seen_epoch,
+          summary, image_url)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+       ON CONFLICT(item_id) DO UPDATE SET
+         summary   = excluded.summary,
+         image_url = excluded.image_url
+       WHERE items.summary IS NULL AND items.image_url IS NULL`,
     ).bind(
       `${feed.xml_url}|${item.guid}`.slice(0, 900),
       feed.xml_url,
@@ -214,10 +369,18 @@ async function fetchOne(
       item.publishedAt,
       item.publishedAt ? Math.floor(Date.parse(item.publishedAt) / 1000) : null,
       seconds,
+      item.summary,
+      item.imageUrl,
     ),
   );
 
   const written = await env.DB.batch(statements);
+  // Counts the entries filled in as well as the ones that arrived, for the one
+  // pass after this ships: everything already in the table predates these two
+  // columns and gets them the next time its feed is read. Settles to zero for
+  // an item once either field is filled — an entry with neither a body nor a
+  // picture keeps matching the guard and stays in this count for as long as
+  // its feed carries it. Only ever reaches a log line either way.
   const newItems = written.reduce((total, r) => total + (r.meta?.changes ?? 0), 0);
 
   await env.DB.prepare(
@@ -273,6 +436,11 @@ async function recordFailure(
  * feed — the first crawl of this list returned eight consecutive headlines
  * from the same site, which is not what "latest" means. A burst from one
  * publisher does the same thing on any later run.
+ *
+ * The translation is chosen here rather than on the device. There is one
+ * summary as far as anything downstream is concerned, and whether it was
+ * translated is this Worker's business — a device that had to know would be a
+ * device that has to be redeployed when the answer changes.
  */
 async function latest(env: Env, url: URL): Promise<Response> {
   const limit = Math.min(intParam(url, "limit") ?? 20, 200);
@@ -280,6 +448,7 @@ async function latest(env: Env, url: URL): Promise<Response> {
 
   const rows = await env.DB.prepare(
     `SELECT i.title, i.link, i.published_at, i.first_seen_epoch,
+            COALESCE(i.summary_ja, i.summary) AS summary, i.image_url,
             f.title AS feed_title, f.category
        FROM items i
        JOIN feeds f ON f.xml_url = i.xml_url
