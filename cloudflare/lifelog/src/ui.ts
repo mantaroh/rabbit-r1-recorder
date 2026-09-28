@@ -33,6 +33,9 @@ export const UI_HTML = `<!doctype html>
 -->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23fe5000'/><g fill='%2314161a'><rect x='1' y='5' width='2' height='6'/><rect x='4' y='3' width='2' height='11'/><rect x='7' y='1' width='2' height='14'/><rect x='10' y='4' width='2' height='9'/><rect x='13' y='6' width='2' height='5'/></g></svg>">
 <style>
+  /* The list is a grid and the pager a flex row, and either display beats the
+     browser's own [hidden] rule: the map tab drew under a whole day of cards. */
+  [hidden] { display: none !important; }
   :root {
     color-scheme: dark;
     --bg: #14161a;
