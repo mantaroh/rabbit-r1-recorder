@@ -33,6 +33,9 @@ export const UI_HTML = `<!doctype html>
 -->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23fe5000'/><g fill='%2314161a'><rect x='1' y='5' width='2' height='6'/><rect x='4' y='3' width='2' height='11'/><rect x='7' y='1' width='2' height='14'/><rect x='10' y='4' width='2' height='9'/><rect x='13' y='6' width='2' height='5'/></g></svg>">
 <style>
+  /* The list is a grid and the pager a flex row, and either display beats the
+     browser's own [hidden] rule: the map tab drew under a whole day of cards. */
+  [hidden] { display: none !important; }
   :root {
     color-scheme: dark;
     --bg: #14161a;
@@ -80,6 +83,9 @@ export const UI_HTML = `<!doctype html>
   }
   /* A glasses import is one entry with many frames; it takes the whole row. */
   .entry.wide { grid-column: 1 / -1; }
+  /* The audio tab is read top to bottom like a conversation, so one column. */
+  #list.audio-only { grid-template-columns: minmax(0, 900px); }
+  .entry.playing { border-color: var(--accent); }
   .head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
   .time { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 13px; }
   .kind { font-size: 11px; color: var(--accent); letter-spacing: .04em; }
@@ -164,6 +170,7 @@ export const UI_HTML = `<!doctype html>
     <input type="checkbox" id="showQuiet"> 無音も表示
   </label>
   <button class="tab on" id="tabList">記録</button>
+  <button class="tab" id="tabAudio">音声</button>
   <button class="tab" id="tabMap">地図</button>
   <a class="tab" href="/import" style="text-decoration:none">取り込み</a>
   <button id="lost" title="端末の資格情報を停止／再開">端末</button>
@@ -213,6 +220,10 @@ try {
 // 'day' or 'search'. Search results are not paged and keep the old local
 // filter for silent entries.
 let mode = 'day';
+// Which tab is showing: 'list', 'audio' or 'map'.
+let view = 'list';
+// The last day page drawn, for the audio tab to know whether there is a next.
+let lastDay = null;
 // Responses can arrive out of order when pages are clicked quickly; only the
 // latest request may draw.
 let loadSeq = 0;
@@ -274,10 +285,14 @@ function renderEntry(e) {
 
 function draw(entries, statsText) {
   $('stats').textContent = statsText;
-  const visible = entries.filter((e) => e.kind === 'photo' || showQuiet || e.text);
+  const audio = view === 'audio';
+  // The day comes without photos in the audio tab; search results do not.
+  const visible = entries.filter((e) =>
+    (e.kind === 'photo' ? !audio : showQuiet || e.text));
+  $('list').classList.toggle('audio-only', audio);
   $('list').innerHTML = visible.length
     ? visible.map(renderEntry).join('')
-    : '<div class="empty">この日の記録はありません</div>';
+    : '<div class="empty">' + (audio ? 'この日の音声はありません' : 'この日の記録はありません') + '</div>';
 }
 
 function pageNumbers(current, total) {
@@ -319,7 +334,8 @@ async function loadDay(date) {
   const seq = ++loadSeq;
   $('stats').textContent = '読み込み中…';
   const r = await fetch('/v1/day?date=' + encodeURIComponent(date) +
-    '&page=' + page + '&per_page=' + perPage + (showQuiet ? '&quiet=1' : ''));
+    '&page=' + page + '&per_page=' + perPage + (showQuiet ? '&quiet=1' : '') +
+    (view === 'audio' ? '&only=audio' : ''));
   if (seq !== loadSeq) return;
   if (!r.ok) { $('stats').textContent = '読み込み失敗 (' + r.status + ')'; hidePager(); return; }
   const d = await r.json();
@@ -330,11 +346,12 @@ async function loadDay(date) {
     return loadDay(date);
   }
   window.__entries = d.entries;
+  lastDay = d;
   const first = d.total_entries ? (d.page - 1) * d.per_page + 1 : 0;
   const last = (d.page - 1) * d.per_page + d.entries.length;
   draw(d.entries,
     \`\${d.stats.segments} 分の音声 · 発話 \${d.stats.with_text} · 写真 \${d.stats.photos}\` +
-    \` · 全 \${d.total_entries} 件中 \${first}–\${last} 件目（新しい順）\` +
+    \` · 全 \${d.total_entries} 件中 \${first}–\${last} 件目（\${view === 'audio' ? '古い順' : '新しい順'}）\` +
     (d.stats.rows_truncated ? ' · 件数が多すぎるため、この日の一部を表示できていません' : ''));
   renderPager(d);
 }
@@ -363,7 +380,7 @@ async function runSearch(q) {
 $('date').value = todayJst();
 // Whichever view is showing follows the date; changing the day should not also
 // change what you were looking at.
-const reload = () => showTab($('map').hidden ? 'list' : 'map');
+const reload = () => showTab(view);
 $('date').addEventListener('change', () => { page = 1; reload(); });
 $('prev').addEventListener('click', () => shiftDay(-1));
 $('next').addEventListener('click', () => shiftDay(1));
@@ -512,9 +529,13 @@ async function loadTrack(date) {
 }
 
 function showTab(which) {
+  // A new order and a new set of entries: page 1 of one is not page 1 of the other.
+  if (which !== view) page = 1;
+  view = which;
   const map = which === 'map';
   $('tabMap').classList.toggle('on', map);
-  $('tabList').classList.toggle('on', !map);
+  $('tabList').classList.toggle('on', which === 'list');
+  $('tabAudio').classList.toggle('on', which === 'audio');
   $('list').hidden = map;
   $('map').hidden = !map;
   if (map) {
@@ -529,6 +550,45 @@ function showTab(which) {
 
 $('tabMap').addEventListener('click', () => showTab('map'));
 $('tabList').addEventListener('click', () => showTab('list'));
+$('tabAudio').addEventListener('click', () => showTab('audio'));
+
+// -------------------------------------------------------- audio tab ---
+// In the audio tab the day plays through: when one segment ends the next one
+// down starts, and at the bottom of a page the next page is fetched and played
+// from its top. 'play' and 'ended' do not bubble, so these listen in capture.
+
+function playFrom(el) {
+  el.play().catch(() => {
+    // Firefox can refuse play() that no click led to directly.
+    $('stats').textContent += ' · 自動再生が止められました。▶ を押すと続きから再生します';
+  });
+}
+
+document.addEventListener('play', (e) => {
+  if (view !== 'audio' || !e.target.matches('#list audio')) return;
+  for (const a of document.querySelectorAll('#list audio')) {
+    if (a !== e.target && !a.paused) a.pause();
+  }
+  for (const card of document.querySelectorAll('#list .entry.playing')) card.classList.remove('playing');
+  const card = e.target.closest('.entry');
+  card.classList.add('playing');
+  card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}, true);
+
+document.addEventListener('ended', async (e) => {
+  if (view !== 'audio' || !e.target.matches('#list audio')) return;
+  const all = [...document.querySelectorAll('#list audio')];
+  const next = all[all.indexOf(e.target) + 1];
+  if (next) { playFrom(next); return; }
+  if (mode !== 'day' || !lastDay || page >= lastDay.total_pages) return;
+  const want = ++page;
+  await loadDay($('date').value);
+  // Somebody moved on while the page was loading.
+  if (view !== 'audio' || mode !== 'day' || page !== want) return;
+  window.scrollTo({ top: 0 });
+  const first = document.querySelector('#list audio');
+  if (first) playFrom(first);
+}, true);
 
 // The screen text is not in the day's answer; it is fetched for the one
 // picture being looked at. Only the latest request may fill the viewer.

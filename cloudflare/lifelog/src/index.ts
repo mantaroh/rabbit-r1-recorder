@@ -833,6 +833,7 @@ const DAY_ROW_LIMIT = 50_000;
 async function dayPage(env: Env, url: URL, date: string, from: number, to: number): Promise<Response> {
   const perPage = perPageOf(intParam(url, "per_page"));
   const quiet = url.searchParams.get("quiet") === "1";
+  const audioOnly = url.searchParams.get("only") === "audio";
 
   const segments = await env.DB.prepare(
     `SELECT segment_id, started_at, status, transcript, stock_phrase, voiced_ratio
@@ -856,7 +857,7 @@ async function dayPage(env: Env, url: URL, date: string, from: number, to: numbe
 
   const segmentRows = segments.results ?? [];
   const photoRows: PhotoRow[] = (photos.results ?? []).map((row) => ({ ...row, caption: null }));
-  const page = pageOf(dayEntries(segmentRows, photoRows, quiet), intParam(url, "page") ?? 1, perPage);
+  const page = pageOf(dayEntries(segmentRows, photoRows, quiet, audioOnly),intParam(url, "page") ?? 1, perPage);
 
   // One bound parameter however many ids: a glasses import on the page can be
   // hundreds of frames, and D1 allows 100 parameters a statement.

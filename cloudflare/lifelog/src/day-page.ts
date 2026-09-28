@@ -46,20 +46,28 @@ export function segmentText(row: SegmentHead): string {
  * Silent segments are left out unless `quiet` is set. The page used to hide
  * them after the fact, which is fine for a whole day and wrong for a page of
  * one: fifty entries with forty hidden would show ten.
+ *
+ * `audioOnly` is the audio tab: no photos, and oldest first, because it is
+ * read as a conversation and played through from one segment to the next.
+ * Leaving the photos out here rather than on the page is the same reasoning
+ * as for silent segments.
  */
-export function dayEntries(segments: SegmentHead[], photos: PhotoRow[], quiet: boolean): EntryHead[] {
+export function dayEntries(segments: SegmentHead[], photos: PhotoRow[], quiet: boolean, audioOnly = false): EntryHead[] {
   const entries: EntryHead[] = [];
   for (const segment of segments) {
     if (!quiet && !segmentText(segment)) continue;
     entries.push({ kind: "audio", at: segment.started_at, segment });
   }
-  for (const group of groupPhotos(photos)) {
-    entries.push({ kind: "photo", at: group.at, group });
+  if (!audioOnly) {
+    for (const group of groupPhotos(photos)) {
+      entries.push({ kind: "photo", at: group.at, group });
+    }
   }
   // Parsed, not compared as text: the R1 stamps +09:00 and the PC stamps Z,
   // and the PC's milliseconds are what order two captures in one second.
   // Array.prototype.sort is stable, so equal instants keep their input order.
-  entries.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const order = audioOnly ? 1 : -1;
+  entries.sort((a, b) => order * (Date.parse(a.at) - Date.parse(b.at)));
   return entries;
 }
 

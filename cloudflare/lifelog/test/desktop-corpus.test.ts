@@ -267,6 +267,17 @@ describe("day view, a page at a time", () => {
     expect(d.entries.at(-1).id).toBe("silent");
   });
 
+  it("gives only the audio, oldest first, when asked for only=audio", async () => {
+    const d = await day("&page=1&only=audio");
+    expect(d).toMatchObject({ total_entries: 1, total_pages: 1 });
+    expect(d.entries.map((e: any) => e.id)).toEqual(["spoken"]);
+    segment("later", "2026-09-16T12:00:00+09:00", "またね");
+    const q = await day("&page=1&only=audio&quiet=1");
+    expect(q.entries.map((e: any) => e.id)).toEqual(["silent", "spoken", "later"]);
+    // The day's totals still describe the whole day.
+    expect(q.stats).toMatchObject({ segments: 3, photos: 2 });
+  });
+
   it("keeps the whole-day answer the R1 reads when no page is asked for", async () => {
     const d = await day("");
     expect(d.page).toBeUndefined();

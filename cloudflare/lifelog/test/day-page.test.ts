@@ -59,6 +59,25 @@ describe("dayEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].kind === "photo" && entries[0].group.shots.map((s) => s.photo_id)).toEqual(["left", "right"]);
   });
+
+  it("は audioOnly なら写真を除き、音声を古い順に並べる", () => {
+    const entries = dayEntries(
+      [segment("s2", "2026-09-16T11:00:00+09:00"), segment("s1", "2026-09-16T09:00:00+09:00")],
+      [photo("p1", "2026-09-16T01:00:00.000Z")],
+      false,
+      true,
+    );
+    expect(entries.map((e) => e.kind === "audio" && e.segment.segment_id)).toEqual(["s1", "s2"]);
+  });
+
+  it("は audioOnly でも無音を quiet なしでは除く", () => {
+    const segments = [
+      segment("voiced", "2026-09-16T09:00:00+09:00"),
+      segment("silent", "2026-09-16T09:01:00+09:00", ""),
+    ];
+    expect(dayEntries(segments, [], false, true)).toHaveLength(1);
+    expect(dayEntries(segments, [], true, true)).toHaveLength(2);
+  });
 });
 
 describe("pageOf", () => {
