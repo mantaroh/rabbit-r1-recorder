@@ -35,6 +35,7 @@ import { dayEntries, pageOf, perPageOf, segmentText, type SegmentHead } from "./
 import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
 import { readDesktopPhoto, photoText } from "./desktop-photo";
+import { CAPTION_SKIP_MAX_GAP_SEC, canSkipCaption } from "./desktop-similarity";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -1370,12 +1371,35 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     });
   }
 
+  const takenEpoch = Math.floor(Date.parse(takenAt) / 1000);
+
+  // PC のスクショは、前回キャプションした同じモニタの画面と OCR がほぼ
+  // 同じならキャプションを付けない。比べる相手は「キャプション対象にした」
+  // 行だけ。省いた行と比べ続けると、少しずつ変わる画面がいつまでも省かれる。
+  let skipCaption = false;
+  if (desktop) {
+    const reference = await env.DB.prepare(
+      `SELECT ocr_text, taken_epoch FROM photos
+        WHERE source = 'desktop' AND device_id = ?1 AND monitor_id IS ?2
+          AND taken_epoch < ?3 AND taken_epoch > ?3 - ?4
+          AND status IN ('pending', 'captioned')
+        ORDER BY taken_epoch DESC
+        LIMIT 1`,
+    )
+      .bind(deviceId, desktop.monitorId ?? null, takenEpoch, CAPTION_SKIP_MAX_GAP_SEC)
+      .first<{ ocr_text: string | null; taken_epoch: number }>();
+    skipCaption = canSkipCaption(
+      { ocrText: desktop.ocrText ?? null, takenEpoch },
+      reference ? { ocrText: reference.ocr_text, takenEpoch: reference.taken_epoch } : null,
+    );
+  }
+
   await env.DB.prepare(
     `INSERT INTO photos
        (photo_id, device_id, r2_key, facing, taken_at, taken_epoch, bytes,
         sha256, received_at, source, source_file, ocr_text, capture_id, monitor_id, width, height,
-        caption_r2_key)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+        caption_r2_key, status)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
      ON CONFLICT(photo_id) DO NOTHING`,
   )
     .bind(
@@ -1384,7 +1408,7 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       key,
       facing,
       takenAt,
-      Math.floor(Date.parse(takenAt) / 1000),
+      takenEpoch,
       object?.size ?? null,
       sha256,
       new Date().toISOString(),
@@ -1396,15 +1420,21 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       desktop?.width ?? null,
       desktop?.height ?? null,
       captionKey,
+      skipCaption ? "skipped" : "pending",
     )
     .run();
 
   // Captioning takes about five seconds, so it goes behind the queue for the
   // same reason transcription does: the upload returns once the bytes are
   // durable, which is the part that cannot be retried later.
-  await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key, kind: "photo" });
+  if (!skipCaption) {
+    await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key, kind: "photo" });
+  }
 
-  return json({ photo_id: photoId, key, bytes: object?.size ?? null, source }, 201);
+  return json({
+    photo_id: photoId, key, bytes: object?.size ?? null, source,
+    ...(skipCaption ? { caption: "skipped" } : {}),
+  }, 201);
 }
 
 /**
@@ -1602,7 +1632,7 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
 
   const rows = await env.DB.prepare(
     `SELECT photo_id, r2_key FROM photos
-      WHERE caption IS NULL AND status != 'failed'
+      WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')
       ORDER BY taken_epoch ASC
       LIMIT ?1`,
   )
@@ -1619,7 +1649,7 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
   }
 
   const remaining = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status != 'failed'`,
+    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')`,
   ).first<{ n: number }>();
 
   return json({ queued: todo.length, remaining: remaining?.n ?? 0 });
