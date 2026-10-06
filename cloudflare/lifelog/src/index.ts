@@ -36,6 +36,10 @@ import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
 import { readDesktopPhoto, photoText } from "./desktop-photo";
 import { CAPTION_SKIP_MAX_GAP_SEC, canSkipCaption } from "./desktop-similarity";
+import {
+  MEDIA_KINDS, deleteTargets, findById, findInRange, isDeleted, parseKinds, parseRange,
+  photoKind, recordRange,
+} from "./delete-media";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -125,6 +129,16 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/photos") {
       return listPhotos(env, url);
+    }
+    // 削除は admin だけ。端末・PC・エージェントの資格情報は DELETE を通さない。
+    if (request.method === "DELETE" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}$/.test(url.pathname)) {
+      return deleteOne(env, "photo", url.pathname.split("/")[3]);
+    }
+    if (request.method === "DELETE" && /^\/v1\/segments\/[A-Za-z0-9_-]{8,64}$/.test(url.pathname)) {
+      return deleteOne(env, "audio", url.pathname.split("/")[3]);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/delete-range") {
+      return deleteRange(env, url);
     }
     if (request.method === "GET" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}\/text$/.test(url.pathname)) {
       return photoTextView(env, url.pathname.split("/")[3]);
@@ -530,6 +544,13 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
   const sampleRate = intParam(url, "sample_rate");
   const channels = intParam(url, "channels");
   const endedAt = url.searchParams.get("ended_at");
+
+  // 消した録音の再送と、消した時間帯にあとから届いた録音は保存しない。
+  // 2xx で返すのは、R1 がそれ以外を再送し続けるから。受け取ったことにして
+  // 端末の手元のファイルを消させる。
+  if (await isDeleted(env, "audio", segmentId, Math.floor(Date.parse(startedAt) / 1000))) {
+    return json({ segment_id: segmentId, deleted: true, duplicate: true });
+  }
 
   // Re-uploading a segment we already transcribed would bill another Whisper
   // run and duplicate the text; the device retries freely, so check first.
@@ -1319,6 +1340,13 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     }
   }
 
+  // 消した写真の再送、眼鏡の同じ動画の再取り込み、消した時間帯にあとから
+  // 届いた写真は保存しない。PC は受領の photo_id と source を照合して手元を
+  // 消すので、その2つは返す。
+  if (await isDeleted(env, photoKind(source), photoId, Math.floor(Date.parse(takenAt) / 1000))) {
+    return json({ photo_id: photoId, source, deleted: true, duplicate: true });
+  }
+
   const existing = await env.DB.prepare(
     `SELECT r2_key, status, source FROM photos WHERE photo_id = ?1`,
   )
@@ -1435,6 +1463,44 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     photo_id: photoId, key, bytes: object?.size ?? null, source,
     ...(skipCaption ? { caption: "skipped" } : {}),
   }, 201);
+}
+
+/** 写真1枚、または音声1件を消す。 */
+async function deleteOne(env: Env, kind: "photo" | "audio", id: string): Promise<Response> {
+  const targets = await findById(env, kind, [id]);
+  if (!targets.photos.length && !targets.segments.length) {
+    return json({ error: "not found", id }, 404);
+  }
+  return json({ id, ...(await deleteTargets(env, targets)) });
+}
+
+/**
+ * 時間帯の中の記録をまとめて消す。
+ *
+ *   ?from= &to=   ISO 8601。[from, to) で、24時間まで
+ *   ?kinds=       desktop,camera,audio のどれか（カンマ区切り）
+ *   ?dry_run=1    消さずに件数だけ返す
+ *
+ * 1回で消すのは500件まで。remaining が0になるまで同じ指定で呼び直す。
+ */
+async function deleteRange(env: Env, url: URL): Promise<Response> {
+  const range = parseRange(url.searchParams.get("from"), url.searchParams.get("to"));
+  if ("error" in range) return json({ error: range.error }, 400);
+  const kinds = parseKinds(url.searchParams.get("kinds"));
+  if (!kinds) return json({ error: `kinds は ${MEDIA_KINDS.join(",")} から選んでください` }, 400);
+
+  if (url.searchParams.get("dry_run") === "1") {
+    const counts: Record<string, number> = {};
+    for (const k of kinds) {
+      counts[k] = (await findInRange(env, range.fromEpoch, range.toEpoch, [k], 0)).remaining;
+    }
+    return json({ dry_run: true, counts });
+  }
+
+  await recordRange(env, kinds, range.fromEpoch, range.toEpoch);
+  const targets = await findInRange(env, range.fromEpoch, range.toEpoch, kinds);
+  const deleted = await deleteTargets(env, targets);
+  return json({ ...deleted, remaining: targets.remaining });
 }
 
 /**
