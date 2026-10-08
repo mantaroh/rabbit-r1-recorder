@@ -3,7 +3,6 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import worker, { contextData, searchData } from "../src/index";
 import { groupPhotos } from "../src/day-group";
-import { captionPromptFor, CAPTION_PROMPT_DESKTOP } from "../src/caption-prompt";
 import { jpegSize } from "../src/desktop-photo";
 
 let db: DatabaseSync;
@@ -98,42 +97,30 @@ describe("desktop ingestion through real SQLite migrations", () => {
     expect(context.photos[0]).toMatchObject({ monitor_id: "DISPLAY1", ocr_text: "スクリーン文書 特別検索語 駅" });
   });
 
-  it("queue captioning retains OCR and chooses the desktop prompt", async () => {
-    await worker.fetch(request(), env);
-    const message = env.TRANSCRIBE_QUEUE.send.mock.calls[0][0];
-    const ack = vi.fn();
-    await worker.queue({ messages: [{ body: message, ack, retry: vi.fn() }] } as any, env);
-    expect(ack).toHaveBeenCalled();
-    expect(captionPromptFor("desktop")).toBe(CAPTION_PROMPT_DESKTOP);
-    expect(env.AI.run.mock.calls[0][1].messages[0].content[0].text).toBe(CAPTION_PROMPT_DESKTOP);
-    const result = await searchData(env, "特別検索語", 10);
-    expect(result.results[0].text).toContain("PC上で文書");
-    expect(result.results[0].text).toContain("特別検索語");
-    expect(db.prepare("SELECT COUNT(*) AS n FROM photos_fts").get()).toMatchObject({ n: 1 });
+  it("does not caption a screenshot: nothing is queued and the row is skipped", async () => {
+    expect(await (await worker.fetch(request(), env)).json()).toMatchObject({ caption: "skipped" });
+    expect(env.TRANSCRIBE_QUEUE.send).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status, caption FROM photos").get()).toMatchObject({ status: "skipped", caption: null });
+    // OCR alone still finds it.
+    expect((await searchData(env, "特別検索語", 10)).results[0]).toMatchObject({ id: photoId });
   });
 
-  it("keeps the caption image beside the original and captions from it", async () => {
+  it("finishes a screenshot message queued before captioning stopped without calling the model", async () => {
+    await worker.fetch(request(), env);
+    db.prepare("UPDATE photos SET status = 'pending'").run();
+    const ack = vi.fn();
+    await worker.queue({ messages: [{ body: { segmentId: photoId, key: "k", kind: "photo" }, ack, retry: vi.fn() }] } as any, env);
+    expect(ack).toHaveBeenCalled();
+    expect(env.AI.run).not.toHaveBeenCalled();
+    expect(env.BUCKET.get).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status FROM photos").get()).toMatchObject({ status: "skipped" });
+  });
+
+  it("does not store the caption image the PC still sends", async () => {
     const small = new Blob([jpeg(960, 540)], { type: "image/jpeg" });
     expect((await worker.fetch(request(photoId, "文字", {}, small), env)).status).toBe(201);
-    const keys = env.BUCKET.put.mock.calls.map((call: any[]) => call[0]);
-    expect(keys).toEqual(["photo/2026/09/16/pc_1234567890abcdef.jpg", "photo/2026/09/16/pc_1234567890abcdef.caption.jpg"]);
-    expect(db.prepare("SELECT r2_key, caption_r2_key FROM photos").get()).toMatchObject({
-      r2_key: keys[0], caption_r2_key: keys[1],
-    });
-    // The queue still names the original; the consumer reads the row.
-    const message = env.TRANSCRIBE_QUEUE.send.mock.calls[0][0];
-    expect(message.key).toBe(keys[0]);
-    await worker.queue({ messages: [{ body: message, ack: vi.fn(), retry: vi.fn() }] } as any, env);
-    expect(env.BUCKET.get.mock.calls.map((call: any[]) => call[0])).toEqual([keys[1]]);
-  });
-
-  it("captions from the original when no caption image was sent", async () => {
-    await worker.fetch(request(), env);
-    expect(env.BUCKET.put).toHaveBeenCalledTimes(1);
+    expect(env.BUCKET.put.mock.calls.map((call: any[]) => call[0])).toEqual(["photo/2026/09/16/pc_1234567890abcdef.jpg"]);
     expect(db.prepare("SELECT caption_r2_key FROM photos").get()).toMatchObject({ caption_r2_key: null });
-    const message = env.TRANSCRIBE_QUEUE.send.mock.calls[0][0];
-    await worker.queue({ messages: [{ body: message, ack: vi.fn(), retry: vi.fn() }] } as any, env);
-    expect(env.BUCKET.get.mock.calls.map((call: any[]) => call[0])).toEqual(["photo/2026/09/16/pc_1234567890abcdef.jpg"]);
   });
 
   it("rejects a caption image that is not a small JPEG before storing anything", async () => {
@@ -155,11 +142,10 @@ describe("desktop ingestion through real SQLite migrations", () => {
     expect(jpegSize(new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00]))).toBeNull();
   });
 
-  it("retains one row on retry and repairs failure after DB commit before enqueue", async () => {
-    env.TRANSCRIBE_QUEUE.send.mockRejectedValueOnce(new Error("queue unavailable"));
-    await expect(worker.fetch(request(), env)).rejects.toThrow("queue unavailable");
+  it("retains one row on retry", async () => {
+    expect((await worker.fetch(request(), env)).status).toBe(201);
     expect((await worker.fetch(request(), env)).status).toBe(200);
-    expect(env.TRANSCRIBE_QUEUE.send).toHaveBeenCalledTimes(2);
+    expect(env.TRANSCRIBE_QUEUE.send).not.toHaveBeenCalled();
     expect(env.BUCKET.put).toHaveBeenCalledTimes(1);
     expect(db.prepare("SELECT COUNT(*) AS n FROM photos").get()).toMatchObject({ n: 1 });
   });

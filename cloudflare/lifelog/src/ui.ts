@@ -157,6 +157,23 @@ export const UI_HTML = `<!doctype html>
     font-size: 20px; line-height: 1; padding: 6px 12px;
   }
   #viewerClose:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* 消すボタンは目立たせない。押すのは確認のあと。 */
+  .del {
+    margin-left: auto; padding: 0 6px; font-size: 11px; line-height: 18px;
+    color: var(--dim); background: transparent;
+  }
+  .del:hover { border-color: #b4443c; color: #ff6b5e; }
+  .head .del { align-self: center; }
+  #rangeDlg {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; width: min(420px, 92vw);
+  }
+  #rangeDlg h2 { font-size: 15px; margin: 0 0 10px; }
+  #rangeDlg .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  #rangeDlg .kinds label { color: var(--text); font-size: 14px; }
+  #rangeCount { color: var(--dim); font-size: 13px; min-height: 1.4em; }
+  #rangeGo { border-color: #b4443c; color: #ff6b5e; }
+  #rangeGo:disabled { opacity: .4; cursor: default; }
 </style>
 </head>
 <body>
@@ -173,6 +190,7 @@ export const UI_HTML = `<!doctype html>
   <button class="tab" id="tabAudio">音声</button>
   <button class="tab" id="tabMap">地図</button>
   <a class="tab" href="/import" style="text-decoration:none">取り込み</a>
+  <button id="rangeOpen" title="この日の時間帯を指定して削除">時間帯を削除</button>
   <button id="lost" title="端末の資格情報を停止／再開">端末</button>
 </header>
 <main>
@@ -193,6 +211,22 @@ export const UI_HTML = `<!doctype html>
         <pre id="viewerOcr"></pre>
       </section>
     </div>
+  </div>
+</dialog>
+<dialog id="rangeDlg" aria-label="時間帯を削除">
+  <h2>時間帯を削除</h2>
+  <div class="row"><span id="rangeDate"></span>
+    <input type="time" id="rangeFrom" value="00:00"> 〜 <input type="time" id="rangeTo" value="23:59"></div>
+  <div class="row kinds">
+    <label><input type="checkbox" id="kindDesktop" checked> PC画面</label>
+    <label><input type="checkbox" id="kindCamera" checked> カメラ（R1・眼鏡）</label>
+    <label><input type="checkbox" id="kindAudio" checked> 音声</label>
+  </div>
+  <div class="row" id="rangeCount"></div>
+  <div class="row">
+    <button type="button" id="rangeCheck">件数を確認</button>
+    <button type="button" id="rangeGo" disabled>削除する</button>
+    <button type="button" id="rangeClose" style="margin-left:auto">閉じる</button>
   </div>
 </dialog>
 
@@ -245,9 +279,9 @@ function escapeHtml(s) {
 
 const SOURCE_NAMES = { desktop: 'PC', glasses: '眼鏡', r1: 'R1' };
 
-function renderHead(e, kind) {
+function renderHead(e, kind, extra) {
   return '<div class="head"><span class="time">' + timeOf(e.at) + '</span>' +
-    '<span class="kind">' + escapeHtml(kind) + '</span></div>';
+    '<span class="kind">' + escapeHtml(kind) + '</span>' + (extra || '') + '</div>';
 }
 
 function renderEntry(e) {
@@ -267,7 +301,7 @@ function renderEntry(e) {
              data-full="/v1/media/photo/\${encodeURIComponent(s.id)}"
              data-id="\${escapeHtml(s.id)}"
              data-caption="\${escapeHtml(s.caption)}" alt="">
-        <div class="facing"><span>\${escapeHtml(s.label ?? (s.facing === 'front' ? '前' : '後'))}</span>\${s.has_ocr ? '<span class="has-ocr">文字あり</span>' : ''}</div>
+        <div class="facing"><span>\${escapeHtml(s.label ?? (s.facing === 'front' ? '前' : '後'))}</span>\${s.has_ocr ? '<span class="has-ocr">文字あり</span>' : ''}<button type="button" class="del" data-del="photos" data-id="\${escapeHtml(s.id)}" title="この画像を削除">削除</button></div>
         <div class="cap" title="\${escapeHtml(s.caption)}">\${escapeHtml(s.caption) || '<span class="muted">キャプションなし</span>'}</div>
       </div>\`).join('');
     const many = e.shots.length > 2 ? ' wide' : '';
@@ -278,7 +312,8 @@ function renderEntry(e) {
   const body = e.text
     ? \`<div class="text">\${escapeHtml(e.text)}</div>\`
     : \`<div class="muted">\${e.status === 'silent' ? '無音（文字起こしなし）' : '発話なし'}</div>\`;
-  return \`<div class="entry">\${renderHead(e, '音声')}
+  const del = '<button type="button" class="del" data-del="segments" data-id="' + escapeHtml(e.id) + '" title="この音声を削除">削除</button>';
+  return \`<div class="entry">\${renderHead(e, '音声', del)}
     \${body}
     <audio preload="none" controls src="/v1/media/audio/\${encodeURIComponent(e.id)}"></audio></div>\`;
 }
@@ -634,6 +669,101 @@ $('viewer').addEventListener('click', (e) => {
   if (e.target === $('viewer') || e.target === $('viewerImg') || e.target === $('viewerClose')) {
     $('viewer').close();
   }
+});
+
+// ------------------------------------------------------------- delete ---
+// 消したものは戻せない。R2 の実体も検索索引も消える。だから必ず確認を挟む。
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button.del[data-del]');
+  if (!b) return;
+  const what = b.dataset.del === 'photos' ? 'この画像' : 'この音声';
+  if (!confirm(what + 'を完全に削除します。元に戻せません。')) return;
+  b.disabled = true;
+  const r = await fetch('/v1/' + b.dataset.del + '/' + encodeURIComponent(b.dataset.id), { method: 'DELETE' });
+  if (!r.ok && r.status !== 404) {
+    b.disabled = false;
+    alert('削除できませんでした (' + r.status + ')');
+    return;
+  }
+  // 画像はカードの中の1枚だけを外す。最後の1枚ならカードごと外す。
+  const shot = b.closest('.shot');
+  const card = b.closest('.entry');
+  if (shot && card.querySelectorAll('.shot').length > 1) shot.remove();
+  else card.remove();
+});
+
+function rangeParams(dryRun) {
+  const date = $('date').value;
+  const kinds = [['kindDesktop', 'desktop'], ['kindCamera', 'camera'], ['kindAudio', 'audio']]
+    .filter(([id]) => $(id).checked).map(([, k]) => k);
+  const from = $('rangeFrom').value;
+  const to = $('rangeTo').value;
+  if (!kinds.length) return { error: '種類を1つ以上選んでください' };
+  if (!from || !to) return { error: '時刻を入れてください' };
+  // 終わりの分も含める。23:59 なら 23:59:59 まで。
+  const toIso = to === '23:59' ? addDay(date) + 'T00:00:00+09:00' : date + 'T' + to + ':00+09:00';
+  const fromIso = date + 'T' + from + ':00+09:00';
+  if (Date.parse(toIso) <= Date.parse(fromIso)) return { error: '終わりは始まりより後にしてください' };
+  return { query: 'from=' + encodeURIComponent(fromIso) + '&to=' + encodeURIComponent(toIso) +
+    '&kinds=' + kinds.join(',') + (dryRun ? '&dry_run=1' : '') };
+}
+
+function addDay(date) {
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+const KIND_NAMES = { desktop: 'PC画面', camera: 'カメラ', audio: '音声' };
+
+function resetRange() {
+  $('rangeGo').disabled = true;
+  $('rangeCount').textContent = '';
+}
+
+$('rangeOpen').addEventListener('click', () => {
+  $('rangeDate').textContent = $('date').value;
+  resetRange();
+  $('rangeDlg').showModal();
+});
+$('rangeClose').addEventListener('click', () => $('rangeDlg').close());
+// 条件を変えたら、数え直すまで消せない。
+for (const id of ['rangeFrom', 'rangeTo', 'kindDesktop', 'kindCamera', 'kindAudio']) {
+  $(id).addEventListener('change', resetRange);
+}
+
+$('rangeCheck').addEventListener('click', async () => {
+  const p = rangeParams(true);
+  if (p.error) { $('rangeCount').textContent = p.error; return; }
+  const r = await fetch('/v1/admin/delete-range?' + p.query, { method: 'POST' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $('rangeCount').textContent = d.error || ('確認できませんでした (' + r.status + ')'); return; }
+  const total = Object.values(d.counts).reduce((a, b) => a + b, 0);
+  $('rangeCount').textContent = Object.entries(d.counts)
+    .map(([k, n]) => KIND_NAMES[k] + ' ' + n + '件').join(' · ') + '（合計 ' + total + '件）';
+  // 0件でも消せるようにする。時間帯を残しておけば、あとから届く分を断れる。
+  $('rangeGo').disabled = false;
+});
+
+$('rangeGo').addEventListener('click', async () => {
+  const p = rangeParams(false);
+  if (p.error) { $('rangeCount').textContent = p.error; return; }
+  if (!confirm($('rangeDate').textContent + ' ' + $('rangeFrom').value + '〜' + $('rangeTo').value +
+    ' の ' + $('rangeCount').textContent + ' を完全に削除します。元に戻せません。' +
+    'この時間帯にあとから届く記録も保存されなくなります。')) return;
+  $('rangeGo').disabled = true;
+  let done = 0;
+  // 1回500件まで。残りが0になるまで呼び直す。
+  for (let i = 0; i < 100; i++) {
+    const r = await fetch('/v1/admin/delete-range?' + p.query, { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { $('rangeCount').textContent = (d.error || '削除が途中で止まりました (' + r.status + ')') + '（' + done + '件削除済み）'; return; }
+    done += d.photos + d.segments;
+    $('rangeCount').textContent = done + '件削除しました' + (d.remaining ? '（残り ' + d.remaining + '件）' : '');
+    if (!d.remaining) break;
+  }
+  reload();
 });
 
 // ------------------------------------------------------------ lost R1 ---

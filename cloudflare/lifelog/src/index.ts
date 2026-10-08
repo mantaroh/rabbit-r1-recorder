@@ -35,6 +35,10 @@ import { dayEntries, pageOf, perPageOf, segmentText, type SegmentHead } from "./
 import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
 import { readDesktopPhoto, photoText } from "./desktop-photo";
+import {
+  MEDIA_KINDS, deleteTargets, findById, findInRange, isDeleted, parseKinds, parseRange,
+  photoKind, recordRange,
+} from "./delete-media";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -124,6 +128,16 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/photos") {
       return listPhotos(env, url);
+    }
+    // 削除は admin だけ。端末・PC・エージェントの資格情報は DELETE を通さない。
+    if (request.method === "DELETE" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}$/.test(url.pathname)) {
+      return deleteOne(env, "photo", url.pathname.split("/")[3]);
+    }
+    if (request.method === "DELETE" && /^\/v1\/segments\/[A-Za-z0-9_-]{8,64}$/.test(url.pathname)) {
+      return deleteOne(env, "audio", url.pathname.split("/")[3]);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/admin/delete-range") {
+      return deleteRange(env, url);
     }
     if (request.method === "GET" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}\/text$/.test(url.pathname)) {
       return photoTextView(env, url.pathname.split("/")[3]);
@@ -529,6 +543,13 @@ async function putSegment(request: Request, env: Env, url: URL): Promise<Respons
   const sampleRate = intParam(url, "sample_rate");
   const channels = intParam(url, "channels");
   const endedAt = url.searchParams.get("ended_at");
+
+  // 消した録音の再送と、消した時間帯にあとから届いた録音は保存しない。
+  // 2xx で返すのは、R1 がそれ以外を再送し続けるから。受け取ったことにして
+  // 端末の手元のファイルを消させる。
+  if (await isDeleted(env, "audio", segmentId, Math.floor(Date.parse(startedAt) / 1000))) {
+    return json({ segment_id: segmentId, deleted: true, duplicate: true });
+  }
 
   // Re-uploading a segment we already transcribed would bill another Whisper
   // run and duplicate the text; the device retries freely, so check first.
@@ -1318,6 +1339,13 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     }
   }
 
+  // 消した写真の再送、眼鏡の同じ動画の再取り込み、消した時間帯にあとから
+  // 届いた写真は保存しない。PC は受領の photo_id と source を照合して手元を
+  // 消すので、その2つは返す。
+  if (await isDeleted(env, photoKind(source), photoId, Math.floor(Date.parse(takenAt) / 1000))) {
+    return json({ photo_id: photoId, source, deleted: true, duplicate: true });
+  }
+
   const existing = await env.DB.prepare(
     `SELECT r2_key, status, source FROM photos WHERE photo_id = ?1`,
   )
@@ -1325,10 +1353,6 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     .first<{ r2_key: string; status: string; source: string }>();
   if (existing) {
     if (existing.source !== source) return json({ error: "photo source mismatch" }, 409);
-    // A previous request may have committed D1 and failed before enqueueing.
-    if (source === "desktop" && existing.status === "pending") {
-      await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key: existing.r2_key, kind: "photo" });
-    }
     return json({ photo_id: photoId, key: existing.r2_key, duplicate: true, source });
   }
 
@@ -1359,23 +1383,19 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     return json({ photo_id: photoId, error: "checksum mismatch" }, 422);
   }
 
-  // The copy captionPhoto reads instead of the original. Written before the
-  // row, like the original, so a row never names an object that is not there.
-  let captionKey: string | null = null;
-  if (desktop?.captionBytes) {
-    captionKey = `photo/${day}/${photoId}.caption.jpg`;
-    await env.BUCKET.put(captionKey, desktop.captionBytes, {
-      httpMetadata: { contentType: "image/jpeg" },
-      customMetadata: { photoId, deviceId, takenAt, role: "caption" },
-    });
-  }
+  const takenEpoch = Math.floor(Date.parse(takenAt) / 1000);
+
+  // PC のスクショにはキャプションを付けない。費用の9割以上が PC だったうえ、
+  // 画面の中身は OCR で足りる。PC が送ってくるキャプション用の縮小版も
+  // 読む者がいないので保存しない。
+  const skipCaption = source === "desktop";
 
   await env.DB.prepare(
     `INSERT INTO photos
        (photo_id, device_id, r2_key, facing, taken_at, taken_epoch, bytes,
         sha256, received_at, source, source_file, ocr_text, capture_id, monitor_id, width, height,
-        caption_r2_key)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+        caption_r2_key, status)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
      ON CONFLICT(photo_id) DO NOTHING`,
   )
     .bind(
@@ -1384,7 +1404,7 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       key,
       facing,
       takenAt,
-      Math.floor(Date.parse(takenAt) / 1000),
+      takenEpoch,
       object?.size ?? null,
       sha256,
       new Date().toISOString(),
@@ -1395,16 +1415,60 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       desktop?.monitorId ?? null,
       desktop?.width ?? null,
       desktop?.height ?? null,
-      captionKey,
+      null,
+      skipCaption ? "skipped" : "pending",
     )
     .run();
 
   // Captioning takes about five seconds, so it goes behind the queue for the
   // same reason transcription does: the upload returns once the bytes are
   // durable, which is the part that cannot be retried later.
-  await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key, kind: "photo" });
+  if (!skipCaption) {
+    await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key, kind: "photo" });
+  }
 
-  return json({ photo_id: photoId, key, bytes: object?.size ?? null, source }, 201);
+  return json({
+    photo_id: photoId, key, bytes: object?.size ?? null, source,
+    ...(skipCaption ? { caption: "skipped" } : {}),
+  }, 201);
+}
+
+/** 写真1枚、または音声1件を消す。 */
+async function deleteOne(env: Env, kind: "photo" | "audio", id: string): Promise<Response> {
+  const targets = await findById(env, kind, [id]);
+  if (!targets.photos.length && !targets.segments.length) {
+    return json({ error: "not found", id }, 404);
+  }
+  return json({ id, ...(await deleteTargets(env, targets)) });
+}
+
+/**
+ * 時間帯の中の記録をまとめて消す。
+ *
+ *   ?from= &to=   ISO 8601。[from, to) で、24時間まで
+ *   ?kinds=       desktop,camera,audio のどれか（カンマ区切り）
+ *   ?dry_run=1    消さずに件数だけ返す
+ *
+ * 1回で消すのは500件まで。remaining が0になるまで同じ指定で呼び直す。
+ */
+async function deleteRange(env: Env, url: URL): Promise<Response> {
+  const range = parseRange(url.searchParams.get("from"), url.searchParams.get("to"));
+  if ("error" in range) return json({ error: range.error }, 400);
+  const kinds = parseKinds(url.searchParams.get("kinds"));
+  if (!kinds) return json({ error: `kinds は ${MEDIA_KINDS.join(",")} から選んでください` }, 400);
+
+  if (url.searchParams.get("dry_run") === "1") {
+    const counts: Record<string, number> = {};
+    for (const k of kinds) {
+      counts[k] = (await findInRange(env, range.fromEpoch, range.toEpoch, [k], 0)).remaining;
+    }
+    return json({ dry_run: true, counts });
+  }
+
+  await recordRange(env, kinds, range.fromEpoch, range.toEpoch);
+  const targets = await findInRange(env, range.fromEpoch, range.toEpoch, kinds);
+  const deleted = await deleteTargets(env, targets);
+  return json({ ...deleted, remaining: targets.remaining });
 }
 
 /**
@@ -1434,6 +1498,17 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
   )
     .bind(message.segmentId)
     .first<{ source: string | null; caption_r2_key: string | null }>();
+
+  // PC のスクショはキャプションしない。廃止前に積まれたメッセージや
+  // backfill から来ても、モデルを呼ばずに終える。
+  if (row?.source === "desktop") {
+    await env.DB.prepare(
+      `UPDATE photos SET status = 'skipped' WHERE photo_id = ?1 AND caption IS NULL`,
+    )
+      .bind(message.segmentId)
+      .run();
+    return;
+  }
 
   const object = await env.BUCKET.get(row?.caption_r2_key ?? message.key);
   if (!object) {
@@ -1602,7 +1677,8 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
 
   const rows = await env.DB.prepare(
     `SELECT photo_id, r2_key FROM photos
-      WHERE caption IS NULL AND status != 'failed'
+      WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')
+        AND COALESCE(source, 'r1') != 'desktop'
       ORDER BY taken_epoch ASC
       LIMIT ?1`,
   )
@@ -1619,7 +1695,8 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
   }
 
   const remaining = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status != 'failed'`,
+    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')
+        AND COALESCE(source, 'r1') != 'desktop'`,
   ).first<{ n: number }>();
 
   return json({ queued: todo.length, remaining: remaining?.n ?? 0 });
@@ -1652,6 +1729,7 @@ async function recaptionPhotos(env: Env, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
     `SELECT photo_id, r2_key FROM photos
       WHERE status = 'captioned' AND caption_at < ?1
+        AND COALESCE(source, 'r1') != 'desktop'
       ORDER BY caption_at ASC
       LIMIT ?2`,
   )
