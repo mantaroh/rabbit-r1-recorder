@@ -35,7 +35,6 @@ import { dayEntries, pageOf, perPageOf, segmentText, type SegmentHead } from "./
 import { retimeTargets } from "./retime";
 import { mergeResults, type SearchHit } from "./search-merge";
 import { readDesktopPhoto, photoText } from "./desktop-photo";
-import { CAPTION_SKIP_MAX_GAP_SEC, canSkipCaption } from "./desktop-similarity";
 import {
   MEDIA_KINDS, deleteTargets, findById, findInRange, isDeleted, parseKinds, parseRange,
   photoKind, recordRange,
@@ -1354,10 +1353,6 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     .first<{ r2_key: string; status: string; source: string }>();
   if (existing) {
     if (existing.source !== source) return json({ error: "photo source mismatch" }, 409);
-    // A previous request may have committed D1 and failed before enqueueing.
-    if (source === "desktop" && existing.status === "pending") {
-      await env.TRANSCRIBE_QUEUE.send({ segmentId: photoId, key: existing.r2_key, kind: "photo" });
-    }
     return json({ photo_id: photoId, key: existing.r2_key, duplicate: true, source });
   }
 
@@ -1388,39 +1383,12 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
     return json({ photo_id: photoId, error: "checksum mismatch" }, 422);
   }
 
-  // The copy captionPhoto reads instead of the original. Written before the
-  // row, like the original, so a row never names an object that is not there.
-  let captionKey: string | null = null;
-  if (desktop?.captionBytes) {
-    captionKey = `photo/${day}/${photoId}.caption.jpg`;
-    await env.BUCKET.put(captionKey, desktop.captionBytes, {
-      httpMetadata: { contentType: "image/jpeg" },
-      customMetadata: { photoId, deviceId, takenAt, role: "caption" },
-    });
-  }
-
   const takenEpoch = Math.floor(Date.parse(takenAt) / 1000);
 
-  // PC のスクショは、前回キャプションした同じモニタの画面と OCR がほぼ
-  // 同じならキャプションを付けない。比べる相手は「キャプション対象にした」
-  // 行だけ。省いた行と比べ続けると、少しずつ変わる画面がいつまでも省かれる。
-  let skipCaption = false;
-  if (desktop) {
-    const reference = await env.DB.prepare(
-      `SELECT ocr_text, taken_epoch FROM photos
-        WHERE source = 'desktop' AND device_id = ?1 AND monitor_id IS ?2
-          AND taken_epoch < ?3 AND taken_epoch > ?3 - ?4
-          AND status IN ('pending', 'captioned')
-        ORDER BY taken_epoch DESC
-        LIMIT 1`,
-    )
-      .bind(deviceId, desktop.monitorId ?? null, takenEpoch, CAPTION_SKIP_MAX_GAP_SEC)
-      .first<{ ocr_text: string | null; taken_epoch: number }>();
-    skipCaption = canSkipCaption(
-      { ocrText: desktop.ocrText ?? null, takenEpoch },
-      reference ? { ocrText: reference.ocr_text, takenEpoch: reference.taken_epoch } : null,
-    );
-  }
+  // PC のスクショにはキャプションを付けない。費用の9割以上が PC だったうえ、
+  // 画面の中身は OCR で足りる。PC が送ってくるキャプション用の縮小版も
+  // 読む者がいないので保存しない。
+  const skipCaption = source === "desktop";
 
   await env.DB.prepare(
     `INSERT INTO photos
@@ -1447,7 +1415,7 @@ async function putPhoto(request: Request, env: Env, url: URL): Promise<Response>
       desktop?.monitorId ?? null,
       desktop?.width ?? null,
       desktop?.height ?? null,
-      captionKey,
+      null,
       skipCaption ? "skipped" : "pending",
     )
     .run();
@@ -1530,6 +1498,17 @@ async function captionPhoto(message: TranscribeMessage, env: Env): Promise<void>
   )
     .bind(message.segmentId)
     .first<{ source: string | null; caption_r2_key: string | null }>();
+
+  // PC のスクショはキャプションしない。廃止前に積まれたメッセージや
+  // backfill から来ても、モデルを呼ばずに終える。
+  if (row?.source === "desktop") {
+    await env.DB.prepare(
+      `UPDATE photos SET status = 'skipped' WHERE photo_id = ?1 AND caption IS NULL`,
+    )
+      .bind(message.segmentId)
+      .run();
+    return;
+  }
 
   const object = await env.BUCKET.get(row?.caption_r2_key ?? message.key);
   if (!object) {
@@ -1699,6 +1678,7 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
     `SELECT photo_id, r2_key FROM photos
       WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')
+        AND COALESCE(source, 'r1') != 'desktop'
       ORDER BY taken_epoch ASC
       LIMIT ?1`,
   )
@@ -1715,7 +1695,8 @@ async function captionBackfill(env: Env, url: URL): Promise<Response> {
   }
 
   const remaining = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')`,
+    `SELECT COUNT(*) AS n FROM photos WHERE caption IS NULL AND status NOT IN ('failed', 'skipped')
+        AND COALESCE(source, 'r1') != 'desktop'`,
   ).first<{ n: number }>();
 
   return json({ queued: todo.length, remaining: remaining?.n ?? 0 });
@@ -1748,6 +1729,7 @@ async function recaptionPhotos(env: Env, url: URL): Promise<Response> {
   const rows = await env.DB.prepare(
     `SELECT photo_id, r2_key FROM photos
       WHERE status = 'captioned' AND caption_at < ?1
+        AND COALESCE(source, 'r1') != 'desktop'
       ORDER BY caption_at ASC
       LIMIT ?2`,
   )
