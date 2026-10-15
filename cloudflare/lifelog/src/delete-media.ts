@@ -50,7 +50,7 @@ export function parseRange(
   const fromEpoch = Math.floor(f / 1000);
   const toEpoch = Math.floor(t / 1000);
   if (toEpoch <= fromEpoch) return { error: "to は from より後にしてください" };
-  if (toEpoch - fromEpoch > MAX_RANGE_SEC) return { error: "一度に消せるのは24時間までです" };
+  if (toEpoch - fromEpoch > MAX_RANGE_SEC) return { error: "一度に指定できるのは24時間までです" };
   return { fromEpoch, toEpoch };
 }
 

@@ -39,6 +39,9 @@ import {
   MEDIA_KINDS, deleteTargets, findById, findInRange, isDeleted, parseKinds, parseRange,
   photoKind, recordRange,
 } from "./delete-media";
+import {
+  MAX_EXPORT_BYTES, audioFileName, exportBaseName, transcriptText, zipStream, type ExportSegment,
+} from "./export";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -138,6 +141,12 @@ export default {
     }
     if (request.method === "POST" && url.pathname === "/v1/admin/delete-range") {
       return deleteRange(env, url);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/export/audio") {
+      return exportAudio(env, url);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/export/transcript") {
+      return exportTranscript(env, url);
     }
     if (request.method === "GET" && /^\/v1\/photos\/[A-Za-z0-9_-]{8,64}\/text$/.test(url.pathname)) {
       return photoTextView(env, url.pathname.split("/")[3]);
@@ -1469,6 +1478,74 @@ async function deleteRange(env: Env, url: URL): Promise<Response> {
   const targets = await findInRange(env, range.fromEpoch, range.toEpoch, kinds);
   const deleted = await deleteTargets(env, targets);
   return json({ ...deleted, remaining: targets.remaining });
+}
+
+/**
+ * 書き出す音声。日ビューに出る kind='lifelog' だけで、呼びかけ（query）は入れない。
+ * 24時間でも 1440 行なので、まとめて引く。
+ */
+async function exportSegments(env: Env, fromEpoch: number, toEpoch: number): Promise<ExportSegment[]> {
+  const r = await env.DB.prepare(
+    `SELECT segment_id, started_at, started_epoch, status, voiced_ratio, transcript, stock_phrase, r2_key, bytes
+       FROM segments
+      WHERE kind = 'lifelog' AND started_epoch >= ?1 AND started_epoch < ?2
+      ORDER BY started_epoch, segment_id`,
+  ).bind(fromEpoch, toEpoch).all<ExportSegment>();
+  return r.results ?? [];
+}
+
+function attachment(name: string): string {
+  return `attachment; filename="${name}"`;
+}
+
+/** 時間帯の音声を ZIP で。dry_run=1 なら件数と大きさだけ返す。 */
+async function exportAudio(env: Env, url: URL): Promise<Response> {
+  const range = parseRange(url.searchParams.get("from"), url.searchParams.get("to"));
+  if ("error" in range) return json({ error: range.error }, 400);
+  const rows = await exportSegments(env, range.fromEpoch, range.toEpoch);
+  const bytes = rows.reduce((n, r) => n + (r.bytes ?? 0), 0);
+
+  if (url.searchParams.get("dry_run") === "1") {
+    const transcripts = rows.filter((r) => segmentText(r)).length;
+    return json({ dry_run: true, segments: rows.length, bytes, transcripts, max_bytes: MAX_EXPORT_BYTES });
+  }
+  if (bytes > MAX_EXPORT_BYTES) {
+    return json({ error: "大きすぎます。時間帯を狭めてください", bytes, max_bytes: MAX_EXPORT_BYTES }, 413);
+  }
+
+  const name = exportBaseName(range.fromEpoch, range.toEpoch);
+  const transcript = new TextEncoder().encode(transcriptText(rows, range.fromEpoch, range.toEpoch));
+  const body = zipStream([
+    { name: "transcript.txt", epoch: range.fromEpoch, open: async () => transcript },
+    ...rows.map((row) => ({
+      name: audioFileName(row),
+      epoch: row.started_epoch,
+      // R2 に無いもの（削除の途中で止まった行など）は飛ばす。
+      open: async () => (await env.BUCKET.get(row.r2_key))?.body ?? null,
+    })),
+  ]);
+  return new Response(body, {
+    headers: {
+      "content-type": "application/zip",
+      "content-disposition": attachment(`${name}.zip`),
+      "cache-control": "no-store",
+    },
+  });
+}
+
+/** 時間帯の文字起こしをテキストで。 */
+async function exportTranscript(env: Env, url: URL): Promise<Response> {
+  const range = parseRange(url.searchParams.get("from"), url.searchParams.get("to"));
+  if ("error" in range) return json({ error: range.error }, 400);
+  const rows = await exportSegments(env, range.fromEpoch, range.toEpoch);
+  const name = exportBaseName(range.fromEpoch, range.toEpoch);
+  return new Response(transcriptText(rows, range.fromEpoch, range.toEpoch), {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": attachment(`${name}.txt`),
+      "cache-control": "no-store",
+    },
+  });
 }
 
 /**

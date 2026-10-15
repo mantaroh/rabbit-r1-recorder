@@ -164,14 +164,14 @@ export const UI_HTML = `<!doctype html>
   }
   .del:hover { border-color: #b4443c; color: #ff6b5e; }
   .head .del { align-self: center; }
-  #rangeDlg {
+  #rangeDlg, #exportDlg {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 14px 16px; width: min(420px, 92vw);
   }
-  #rangeDlg h2 { font-size: 15px; margin: 0 0 10px; }
-  #rangeDlg .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  #rangeDlg h2, #exportDlg h2 { font-size: 15px; margin: 0 0 10px; }
+  #rangeDlg .row, #exportDlg .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
   #rangeDlg .kinds label { color: var(--text); font-size: 14px; }
-  #rangeCount { color: var(--dim); font-size: 13px; min-height: 1.4em; }
+  #rangeCount, #exportCount { color: var(--dim); font-size: 13px; min-height: 1.4em; }
   #rangeGo { border-color: #b4443c; color: #ff6b5e; }
   #rangeGo:disabled { opacity: .4; cursor: default; }
 </style>
@@ -190,6 +190,7 @@ export const UI_HTML = `<!doctype html>
   <button class="tab" id="tabAudio">音声</button>
   <button class="tab" id="tabMap">地図</button>
   <a class="tab" href="/import" style="text-decoration:none">取り込み</a>
+  <button id="exportOpen" title="この日の時間帯を指定して音声・文字起こしをダウンロード">ダウンロード</button>
   <button id="rangeOpen" title="この日の時間帯を指定して削除">時間帯を削除</button>
   <button id="lost" title="端末の資格情報を停止／再開">端末</button>
 </header>
@@ -227,6 +228,18 @@ export const UI_HTML = `<!doctype html>
     <button type="button" id="rangeCheck">件数を確認</button>
     <button type="button" id="rangeGo" disabled>削除する</button>
     <button type="button" id="rangeClose" style="margin-left:auto">閉じる</button>
+  </div>
+</dialog>
+<dialog id="exportDlg" aria-label="時間帯をダウンロード">
+  <h2>時間帯をダウンロード</h2>
+  <div class="row"><span id="exportDate"></span>
+    <input type="time" id="exportFrom" value="00:00"> 〜 <input type="time" id="exportTo" value="23:59"></div>
+  <div class="row" id="exportCount"></div>
+  <div class="row">
+    <button type="button" id="exportCheck">件数を確認</button>
+    <button type="button" id="exportAudio" disabled>音声（ZIP）</button>
+    <button type="button" id="exportText" disabled>文字起こし（txt）</button>
+    <button type="button" id="exportClose" style="margin-left:auto">閉じる</button>
   </div>
 </dialog>
 
@@ -697,16 +710,20 @@ function rangeParams(dryRun) {
   const date = $('date').value;
   const kinds = [['kindDesktop', 'desktop'], ['kindCamera', 'camera'], ['kindAudio', 'audio']]
     .filter(([id]) => $(id).checked).map(([, k]) => k);
-  const from = $('rangeFrom').value;
-  const to = $('rangeTo').value;
   if (!kinds.length) return { error: '種類を1つ以上選んでください' };
+  const range = rangeQuery(date, $('rangeFrom').value, $('rangeTo').value);
+  if (range.error) return range;
+  return { query: range.query + '&kinds=' + kinds.join(',') + (dryRun ? '&dry_run=1' : '') };
+}
+
+/** その日の時刻2つを from=&to= にする。JST で、終わりの分も含める。 */
+function rangeQuery(date, from, to) {
   if (!from || !to) return { error: '時刻を入れてください' };
-  // 終わりの分も含める。23:59 なら 23:59:59 まで。
+  // 23:59 なら 23:59:59 まで。
   const toIso = to === '23:59' ? addDay(date) + 'T00:00:00+09:00' : date + 'T' + to + ':00+09:00';
   const fromIso = date + 'T' + from + ':00+09:00';
   if (Date.parse(toIso) <= Date.parse(fromIso)) return { error: '終わりは始まりより後にしてください' };
-  return { query: 'from=' + encodeURIComponent(fromIso) + '&to=' + encodeURIComponent(toIso) +
-    '&kinds=' + kinds.join(',') + (dryRun ? '&dry_run=1' : '') };
+  return { query: 'from=' + encodeURIComponent(fromIso) + '&to=' + encodeURIComponent(toIso) };
 }
 
 function addDay(date) {
@@ -764,6 +781,57 @@ $('rangeGo').addEventListener('click', async () => {
     if (!d.remaining) break;
   }
   reload();
+});
+
+// ------------------------------------------------------------ export ---
+// 先に件数と大きさを確かめてから落とす。大きすぎる ZIP はサーバーが 413 で断るが、
+// 画面遷移でダウンロードするとエラーの JSON がそのまま開いてしまうので、ここで止める。
+
+function exportQuery() {
+  return rangeQuery($('exportDate').textContent, $('exportFrom').value, $('exportTo').value);
+}
+
+function resetExport() {
+  $('exportAudio').disabled = true;
+  $('exportText').disabled = true;
+  $('exportCount').textContent = '';
+}
+
+function formatBytes(n) {
+  if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + 'GB';
+  if (n >= 1024 ** 2) return Math.round(n / 1024 ** 2) + 'MB';
+  return Math.round(n / 1024) + 'KB';
+}
+
+$('exportOpen').addEventListener('click', () => {
+  $('exportDate').textContent = $('date').value;
+  resetExport();
+  $('exportDlg').showModal();
+});
+$('exportClose').addEventListener('click', () => $('exportDlg').close());
+for (const id of ['exportFrom', 'exportTo']) $(id).addEventListener('change', resetExport);
+
+$('exportCheck').addEventListener('click', async () => {
+  const p = exportQuery();
+  if (p.error) { $('exportCount').textContent = p.error; return; }
+  const r = await fetch('/v1/export/audio?' + p.query + '&dry_run=1');
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { $('exportCount').textContent = d.error || ('確認できませんでした (' + r.status + ')'); return; }
+  const tooBig = d.bytes > d.max_bytes;
+  $('exportCount').textContent = '音声 ' + d.segments + '件・約' + formatBytes(d.bytes) +
+    ' · 文字起こし ' + d.transcripts + '件' +
+    (tooBig ? '（音声は ' + formatBytes(d.max_bytes) + ' までです。時間帯を狭めてください）' : '');
+  $('exportAudio').disabled = tooBig || d.segments === 0;
+  $('exportText').disabled = false;
+});
+
+$('exportAudio').addEventListener('click', () => {
+  const p = exportQuery();
+  if (!p.error) location.href = '/v1/export/audio?' + p.query;
+});
+$('exportText').addEventListener('click', () => {
+  const p = exportQuery();
+  if (!p.error) location.href = '/v1/export/transcript?' + p.query;
 });
 
 // ------------------------------------------------------------ lost R1 ---
