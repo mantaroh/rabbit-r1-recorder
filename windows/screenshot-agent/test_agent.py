@@ -291,13 +291,24 @@ class MaskedCaptureTests(unittest.TestCase):
             capture.take(self.store, "pc-test", ["Secret.EXE", "other.exe"])
         self.assertEqual(stack.call_args[0][0], {"secret.exe", "other.exe"})
 
+    def test_full_path_picks_one_install_of_the_same_exe(self):
+        stable, nightly = r"c:\program files\mozilla firefox\firefox.exe", r"c:\program files\firefox nightly\firefox.exe"
+        masked = capture.normalized(["C:/Program Files/Mozilla Firefox/firefox.exe"])
+        self.assertTrue(capture.matches(stable, masked))
+        self.assertFalse(capture.matches(nightly, masked))
+        masked = capture.normalized(["Firefox.exe"])
+        self.assertTrue(capture.matches(stable, masked))
+        self.assertTrue(capture.matches(nightly, masked))
+        self.assertFalse(capture.matches("", masked))
+
 
 class MaskedAppsConfigTests(unittest.TestCase):
     def test_exe_names_are_required(self):
         configured = {**config.defaults(), "token": "test", "endpoint": "http://localhost:8787"}
-        configured["masked_apps"] = ["KeePassXC.exe", "1Password.exe"]
+        configured["masked_apps"] = ["KeePassXC.exe", "1Password.exe", r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                                     "C:/Program Files/Google/Chrome/Application/chrome.exe"]
         config.validate(configured)
-        for bad in (["C:\\Apps\\KeePassXC.exe"], ["KeePassXC"], [""], "KeePassXC.exe"):
+        for bad in ([r"Apps\KeePassXC.exe"], [r"\\server\share\x.exe"], [r"C:\Apps\KeePassXC"], ["KeePassXC"], [""], "KeePassXC.exe"):
             configured["masked_apps"] = bad
             with self.assertRaises(ValueError):
                 config.validate(configured)

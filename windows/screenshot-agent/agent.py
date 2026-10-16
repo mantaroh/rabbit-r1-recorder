@@ -190,7 +190,7 @@ def run_ui(agent, background=False):
         value = tk.StringVar(value=str(agent.config[name]))
         fields[name] = value
         ttk.Entry(form, textvariable=value, show="●" if name in ("token", "access_secret", "access_id") else "").grid(row=i, column=1, sticky="ew", pady=5)
-    ttk.Label(form, text="黒く塗るアプリ\n（exe名を1行に1つ）").grid(row=len(labels), column=0, sticky="nw", pady=5, padx=(0, 12))
+    ttk.Label(form, text="黒く塗るアプリ\n（exe名かフルパスを\n1行に1つ）").grid(row=len(labels), column=0, sticky="nw", pady=5, padx=(0, 12))
     masked = tk.Text(form, height=4, font=("Consolas", 10))
     masked.insert("1.0", "\n".join(agent.config["masked_apps"]))
     masked.grid(row=len(labels), column=1, sticky="ew", pady=5)
@@ -200,7 +200,8 @@ def run_ui(agent, background=False):
     def apply():
         config = agent.snapshot()
         config.update({k: v.get().strip() for k, v in fields.items()})
-        lines = [line.strip() for line in masked.get("1.0", "end").splitlines()]
+        # Explorer's "Copy as path" wraps the path in quotes.
+        lines = [line.strip().strip('"').strip() for line in masked.get("1.0", "end").splitlines()]
         config["masked_apps"] = list(dict.fromkeys(line for line in lines if line))
         try:
             config["interval_seconds"] = int(config["interval_seconds"])
