@@ -86,7 +86,7 @@ class Agent:
             try:
                 if shutil.disk_usage(self.directory).free < 512 * 1024 * 1024:
                     raise RuntimeError("空き容量が512MiB未満です。容量を確保すると撮影を再開します")
-                count = take(self.store, config["device_id"])
+                count = take(self.store, config["device_id"], config["masked_apps"])
                 self.capture_status = f"{count}画面を保存" if count else "画面ロック中・画面を取得できません"
                 if count:
                     self.last_capture = time.strftime("%H:%M:%S")
@@ -148,8 +148,8 @@ def run_ui(agent, background=False):
     from PIL import Image, ImageDraw
     root = tk.Tk()
     root.title("Lifelog — PCの画面を記録")
-    root.geometry("680x660")
-    root.minsize(620, 620)
+    root.geometry("680x800")
+    root.minsize(620, 760)
     commands = queue.Queue()
     frame = ttk.Frame(root, padding=22)
     frame.pack(fill="both", expand=True)
@@ -190,12 +190,18 @@ def run_ui(agent, background=False):
         value = tk.StringVar(value=str(agent.config[name]))
         fields[name] = value
         ttk.Entry(form, textvariable=value, show="●" if name in ("token", "access_secret", "access_id") else "").grid(row=i, column=1, sticky="ew", pady=5)
+    ttk.Label(form, text="黒く塗るアプリ\n（exe名を1行に1つ）").grid(row=len(labels), column=0, sticky="nw", pady=5, padx=(0, 12))
+    masked = tk.Text(form, height=4, font=("Consolas", 10))
+    masked.insert("1.0", "\n".join(agent.config["masked_apps"]))
+    masked.grid(row=len(labels), column=1, sticky="ew", pady=5)
     start = tk.BooleanVar(value=startup_enabled())
     ttk.Checkbutton(frame, text="Windowsへのサインイン時に起動", variable=start).pack(anchor="w", pady=12)
 
     def apply():
         config = agent.snapshot()
         config.update({k: v.get().strip() for k, v in fields.items()})
+        lines = [line.strip() for line in masked.get("1.0", "end").splitlines()]
+        config["masked_apps"] = list(dict.fromkeys(line for line in lines if line))
         try:
             config["interval_seconds"] = int(config["interval_seconds"])
             settings.save(config, agent.directory)
@@ -305,7 +311,7 @@ def main():
             print(json.dumps(dict(monitors=monitors(), japanese_ocr=OcrEngine.try_create_from_language(Language("ja")) is not None,
                                   max_ocr_dimension=OcrEngine.max_image_dimension, configured=bool(config.get("token"))), ensure_ascii=False))
         elif args.capture_once:
-            print(json.dumps(dict(captured=take(agent.store, config["device_id"]), **agent.store.stats())))
+            print(json.dumps(dict(captured=take(agent.store, config["device_id"], config["masked_apps"]), **agent.store.stats())))
         elif args.process_once:
             settings.validate(config)
             agent.process_one()

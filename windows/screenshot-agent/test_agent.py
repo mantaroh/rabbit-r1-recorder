@@ -204,6 +204,115 @@ class OutboxTests(unittest.TestCase):
         config.validate(configured)
 
 
+class MaskTests(unittest.TestCase):
+    # Stacks are (masked, rect) from the front window to the back one.
+
+    def test_only_the_uncovered_part_is_black(self):
+        stack = [(False, (100, 0, 300, 200)), (True, (0, 0, 200, 200))]
+        self.assertEqual(capture.black_regions(stack), [(0, 0, 100, 200)])
+
+    def test_fully_covered_window_leaves_nothing(self):
+        stack = [(False, (0, 0, 500, 500)), (True, (100, 100, 200, 200))]
+        self.assertEqual(capture.black_regions(stack), [])
+
+    def test_window_behind_does_not_cover(self):
+        stack = [(True, (0, 0, 200, 200)), (False, (0, 0, 500, 500))]
+        self.assertEqual(capture.black_regions(stack), [(0, 0, 200, 200)])
+
+    def test_several_masked_windows_stay_black_where_seen(self):
+        stack = [(True, (150, 0, 250, 100)), (False, (100, 0, 200, 100)), (True, (0, 0, 200, 100))]
+        regions = capture.black_regions(stack)
+        black = {(x, y) for x in range(0, 300, 10) for y in range(0, 100, 10)
+                 if any(l <= x < r and t <= y < b for l, t, r, b in regions)}
+        expected = {(x, y) for x in range(0, 300, 10) for y in range(0, 100, 10) if x < 100 or 150 <= x < 250}
+        self.assertEqual(black, expected)
+
+    def test_hole_in_the_middle_leaves_a_frame(self):
+        stack = [(False, (40, 40, 60, 60)), (True, (0, 0, 100, 100))]
+        regions = capture.black_regions(stack)
+        self.assertEqual(sum((r - l) * (b - t) for l, t, r, b in regions), 100 * 100 - 20 * 20)
+
+    def test_paint_uses_each_screen_coordinates(self):
+        left = Image.new("RGB", (100, 50), "white")
+        right = Image.new("RGB", (100, 50), "white")
+        regions = [(-20, 10, 30, 20)]  # straddles both screens
+        capture.paint(left, (-100, 0, 0, 50), regions)
+        capture.paint(right, (0, 0, 100, 50), regions)
+        self.assertEqual(left.getpixel((80, 15)), (0, 0, 0))
+        self.assertEqual(left.getpixel((79, 15)), (255, 255, 255))
+        self.assertEqual(left.getpixel((99, 15)), (0, 0, 0))
+        self.assertEqual(right.getpixel((29, 19)), (0, 0, 0))
+        self.assertEqual(right.getpixel((30, 15)), (255, 255, 255))
+        self.assertEqual(right.getpixel((10, 20)), (255, 255, 255))
+
+
+class MaskedCaptureTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = Store(Path(self.temp.name))
+
+    def run_take(self, stacks):
+        screens = [("one", (0, 0, 100, 100))]
+        grabs = []
+        def grab(**kwargs):
+            grabs.append(kwargs)
+            return Image.new("RGB", (100, 100), "white")
+        with patch.object(capture, "desktop_available", return_value=True), patch.object(capture, "monitors", return_value=screens), \
+                patch.object(capture.ImageGrab, "grab", side_effect=grab), patch.object(capture, "window_stack", side_effect=stacks):
+            capture.take(self.store, "pc-test", ["Secret.exe"])
+        image = Image.open(io.BytesIO(self.store.next()["png"]))
+        return image, len(grabs)
+
+    def test_stored_frame_is_already_black(self):
+        stack = ((True, (0, 0, 50, 100)),)
+        image, grabs = self.run_take([stack, stack])
+        self.assertEqual(grabs, 1)
+        self.assertEqual(image.getpixel((49, 50)), (0, 0, 0))
+        self.assertEqual(image.getpixel((50, 50)), (255, 255, 255))
+
+    def test_windows_changed_while_grabbing_takes_it_again(self):
+        moved, still = ((True, (0, 0, 10, 10)),), ((True, (0, 0, 50, 100)),)
+        image, grabs = self.run_take([moved, still, still, still])
+        self.assertEqual(grabs, 2)
+        self.assertEqual(image.getpixel((5, 50)), (0, 0, 0))
+
+    def test_still_changing_blacks_both_positions(self):
+        a, b, c, d = (((True, (x, 0, x + 10, 10)),) for x in (0, 20, 40, 60))
+        image, grabs = self.run_take([a, b, c, d])
+        self.assertEqual(grabs, 2)
+        self.assertEqual(image.getpixel((45, 5)), (0, 0, 0))
+        self.assertEqual(image.getpixel((65, 5)), (0, 0, 0))
+        self.assertEqual(image.getpixel((5, 5)), (255, 255, 255))
+
+    def test_masked_apps_are_matched_without_case(self):
+        with patch.object(capture, "window_stack", return_value=()) as stack, \
+                patch.object(capture, "desktop_available", return_value=True), patch.object(capture, "monitors", return_value=[]):
+            capture.take(self.store, "pc-test", ["Secret.EXE", "other.exe"])
+        self.assertEqual(stack.call_args[0][0], {"secret.exe", "other.exe"})
+
+
+class MaskedAppsConfigTests(unittest.TestCase):
+    def test_exe_names_are_required(self):
+        configured = {**config.defaults(), "token": "test", "endpoint": "http://localhost:8787"}
+        configured["masked_apps"] = ["KeePassXC.exe", "1Password.exe"]
+        config.validate(configured)
+        for bad in (["C:\\Apps\\KeePassXC.exe"], ["KeePassXC"], [""], "KeePassXC.exe"):
+            configured["masked_apps"] = bad
+            with self.assertRaises(ValueError):
+                config.validate(configured)
+
+    def test_config_from_before_masking_still_loads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            configured = {**config.defaults(), "token": "test", "endpoint": "http://localhost:8787"}
+            config.save(configured, Path(directory))
+            path = Path(directory) / "config.json"
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            del saved["masked_apps"]
+            path.write_text(json.dumps(saved), encoding="utf-8")
+            self.assertEqual(config.load(Path(directory))["masked_apps"], [])
+
+
 class WindowsOcrTests(unittest.TestCase):
     def test_japanese_text_at_original_resolution(self):
         from ocr import recognize
