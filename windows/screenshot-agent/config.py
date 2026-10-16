@@ -4,6 +4,7 @@ import ctypes
 from ctypes import wintypes
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 import uuid
@@ -38,7 +39,7 @@ def protect(value: bytes, decrypt=False) -> bytes:
 
 def defaults():
     return dict(endpoint="https://lifelog.mantaroh.org", interval_seconds=60,
-                device_id="pc-" + uuid.uuid4().hex[:16], access_id="", access_secret="", token="")
+                device_id="pc-" + uuid.uuid4().hex[:16], access_id="", access_secret="", token="", masked_apps=[])
 
 
 def validate(config):
@@ -51,6 +52,9 @@ def validate(config):
     interval = config["interval_seconds"]
     if isinstance(interval, bool) or not isinstance(interval, int) or not 5 <= interval <= 3600:
         raise ValueError("撮影間隔は5〜3600秒の整数です")
+    apps = config["masked_apps"]
+    if not isinstance(apps, list) or not all(isinstance(a, str) and re.fullmatch(r'[^\\/:*?"<>|]+\.exe', a, re.I) for a in apps):
+        raise ValueError("黒く塗るアプリは「KeePassXC.exe」のようにexe名だけを1行に1つ書いてください")
     if not config["token"] or any(c in config["token"] for c in "\r\n"):
         raise ValueError("取り込みトークンを指定してください")
     if not local and (not config["access_id"] or not config["access_secret"]):
@@ -75,5 +79,6 @@ def load(directory=None):
         return defaults()
     config = json.loads(path.read_text(encoding="utf-8"))
     config.update(json.loads(protect(base64.b64decode(config.pop("credentials")), decrypt=True)))
+    config.setdefault("masked_apps", [])  # saved before app masking existed
     validate(config)
     return config
