@@ -53,8 +53,9 @@ def validate(config):
     if isinstance(interval, bool) or not isinstance(interval, int) or not 5 <= interval <= 3600:
         raise ValueError("撮影間隔は5〜3600秒の整数です")
     apps = config["masked_apps"]
-    if not isinstance(apps, list) or not all(isinstance(a, str) and re.fullmatch(r'[^\\/:*?"<>|]+\.exe', a, re.I) for a in apps):
-        raise ValueError("黒く塗るアプリは「KeePassXC.exe」のようにexe名だけを1行に1つ書いてください")
+    name = r'[^\\/:*?"<>|]+\.exe'
+    if not isinstance(apps, list) or not all(isinstance(a, str) and re.fullmatch(rf'(?:[A-Za-z]:[\\/](?:[^\\/:*?"<>|]+[\\/])*)?{name}', a, re.I) for a in apps):
+        raise ValueError("黒く塗るアプリは「KeePassXC.exe」のようなexe名か、「C:\\Program Files\\...\\KeePassXC.exe」のようなフルパスを1行に1つ書いてください")
     if not config["token"] or any(c in config["token"] for c in "\r\n"):
         raise ValueError("取り込みトークンを指定してください")
     if not local and (not config["access_id"] or not config["access_secret"]):

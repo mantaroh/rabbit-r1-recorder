@@ -69,8 +69,17 @@ WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW = 0x8, 0x20, 0x80
 WS_EX_LAYERED, WS_EX_NOACTIVATE = 0x80000, 0x8000000
 
 
-def process_name(hwnd, names):
-    """Lower-case exe name of the window's process; names caches it per pid for one enumeration."""
+def normalized(masked_apps):
+    return {name.lower().replace("/", "\\") for name in masked_apps}
+
+
+def matches(path, masked):
+    """An entry is either a bare exe name (every install) or a full path (that install only)."""
+    return bool(path) and (path in masked or path.rsplit("\\", 1)[-1] in masked)
+
+
+def process_path(hwnd, names):
+    """Lower-case full exe path of the window's process; names caches it per pid for one enumeration."""
     user, kernel = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
     pid = wintypes.DWORD()
     user.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
@@ -81,7 +90,7 @@ def process_name(hwnd, names):
         if handle:
             buffer, size = ctypes.create_unicode_buffer(32768), wintypes.DWORD(32768)
             if kernel.QueryFullProcessImageNameW(wintypes.HANDLE(handle), 0, buffer, ctypes.byref(size)):
-                name = buffer.value.rsplit("\\", 1)[-1].lower()
+                name = buffer.value.lower()
             kernel.CloseHandle(wintypes.HANDLE(handle))
         names[pid.value] = name
     return names[pid.value]
@@ -89,8 +98,8 @@ def process_name(hwnd, names):
 
 def app_name(hwnd, names):
     """Store apps live inside an ApplicationFrameHost window; the app is its child's process."""
-    name = process_name(hwnd, names)
-    if name != "applicationframehost.exe":
+    name = process_path(hwnd, names)
+    if not name.endswith("\\applicationframehost.exe"):
         return name
     user = ctypes.WinDLL("user32")
     found = []
@@ -98,7 +107,7 @@ def app_name(hwnd, names):
 
     @callback_type
     def child(handle, data):
-        other = process_name(handle, names)
+        other = process_path(handle, names)
         if other != name:
             found.append(other)
             return False
@@ -134,10 +143,10 @@ def window_stack(masked):
             return True
         cls = ctypes.create_unicode_buffer(256)
         user.GetClassNameW(hwnd, cls, 256)
-        if cls.value == SWITCHER_CLASS and process_name(hwnd, names) == "explorer.exe":
+        if cls.value == SWITCHER_CLASS and process_path(hwnd, names).endswith("\\explorer.exe"):
             stack.append((True, box))
             return True
-        if masked and app_name(hwnd, names) in masked:
+        if masked and matches(app_name(hwnd, names), masked):
             stack.append((True, box))
             return True
         style = user.GetWindowLongW(hwnd, -20) & 0xFFFFFFFF  # GWL_EXSTYLE
@@ -196,7 +205,7 @@ def paint(image, screen, regions):
 def take(store, device_id, masked_apps=()):
     if not desktop_available():
         return 0
-    masked = {name.lower() for name in masked_apps}
+    masked = normalized(masked_apps)
     screens = monitors()
     # The window list is read just before and after grabbing. If anything moved in
     # between, grab once more; if it is still moving, black both positions.
